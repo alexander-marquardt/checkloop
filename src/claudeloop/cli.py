@@ -57,6 +57,11 @@ _PROCESS_WAIT_TIMEOUT = 5  # seconds to wait for process group to die
 _PRE_RUN_WARNING_DELAY = 5  # countdown seconds before starting review
 _BASH_DISPLAY_LIMIT = 80  # max chars shown for bash commands in tool summaries
 
+# Perf: build once instead of copying os.environ on every subprocess spawn.
+# Strips CLAUDECODE env var whose presence causes nested claude processes
+# to refuse to start when claudeloop is invoked from within a Claude Code session.
+_clean_env: dict[str, str] = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+
 COMMIT_MESSAGE_INSTRUCTIONS: str = (
     "\n\nIf you make any git commits, follow these commit message rules:\n"
     "- Maximum 5-10 lines\n"
@@ -196,7 +201,11 @@ def _git_run(
 
 def _is_git_repo(workdir: str) -> bool:
     """Return True if workdir is inside a git repository."""
-    is_repo = _git_run(workdir, "rev-parse", "--is-inside-work-tree").returncode == 0
+    try:
+        is_repo = _git_run(workdir, "rev-parse", "--is-inside-work-tree").returncode == 0
+    except OSError as exc:
+        logger.warning("Could not check git repo status for %s: %s", workdir, exc)
+        return False
     if not is_repo:
         logger.info("Not a git repo: %s", workdir)
     return is_repo
@@ -204,7 +213,11 @@ def _is_git_repo(workdir: str) -> bool:
 
 def _git_head_sha(workdir: str) -> str | None:
     """Return the current HEAD commit SHA, or None if unavailable."""
-    result = _git_run(workdir, "rev-parse", "HEAD")
+    try:
+        result = _git_run(workdir, "rev-parse", "HEAD")
+    except OSError as exc:
+        logger.warning("Could not read HEAD SHA in %s: %s", workdir, exc)
+        return None
     return result.stdout.strip() if result.returncode == 0 else None
 
 
@@ -222,7 +235,7 @@ def _git_commit_cycle(workdir: str, cycle: int) -> bool:
         _git_run(workdir, "commit", "-m", f"Review cycle {cycle} cleanup", check=True)
         logger.info("Committed changes after cycle %d", cycle)
         return True
-    except subprocess.CalledProcessError as exc:
+    except (subprocess.CalledProcessError, OSError) as exc:
         logger.warning("Git commit failed after cycle %d: %s", cycle, exc, exc_info=True)
         return False
 
@@ -243,7 +256,12 @@ def _parse_shortstat(text: str) -> int:
 
 def _count_file_lines(filepath: Path) -> int:
     """Count newlines in a text file, reading in chunks. Returns 0 for binary files."""
-    with open(filepath, "rb") as file:
+    try:
+        fh = open(filepath, "rb")
+    except OSError as exc:
+        logger.debug("Cannot open file for line counting %s: %s", filepath, exc)
+        return 0
+    with fh as file:
         # Read a small header to check for null bytes (binary file indicator).
         # If the file is text, count newlines in the header, then continue
         # counting through the rest of the file in larger chunks.
@@ -263,15 +281,25 @@ def _count_tracked_lines(workdir: str) -> int:
     memory, which matters for long-running sessions on big repos.
     """
     start_time = time.time()
-    ls_result = _git_run(workdir, "ls-files", "-z", text=False)
+    try:
+        ls_result = _git_run(workdir, "ls-files", "-z", text=False)
+    except OSError as exc:
+        logger.warning("git ls-files failed in %s: %s", workdir, exc)
+        return 1  # avoid division by zero
     if ls_result.returncode != 0:
         logger.warning("git ls-files failed (rc=%d) — cannot count tracked lines", ls_result.returncode)
         return 1  # avoid division by zero
-    # -z flag outputs null-separated paths; split and decode, dropping empty trailing entry
-    tracked_paths = [f.decode("utf-8", errors="replace") for f in ls_result.stdout.split(b"\0") if f]
+    # -z flag outputs null-separated paths; split once, iterate as generator
+    # to avoid materialising a full decoded-path list for large repos.
+    raw_parts = ls_result.stdout.split(b"\0")
     total = 0
+    file_count = 0
     resolved_workdir = Path(workdir).resolve()
-    for relative_path in tracked_paths:
+    for raw_path in raw_parts:
+        if not raw_path:
+            continue
+        relative_path = raw_path.decode("utf-8", errors="replace")
+        file_count += 1
         try:
             absolute_path = (resolved_workdir / relative_path).resolve()
             if not absolute_path.is_relative_to(resolved_workdir):
@@ -281,7 +309,7 @@ def _count_tracked_lines(workdir: str) -> int:
             logger.debug("Could not read tracked file %s: %s", relative_path, exc)
     total_or_min = max(total, 1)  # minimum 1 to avoid division by zero
     elapsed = time.time() - start_time
-    logger.info("Counted %d tracked lines across %d files in %.2fs", total_or_min, len(tracked_paths), elapsed)
+    logger.info("Counted %d tracked lines across %d files in %.2fs", total_or_min, file_count, elapsed)
     return total_or_min
 
 
@@ -299,7 +327,11 @@ def _count_lines_changed(workdir: str, base_sha: str, target: str = "HEAD") -> i
     diff_args = ["diff", "--shortstat", base_sha]
     if target:  # empty string means diff against working tree (uncommitted changes)
         diff_args.append(target)
-    result = _git_run(workdir, *diff_args)
+    try:
+        result = _git_run(workdir, *diff_args)
+    except OSError as exc:
+        logger.warning("git diff --shortstat failed in %s: %s", workdir, exc)
+        return 0
     if result.returncode != 0:
         logger.warning("git diff --shortstat failed (rc=%d): %s", result.returncode, result.stderr.strip())
         return 0
@@ -317,7 +349,11 @@ def _cached_total_tracked_lines(workdir: str) -> int:
 def _detect_default_branch(workdir: str) -> str:
     """Return the name of the default branch (main or master), falling back to 'main'."""
     for branch in ("main", "master"):
-        result = _git_run(workdir, "rev-parse", "--verify", f"refs/heads/{branch}")
+        try:
+            result = _git_run(workdir, "rev-parse", "--verify", f"refs/heads/{branch}")
+        except OSError as exc:
+            logger.warning("Could not verify branch '%s': %s", branch, exc)
+            continue
         if result.returncode == 0:
             return branch
     return "main"
@@ -329,12 +365,20 @@ def _get_changed_files(workdir: str, base_ref: str) -> list[str]:
     Uses ``git merge-base`` to find the common ancestor, then ``git diff --name-only``
     to list changed files. Returns an empty list if the diff fails.
     """
-    merge_base = _git_run(workdir, "merge-base", base_ref, "HEAD")
+    try:
+        merge_base = _git_run(workdir, "merge-base", base_ref, "HEAD")
+    except OSError as exc:
+        logger.warning("git merge-base failed for ref '%s': %s", base_ref, exc)
+        return []
     if merge_base.returncode != 0:
         logger.warning("git merge-base failed for ref '%s' (rc=%d)", base_ref, merge_base.returncode)
         return []
     base_sha = merge_base.stdout.strip()
-    result = _git_run(workdir, "diff", "--name-only", base_sha, "HEAD")
+    try:
+        result = _git_run(workdir, "diff", "--name-only", base_sha, "HEAD")
+    except OSError as exc:
+        logger.warning("git diff --name-only failed: %s", exc)
+        return []
     if result.returncode != 0:
         logger.warning("git diff --name-only failed (rc=%d)", result.returncode)
         return []
@@ -637,11 +681,13 @@ _DANGEROUS_PROMPT_KEYWORDS: list[str] = [
     "format c:",
     "format /dev",
     "mkfs",
-    "wipe",
-    "delete all",
+    "wipe disk",
+    "wipe drive",
+    "wipe partition",
+    "delete all files",
     "drop database",
     "drop table",
-    "truncate",
+    "truncate table",
     ":(){:|:&};:",
     "sudo rm",
     "chmod 777 /",
@@ -828,10 +874,6 @@ def _spawn_claude_process(
     children it spawns (language servers, tool runners, etc.), preventing
     orphaned processes from accumulating memory across many passes.
     """
-    # Strip CLAUDECODE env var — its presence causes nested claude processes
-    # to refuse to start when claudeloop is invoked from within a Claude Code session.
-    clean_env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-
     logger.info("Spawning subprocess: %s (cwd=%s)", cmd[:3], workdir)
     try:
         return subprocess.Popen(
@@ -840,7 +882,7 @@ def _spawn_claude_process(
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            env=clean_env,
+            env=_clean_env,
             start_new_session=True,  # creates a new process group
         )
     except FileNotFoundError:
@@ -1427,9 +1469,10 @@ def _filter_active_passes(
         p for p in selected_passes
         if p["id"] in previously_changed_ids or p["id"] in _BOOKEND_IDS
     ]
-    skipped = len(selected_passes) - len(cycle_passes)
-    if skipped > 0:
-        _print_status(f"Skipping {skipped} pass(es) that made no changes last cycle.")
+    skipped_ids = [p["id"] for p in selected_passes if p["id"] not in previously_changed_ids and p["id"] not in _BOOKEND_IDS]
+    if skipped_ids:
+        logger.info("Skipping %d no-op pass(es) from last cycle: %s", len(skipped_ids), skipped_ids)
+        _print_status(f"Skipping {len(skipped_ids)} pass(es) that made no changes last cycle.")
     return cycle_passes
 
 
@@ -1512,6 +1555,7 @@ def _resolve_changed_files_prefix(args: argparse.Namespace, workdir: str) -> str
     if not _is_git_repo(workdir):
         _fatal("--changed-only requires a git repository")
     base_ref = args.changed_only if args.changed_only != "auto" else _detect_default_branch(workdir)
+    logger.info("--changed-only: comparing against base ref '%s'", base_ref)
     changed_files = _get_changed_files(workdir, base_ref)
     if not changed_files:
         _fatal(f"No changed files found compared to '{base_ref}'")
@@ -1527,7 +1571,9 @@ def _resolve_selected_passes(args: argparse.Namespace) -> list[dict[str, str]]:
         selected_ids = set(args.passes)
     else:
         selected_ids = set(TIERS[args.level or DEFAULT_TIER])
-    return [p for p in REVIEW_PASSES if p["id"] in selected_ids]
+    selected = [p for p in REVIEW_PASSES if p["id"] in selected_ids]
+    logger.info("Selected %d passes: %s", len(selected), [p["id"] for p in selected])
+    return selected
 
 
 def _configure_logging(args: argparse.Namespace) -> None:
