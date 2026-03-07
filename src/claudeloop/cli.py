@@ -708,7 +708,21 @@ def _process_jsonl_buffer(
     pass_start_time: float,
     verbose: bool,
 ) -> bytearray:
-    """Process complete JSONL lines from the buffer, return the remainder."""
+    """Process complete JSONL lines from the buffer, return the remainder.
+
+    Parses each complete line as JSON and dispatches to the appropriate
+    event printer.  Incomplete trailing data is left in the buffer for
+    the next call.
+
+    Args:
+        output_buffer: Mutable byte buffer containing raw subprocess output.
+        pass_start_time: Wall-clock time when the current pass started
+            (used for elapsed-time prefixes).
+        verbose: If True, print lines that fail JSON parsing (debug output).
+
+    Returns:
+        The same *output_buffer* object, with consumed lines removed.
+    """
     # Consume complete lines from the front of the buffer, leaving any
     # trailing incomplete line for the next call.
     while b"\n" in output_buffer:
@@ -981,7 +995,15 @@ def _execute_claude_process(
 
 
 def _report_pass_exit_status(process: subprocess.Popen[bytes], pass_start_time: float) -> int:
-    """Log and display the exit status of a completed pass. Returns the exit code."""
+    """Log and display the exit status of a completed pass.
+
+    Args:
+        process: The completed Claude subprocess.
+        pass_start_time: Wall-clock time when the pass started.
+
+    Returns:
+        The subprocess exit code (0 on success, -1 if never set).
+    """
     elapsed = _format_duration(time.time() - pass_start_time)
     exit_code = process.returncode if process.returncode is not None else -1
     if process.returncode is None:
@@ -1089,7 +1111,18 @@ def _print_run_summary(
     dry_run: bool,
     convergence_threshold: float = 0.0,
 ) -> None:
-    """Print a summary of the configured review run before starting."""
+    """Print a summary of the configured review run before starting.
+
+    Args:
+        workdir: Resolved absolute path to the project directory.
+        selected_passes: List of pass dicts (each with "id", "label", "prompt").
+        num_cycles: Maximum number of times to repeat the full pass suite.
+        total_steps: ``len(selected_passes) * num_cycles``.
+        idle_timeout: Per-pass idle timeout in seconds.
+        dry_run: Whether this is a preview-only run.
+        convergence_threshold: Stop cycling when change percentage falls below
+            this value (0 disables convergence detection).
+    """
     print(f"\n{BOLD}claudeloop{RESET}")
     print(f"  Directory    : {workdir}")
     print(f"  Passes       : {', '.join(p['id'] for p in selected_passes)}")
@@ -1111,7 +1144,22 @@ def _check_cycle_convergence(
 ) -> tuple[bool, float | None]:
     """Commit changes and check whether the review loop has converged.
 
-    Returns (should_stop, updated_prev_change_pct).
+    Commits all staged changes, then compares the percentage of total
+    tracked lines modified against *convergence_threshold*.  Also warns
+    if the change percentage increased compared to the previous cycle
+    (possible oscillation).
+
+    Args:
+        workdir: Resolved absolute path to the project directory.
+        cycle: 1-based cycle number (for display and logging).
+        base_sha: Git SHA recorded at the start of this cycle.
+        convergence_threshold: Stop if change percentage is below this value.
+        prev_change_pct: Change percentage from the previous cycle, or None
+            if this is the first cycle.
+
+    Returns:
+        A ``(should_stop, change_pct)`` tuple.  *should_stop* is True when
+        the loop should exit (either no changes or below threshold).
     """
     _git_commit_cycle(workdir, cycle)
     current_sha = _git_head_sha(workdir)
@@ -1146,7 +1194,22 @@ def _run_single_pass(
     *,
     is_git: bool = False,
 ) -> bool:
-    """Execute a single review pass. Returns True if the pass made changes."""
+    """Execute a single review pass.
+
+    Builds the prompt (with commit-message instructions appended), checks
+    for dangerous keywords, snapshots the git state, invokes Claude Code,
+    and reports what changed.
+
+    Args:
+        review_pass: Dict with "id", "label", and "prompt" keys.
+        workdir: Resolved absolute path to the project directory.
+        args: Parsed CLI arguments (used for skip_permissions, dry_run, etc.).
+        step_label: Display string like ``"[2/6] (cycle 1/3)"``.
+        is_git: Whether *workdir* is a git repo (avoids redundant checks).
+
+    Returns:
+        True if the pass made changes (or if change detection is unavailable).
+    """
     logger.info("Pass started: id=%s, label=%s, step=%s", review_pass["id"], review_pass["label"], step_label)
     print_banner(f"{step_label} {review_pass['label']}", CYAN)
 
@@ -1178,7 +1241,17 @@ def _run_single_pass(
 
 
 def _report_pass_changes(workdir: str, pass_id: str, sha_before: str | None) -> bool:
-    """Compare git state before/after a pass, print stats, and return whether changes were made."""
+    """Compare git state before/after a pass, print stats, and return whether changes were made.
+
+    Args:
+        workdir: Resolved absolute path to the project directory.
+        pass_id: Short identifier of the pass (e.g. ``"readability"``).
+        sha_before: Git HEAD SHA recorded before the pass ran, or None if
+            the project is not a git repo.
+
+    Returns:
+        True if the pass made changes (or if not a git repo).
+    """
     if sha_before is None:
         return True  # assume changes if not a git repo
     sha_after = _git_head_sha(workdir)
@@ -1205,6 +1278,14 @@ def _run_review_suite(
 
     On cycle 2+, passes that made no changes in the previous cycle are skipped.
     Bookend passes (test-fix, test-validate) always run on every cycle.
+
+    Args:
+        selected_passes: Ordered list of pass dicts to run each cycle.
+        num_cycles: Maximum number of full cycles to execute.
+        workdir: Resolved absolute path to the project directory.
+        args: Parsed CLI arguments (pause, dry_run, idle_timeout, etc.).
+        convergence_threshold: Stop when change percentage falls below this
+            value.  Set to 0 to disable convergence detection.
     """
     # Perf: check once instead of spawning a git subprocess on every pass.
     is_git = _is_git_repo(workdir)
@@ -1264,7 +1345,16 @@ def _filter_active_passes(
 
 
 def _display_pre_run_warning(skip_permissions: bool) -> None:
-    """Show a warning about permissions and wait 5 seconds for the user to abort."""
+    """Show a warning about permissions and count down before starting.
+
+    With ``--dangerously-skip-permissions``, warns that all actions will run
+    without approval.  Without it, warns that passes will likely hang because
+    claudeloop cannot relay interactive permission prompts.  Either way, the
+    user has 5 seconds to Ctrl+C before the suite begins.
+
+    Args:
+        skip_permissions: Whether ``--dangerously-skip-permissions`` is enabled.
+    """
     if skip_permissions:
         warning_colour = RED
         heading = "WARNING: --dangerously-skip-permissions is ENABLED"
@@ -1357,7 +1447,19 @@ def _run_suite_with_error_handling(
     args: argparse.Namespace,
     convergence_threshold: float,
 ) -> None:
-    """Run the review suite with error handling and timing."""
+    """Run the review suite, handling interrupts and unexpected errors.
+
+    Wraps ``_run_review_suite`` with KeyboardInterrupt handling (exits 130),
+    missing-tool detection, and a catch-all that logs the traceback before
+    re-raising.  Prints a final timing banner on success.
+
+    Args:
+        selected_passes: Ordered list of pass dicts to run each cycle.
+        num_cycles: Maximum number of full cycles.
+        workdir: Resolved absolute path to the project directory.
+        args: Parsed CLI arguments.
+        convergence_threshold: Stop when change percentage falls below this.
+    """
     suite_start_time = time.time()
     try:
         _run_review_suite(selected_passes, num_cycles, workdir, args, convergence_threshold)

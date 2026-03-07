@@ -126,15 +126,29 @@ uv run claudeloop --cycles 5 --converged-at-percentage 0.5
 
 ## How It Works
 
-`claudeloop` is a single-module Python CLI (`src/claudeloop/cli.py`) that:
+`claudeloop` is a single-module Python CLI (`src/claudeloop/cli.py`) that orchestrates Claude Code as a subprocess. Here is the high-level flow:
 
-1. Parses CLI arguments to determine the review tier (or manual pass selection) and how many cycles to run.
-2. For each pass, builds a focused review prompt and invokes `claude -p <prompt> --output-format stream-json --verbose` as a subprocess.
-3. Streams the JSONL output in real time, displaying tool-use events (file reads, edits, shell commands) and assistant messages with elapsed-time prefixes.
-4. Applies an idle timeout — if Claude produces no output for N seconds (default 120), the process is killed and the next pass begins.
-5. After all passes complete (across all cycles), prints a summary with total elapsed time.
+1. **Argument resolution** — Parses CLI flags, resolves the review tier (or manual pass selection), and validates the target directory.
+2. **Pre-run warning** — Displays a 5-second countdown so the user can abort. Warns if `--dangerously-skip-permissions` is (or isn't) set.
+3. **Pass execution** — For each pass, builds a focused review prompt (with commit-message rules appended) and invokes `claude -p <prompt> --output-format stream-json --verbose` as a subprocess.
+4. **Real-time streaming** — Streams JSONL output from the subprocess, displaying tool-use events (file reads, edits, shell commands) and assistant messages with elapsed-time prefixes.
+5. **Idle timeout** — If Claude produces no output for N seconds (default 120), the process group is killed and the next pass begins.
+6. **Per-pass change detection** — After each pass, compares the git HEAD before/after to report how many lines changed. Passes that produced no changes are skipped on subsequent cycles.
+7. **Convergence detection** — After each full cycle, commits all changes and measures what percentage of total tracked lines were modified. If below the threshold, the loop exits early.
+8. **Process cleanup** — Each Claude subprocess runs in its own process group (`setsid`). On completion or timeout, the entire group is killed (SIGTERM, then SIGKILL) to prevent orphaned child processes from leaking memory.
 
 Each pass operates on the code left by the previous pass, so improvements compound: a readability pass renames variables, then the DRY pass can spot the newly-visible duplication, and so on.
+
+### Key internal functions
+
+| Function | Role |
+|----------|------|
+| `main()` | CLI entry point — parses args, resolves passes, runs the suite |
+| `run_claude()` | Public API to run a single Claude Code review pass |
+| `_run_review_suite()` | Orchestrates all passes across all cycles |
+| `_stream_process_output()` | Streams and parses JSONL from the Claude subprocess |
+| `_check_cycle_convergence()` | Commits changes and checks if the loop should stop |
+| `_kill_process_group()` | Terminates a subprocess and all its children |
 
 ## Environment Variables
 
