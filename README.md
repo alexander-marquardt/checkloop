@@ -2,7 +2,7 @@
 
 **Autonomous multi-pass code review using Claude Code.**
 
-**Writeup:** [Why multi-pass AI code review works](https://alexmarquardt.com/ai-tools/claudeloop-autonomous-code-review/)
+**Writeup:** [Autonomous Multi-Pass AI Code Review](https://alexmarquardt.com/ai-tools/claudeloop-autonomous-code-review/)
 
 Single-pass AI code review misses things. `claudeloop` runs dimension-specific review passes — readability, DRY, tests, security, performance, error handling — in sequence, then optionally cycles through the full suite again. Each pass creates a cleaner baseline that makes the next category of issues more visible.
 
