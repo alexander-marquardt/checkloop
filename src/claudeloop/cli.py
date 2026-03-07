@@ -363,6 +363,8 @@ REVIEW_PASSES: list[dict[str, str]] = [
             "Break up any function that does more than one logical thing, "
             "or that requires scrolling to read in full. "
             "Prefer small, named functions where the name removes the need for a comment. "
+            "If any source file has grown too large, split it into smaller, "
+            "well-named modules with clear responsibilities. "
             "Add or improve inline comments where logic is non-obvious, "
             "and ensure consistent formatting across the entire codebase. "
             "Do NOT change any behaviour — only improve clarity."
@@ -726,13 +728,16 @@ def _process_jsonl_buffer(
     Returns:
         The same *output_buffer* object, with consumed lines removed.
     """
-    # Consume complete lines from the front of the buffer, leaving any
-    # trailing incomplete line for the next call.
-    while b"\n" in output_buffer:
-        newline_pos = output_buffer.index(b"\n")
-        line = bytes(output_buffer[:newline_pos])
-        del output_buffer[:newline_pos + 1]
-        line_str = line.decode("utf-8", errors="replace").strip()
+    # Process all complete lines, then remove consumed bytes once.
+    # Avoids repeated del output_buffer[:n] which is O(n) per call,
+    # making the naive approach O(n²) when many lines arrive at once.
+    last_newline = output_buffer.rfind(b"\n")
+    if last_newline == -1:
+        return output_buffer
+    complete = bytes(output_buffer[:last_newline])
+    del output_buffer[:last_newline + 1]
+    for line_bytes in complete.split(b"\n"):
+        line_str = line_bytes.decode("utf-8", errors="replace").strip()
         if not line_str:
             continue
         try:
