@@ -4,57 +4,79 @@
 
 **Writeup:** [Autonomous Multi-Pass AI Code Review](https://alexmarquardt.com/ai-tools/claudeloop-autonomous-code-review/)
 
-Single-pass AI code review misses things. `claudeloop` runs dimension-specific review passes — readability, DRY, tests, security, performance, error handling — in sequence, then optionally cycles through the full suite again. Each pass creates a cleaner baseline that makes the next category of issues more visible.
+Single-pass AI code review misses things. `claudeloop` runs dimension-specific review passes — readability, DRY, tests, security, performance, error handling, and more — in sequence, then optionally cycles through the full suite again. Each pass creates a cleaner baseline that makes the next category of issues more visible.
 
 ## Install
 
 Requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`npm install -g @anthropic-ai/claude-code`).
 
 ```bash
-# Clone and install
 git clone https://github.com/alexander-marquardt/claudeloop.git
 cd claudeloop
 uv sync
-
-# Or install directly
-uv tool install git+https://github.com/alexander-marquardt/claudeloop.git
 ```
 
 ## Usage
 
+Run with `uv run claudeloop` from the project directory:
+
 ```bash
-# Review the current directory (default passes: readability, dry, tests, docs)
-claudeloop
+# Review the current directory (basic tier: readability, dry, tests, docs)
+uv run claudeloop
 
-# Review a specific project
-claudeloop --dir ~/my-project
+# Use the thorough tier for deeper review
+uv run claudeloop --level thorough
 
-# Run all 7 passes, repeat twice
-claudeloop --all-passes --cycles 2
+# Exhaustive review — all 15 passes, repeat twice
+uv run claudeloop --level exhaustive --cycles 2
 
-# Pick specific passes
-claudeloop --passes readability security tests
+# Pick specific passes manually (overrides tier)
+uv run claudeloop --passes readability security tests
 
 # Preview without running
-claudeloop --dry-run
+uv run claudeloop --dry-run
 
 # See what Claude is doing in detail
-claudeloop -v
+uv run claudeloop -v
 ```
+
+To make `claudeloop` available globally (without `uv run`):
+
+```bash
+uv tool install git+https://github.com/alexander-marquardt/claudeloop.git
+```
+
+## Review Tiers
+
+Choose a review depth with `--level`:
+
+| Tier | Passes | Description |
+|------|--------|-------------|
+| **basic** (default) | 4 passes | Core code quality — readability, DRY, tests, docs |
+| **thorough** | 8 passes | Adds security, performance, error handling, type safety |
+| **exhaustive** | 15 passes | Everything — includes edge cases, complexity, deps, logging, concurrency, a11y, API design |
+
+Use `--passes` to pick individual passes, or `--all-passes` as a shortcut for `--level exhaustive`.
 
 ## Review Passes
 
-| Pass | What it does |
-|------|-------------|
-| `readability` | Naming, function size, comments, formatting. No behaviour changes. |
-| `dry` | Finds repeated logic, extracts helpers, consolidates constants. |
-| `tests` | Targets >=90% coverage. Writes tests, runs them, fixes failures. |
-| `docs` | README, docstrings, config documentation. |
-| `security` | Injection, hardcoded secrets, input validation, unsafe dependencies. |
-| `perf` | N+1 queries, blocking I/O, unnecessary allocations. |
-| `errors` | try/except coverage, meaningful error messages, logging. |
-
-Default passes: `readability`, `dry`, `tests`, `docs`. Use `--all-passes` for all seven.
+| Pass | Tier | What it does |
+|------|------|-------------|
+| `readability` | basic | Naming, function size, comments, formatting. No behaviour changes. |
+| `dry` | basic | Finds repeated logic, extracts helpers, consolidates constants. |
+| `tests` | basic | Targets >=90% coverage. Writes tests, runs them, fixes failures. |
+| `docs` | basic | README, docstrings, config documentation. |
+| `security` | thorough | Injection, hardcoded secrets, input validation, unsafe dependencies. |
+| `perf` | thorough | N+1 queries, blocking I/O, unnecessary allocations. |
+| `errors` | thorough | try/except coverage, meaningful error messages, logging. |
+| `types` | thorough | Type annotations, replace `Any`/untyped code, run type checker. |
+| `edge-cases` | exhaustive | Off-by-one, null/empty inputs, overflow, Unicode edge cases. |
+| `complexity` | exhaustive | Flatten nested conditionals, reduce cyclomatic complexity. |
+| `deps` | exhaustive | Remove unused deps, flag vulnerable/outdated packages. |
+| `logging` | exhaustive | Structured logging, request context, observability gaps. |
+| `concurrency` | exhaustive | Race conditions, missing locks, async/await correctness. |
+| `accessibility` | exhaustive | Semantic HTML, ARIA, keyboard nav, colour contrast (WCAG AA). |
+| `api-design` | exhaustive | Consistent naming, HTTP methods, error formats, pagination. |
 
 ## Why Multi-Pass Works
 
@@ -71,20 +93,53 @@ Each pass builds on the work of the previous ones.
 
 ```
 --dir, -d DIR          Project directory (default: .)
---passes PASS [...]    Which passes to run
---all-passes           Run all 7 passes
+--level, -l TIER       Review depth: basic, thorough, exhaustive (default: basic)
+--passes PASS [...]    Manually select passes (overrides --level)
+--all-passes           Run all 15 passes (same as --level exhaustive)
 --cycles, -c N         Repeat the full suite N times (default: 1)
 --idle-timeout SECS    Kill after N seconds of silence (default: 120)
 --dry-run              Preview without running
 --verbose, -v          Show raw streaming output
 --pause SECS           Pause between passes (default: 2)
+--dangerously-skip-permissions
+                       Pass --dangerously-skip-permissions to Claude Code
+                       (bypasses all permission checks)
 ```
+
+## How It Works
+
+`claudeloop` is a single-module Python CLI (`src/claudeloop/cli.py`) that:
+
+1. Parses CLI arguments to determine the review tier (or manual pass selection) and how many cycles to run.
+2. For each pass, builds a focused review prompt and invokes `claude -p <prompt> --output-format stream-json --verbose` as a subprocess.
+3. Streams the JSONL output in real time, displaying tool-use events (file reads, edits, shell commands) and assistant messages with elapsed-time prefixes.
+4. Applies an idle timeout — if Claude produces no output for N seconds (default 120), the process is killed and the next pass begins.
+5. After all passes complete (across all cycles), prints a summary with total elapsed time.
+
+Each pass operates on the code left by the previous pass, so improvements compound: a readability pass renames variables, then the DRY pass can spot the newly-visible duplication, and so on.
+
+## Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `ANTHROPIC_API_KEY` | Required by Claude Code for authentication. Must be set before running `claudeloop`. See the [Claude Code docs](https://docs.anthropic.com/en/docs/claude-code) for setup. |
+| `CLAUDECODE` | Automatically stripped by `claudeloop` when spawning subprocesses. This allows `claudeloop` to be invoked from within a Claude Code session without conflict. You do not need to set this yourself. |
+
+No other environment variables or config files are required. All configuration is done via CLI flags.
 
 ## Requirements
 
 - Python 3.12+
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI installed and authenticated
 - [uv](https://docs.astral.sh/uv/) (recommended) or pip
+
+## Project Structure
+
+```
+src/claudeloop/
+├── __init__.py   # Package docstring and public API summary
+└── cli.py        # All CLI logic: argument parsing, review passes, Claude subprocess management
+```
 
 ## License
 

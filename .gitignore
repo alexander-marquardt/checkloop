@@ -10,6 +10,11 @@ build/
 .mypy_cache/
 .ruff_cache/
 *.so
+.coverage
+
+# Secrets / environment files
+.env
+.env.*
 
 # Draft content (not for repo)
 blog-post.md

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
 import select
@@ -25,7 +26,9 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import IO, Any, NoReturn
+
+logger = logging.getLogger(__name__)
 
 # --- ANSI helpers -------------------------------------------------------------
 
@@ -39,20 +42,47 @@ DIM    = "\033[2m"
 BLUE   = "\033[94m"
 
 
-def banner(msg: str, colour: str = CYAN) -> None:
-    rule = "\u2500" * 72  # ─
-    print(f"\n{colour}{BOLD}{rule}")
-    print(f"  {msg}")
-    print(f"{rule}{RESET}\n")
+RULE_WIDTH = 72
+DEFAULT_IDLE_TIMEOUT = 120
+DEFAULT_PAUSE_SECONDS = 2
 
 
-def log(msg: str, colour: str = DIM) -> None:
+def _fatal(msg: str) -> NoReturn:
+    """Print an error message in red and exit with code 1."""
+    print(f"{RED}{msg}{RESET}")
+    sys.exit(1)
+
+
+def banner(title: str, colour: str = CYAN) -> None:
+    """Print a prominent section header with horizontal rules."""
+    horizontal_rule = "\u2500" * RULE_WIDTH  # ─
+    print(f"\n{colour}{BOLD}{horizontal_rule}")
+    print(f"  {title}")
+    print(f"{horizontal_rule}{RESET}\n")
+
+
+def print_status(msg: str, colour: str = DIM) -> None:
+    """Print a coloured status message to the terminal."""
     print(f"{colour}{msg}{RESET}")
 
 
 # --- Review passes ------------------------------------------------------------
 
 REVIEW_PASSES: list[dict[str, str]] = [
+    # --- Bookend: run first ---
+    {
+        "id": "test-fix",
+        "label": "Run Existing Tests & Fix Failures",
+        "prompt": (
+            "Find and run the existing test suite for this project. "
+            "Use whatever test runner is already configured (pytest, jest, go test, cargo test, etc.). "
+            "If tests fail, diagnose and fix the root cause in the SOURCE code — not by weakening or "
+            "deleting the tests. Re-run until all existing tests pass. "
+            "Do NOT write new tests in this step — only fix failures in the existing suite. "
+            "Report what you found and fixed."
+        ),
+    },
+    # --- Basic tier (default) ---
     {
         "id": "readability",
         "label": "Readability & Code Quality",
@@ -101,6 +131,7 @@ REVIEW_PASSES: list[dict[str, str]] = [
             "and document any non-obvious environment variables or config."
         ),
     },
+    # --- Thorough tier ---
     {
         "id": "security",
         "label": "Security Review",
@@ -132,10 +163,136 @@ REVIEW_PASSES: list[dict[str, str]] = [
             "Add logging where it would help diagnose production issues."
         ),
     },
+    {
+        "id": "types",
+        "label": "Type Safety",
+        "prompt": (
+            "Review the entire codebase for type safety issues. "
+            "Add or fix type annotations (Python type hints, TypeScript types, JSDoc @param/@returns). "
+            "Replace uses of Any, Object, or untyped collections with precise types. "
+            "Ensure function signatures, return types, and class attributes are all typed. "
+            "Run the type checker (mypy, tsc, etc.) if available and fix any errors. "
+            "Do NOT change runtime behaviour — only improve type coverage."
+        ),
+    },
+    # --- Exhaustive tier ---
+    {
+        "id": "edge-cases",
+        "label": "Edge Cases & Boundary Conditions",
+        "prompt": (
+            "Audit the entire codebase for unhandled edge cases and boundary conditions. "
+            "Look for: off-by-one errors, empty/null/undefined inputs, integer overflow, "
+            "empty collections, zero-length strings, negative numbers where unsigned expected, "
+            "concurrent modification, and Unicode/encoding edge cases. "
+            "Fix any issues and add tests for the edge cases you find."
+        ),
+    },
+    {
+        "id": "complexity",
+        "label": "Reduce Complexity",
+        "prompt": (
+            "Review the entire codebase for excessive complexity. "
+            "Simplify deeply nested conditionals (flatten with early returns or guard clauses). "
+            "Break apart functions with high cyclomatic complexity. "
+            "Replace complex boolean expressions with named variables or helper functions. "
+            "Simplify state machines, reduce the number of code paths where possible. "
+            "Do NOT change observable behaviour — only reduce complexity."
+        ),
+    },
+    {
+        "id": "deps",
+        "label": "Dependency Hygiene",
+        "prompt": (
+            "Audit the project's dependencies for issues. "
+            "Identify unused dependencies and remove them. "
+            "Check for outdated packages with known vulnerabilities. "
+            "Flag dependencies that are unmaintained or have better alternatives. "
+            "Ensure lock files are consistent with declared dependencies. "
+            "Check that dependency version constraints are neither too loose nor too tight."
+        ),
+    },
+    {
+        "id": "logging",
+        "label": "Logging & Observability",
+        "prompt": (
+            "Review the codebase for logging and observability gaps. "
+            "Ensure all entry points (API routes, CLI commands, queue consumers) log "
+            "request/response summaries. Add structured logging with context (request IDs, "
+            "user IDs, operation names) where missing. Ensure errors are logged with stack traces. "
+            "Remove or downgrade noisy debug logs that would clutter production. "
+            "Add metrics or timing instrumentation to performance-critical paths if appropriate."
+        ),
+    },
+    {
+        "id": "concurrency",
+        "label": "Concurrency & Thread Safety",
+        "prompt": (
+            "Review the entire codebase for concurrency issues. "
+            "Look for: race conditions, shared mutable state without synchronisation, "
+            "deadlock potential, missing locks around critical sections, "
+            "non-atomic read-modify-write sequences, and unsafe use of globals. "
+            "Check async code for missing awaits, unawaited coroutines, and blocking calls "
+            "in async contexts. Fix any issues you find."
+        ),
+    },
+    {
+        "id": "accessibility",
+        "label": "Accessibility (a11y)",
+        "prompt": (
+            "Review all UI code (HTML, JSX, templates, components) for accessibility issues. "
+            "Ensure: semantic HTML elements are used instead of generic divs/spans, "
+            "all images have meaningful alt text, form inputs have associated labels, "
+            "ARIA attributes are used correctly, keyboard navigation works, "
+            "colour contrast meets WCAG AA standards, and focus management is correct. "
+            "If the project has no UI code, report that and skip."
+        ),
+    },
+    {
+        "id": "api-design",
+        "label": "API Design & Consistency",
+        "prompt": (
+            "Review all public APIs (REST endpoints, library interfaces, CLI commands, "
+            "exported functions) for consistency and usability. "
+            "Check for: consistent naming conventions, predictable parameter ordering, "
+            "appropriate HTTP methods and status codes, consistent error response formats, "
+            "proper use of pagination, versioning where needed, and idempotency of mutating operations. "
+            "Fix inconsistencies and document any breaking changes."
+        ),
+    },
+    # --- Bookend: run last ---
+    {
+        "id": "test-validate",
+        "label": "Validate All Tests Pass",
+        "prompt": (
+            "Run the FULL test suite (including any tests written or modified during earlier passes). "
+            "If any tests fail, diagnose whether the failure is due to a bug in the source code "
+            "or a bad test. Fix the root cause — prefer fixing source code over weakening tests. "
+            "Re-run until all tests pass. "
+            "Report the final test count and results."
+        ),
+    },
 ]
 
 PASS_IDS: list[str] = [p["id"] for p in REVIEW_PASSES]
-DEFAULT_PASSES: list[str] = ["readability", "dry", "tests", "docs"]
+
+# --- Review tiers -------------------------------------------------------------
+
+_BOOKEND_START: list[str] = ["test-fix"]
+_BOOKEND_END: list[str] = ["test-validate"]
+_CORE_BASIC: list[str] = ["readability", "dry", "tests", "docs"]
+_CORE_THOROUGH: list[str] = ["security", "perf", "errors", "types"]
+_CORE_EXHAUSTIVE: list[str] = ["edge-cases", "complexity", "deps", "logging", "concurrency", "accessibility", "api-design"]
+
+TIER_BASIC: list[str] = _BOOKEND_START + _CORE_BASIC + _BOOKEND_END
+TIER_THOROUGH: list[str] = _BOOKEND_START + _CORE_BASIC + _CORE_THOROUGH + _BOOKEND_END
+TIER_EXHAUSTIVE: list[str] = PASS_IDS  # all passes (already ordered correctly)
+
+TIERS: dict[str, list[str]] = {
+    "basic": TIER_BASIC,
+    "thorough": TIER_THOROUGH,
+    "exhaustive": TIER_EXHAUSTIVE,
+}
+DEFAULT_TIER: str = "basic"
 
 # --- Dangerous-prompt guard ---------------------------------------------------
 
@@ -155,97 +312,248 @@ _DANGER_KEYWORDS: list[str] = [
 ]
 
 
+def _compile_danger_patterns() -> list[re.Pattern[str]]:
+    """Pre-compile regex patterns for all danger keywords."""
+    patterns: list[re.Pattern[str]] = []
+    for keyword in _DANGER_KEYWORDS:
+        escaped = re.escape(keyword)
+        prefix = r"\b" if keyword[0].isalnum() else ""
+        suffix = r"\b" if keyword[-1].isalnum() else ""
+        patterns.append(re.compile(prefix + escaped + suffix, re.IGNORECASE))
+    return patterns
+
+
+# Perf: compile once at import time instead of rebuilding on every call.
+_DANGER_PATTERNS: list[re.Pattern[str]] = _compile_danger_patterns()
+
+
 def _looks_dangerous(text: str) -> bool:
-    return any(
-        re.search(r"\b" + re.escape(kw) + r"\b", text, re.IGNORECASE)
-        for kw in _DANGER_KEYWORDS
-    )
+    """Check if a prompt contains any destructive keyword.
+
+    Uses word-boundary anchors (\\b) around alphanumeric edges so e.g.
+    "reformat" does not match "format", while keywords containing special
+    characters like "rm -rf /" or "/etc/passwd" are still detected.
+    """
+    return any(pattern.search(text) for pattern in _DANGER_PATTERNS)
 
 
 # --- Claude runner ------------------------------------------------------------
 
-def _format_duration(seconds: float) -> str:
-    m, s = divmod(int(seconds), 60)
-    if m < 60:
-        return f"{m}m{s:02d}s"
-    h, m = divmod(m, 60)
-    return f"{h}h{m:02d}m{s:02d}s"
+def _format_duration(total_seconds: float) -> str:
+    """Format elapsed seconds into a compact ``XmYYs`` or ``XhYYmZZs`` string."""
+    minutes, seconds = divmod(max(0, int(total_seconds)), 60)
+    if minutes < 60:
+        return f"{minutes}m{seconds:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes:02d}m{seconds:02d}s"
 
 
-def _summarise_tool_use(tool: str, inp: dict[str, Any]) -> str:
+_FILE_PATH_TOOLS: set[str] = {"read", "read_file", "edit", "edit_file", "write", "write_file"}
+
+
+def _summarise_tool_use(tool_name: str, tool_input: dict[str, Any]) -> str:
     """Return a short human-readable summary for a tool-use event."""
-    if tool in ("Read", "read_file") and "file_path" in inp:
-        return f" {inp['file_path']}"
-    if tool in ("Edit", "edit_file") and "file_path" in inp:
-        return f" {inp['file_path']}"
-    if tool in ("Write", "write_file") and "file_path" in inp:
-        return f" {inp['file_path']}"
-    if tool in ("Bash", "bash") and "command" in inp:
-        cmd = inp["command"]
-        return f" $ {cmd[:77]}..." if len(cmd) > 80 else f" $ {cmd}"
-    if tool in ("Glob", "glob") and "pattern" in inp:
-        return f" {inp['pattern']}"
-    if tool in ("Grep", "grep") and "pattern" in inp:
-        return f" /{inp['pattern']}/"
+    name = tool_name.lower()
+    if name in _FILE_PATH_TOOLS and "file_path" in tool_input:
+        return f" {tool_input['file_path']}"
+    if name == "bash" and "command" in tool_input:
+        command = tool_input["command"]
+        return f" $ {command[:77]}..." if len(command) > 80 else f" $ {command}"
+    if name == "glob" and "pattern" in tool_input:
+        return f" {tool_input['pattern']}"
+    if name == "grep" and "pattern" in tool_input:
+        return f" /{tool_input['pattern']}/"
     return ""
 
 
-def _print_event(event: dict[str, Any], start: float) -> None:
+def _print_event(event: dict[str, Any], pass_start_time: float) -> None:
     """Parse a stream-json event and print a human-readable progress line."""
-    elapsed = _format_duration(time.time() - start)
-    tag = f"{DIM}[{elapsed}]{RESET} "
-    msg_type = event.get("type", "")
+    elapsed = _format_duration(time.time() - pass_start_time)
+    elapsed_prefix = f"{DIM}[{elapsed}]{RESET} "
+    event_type = event.get("type", "")
 
-    if msg_type == "assistant":
+    if event_type == "assistant":
         for block in event.get("message", {}).get("content", []):
-            if block.get("type") == "text":
-                text = block.get("text", "")
-                if text.strip():
-                    print(f"{tag}{text}")
+            if block.get("type") != "text":
+                continue
+            text = block.get("text", "")
+            if text.strip():
+                print(f"{elapsed_prefix}{text}")
 
-    elif msg_type == "tool_use":
-        tool = event.get("tool", event.get("name", "unknown"))
-        detail = _summarise_tool_use(tool, event.get("input", {}))
-        print(f"{tag}{BLUE}[{tool}]{RESET}{detail}")
+    elif event_type == "tool_use":
+        tool_name = event.get("tool", event.get("name", "unknown"))
+        detail = _summarise_tool_use(tool_name, event.get("input") or {})
+        print(f"{elapsed_prefix}{BLUE}[{tool_name}]{RESET}{detail}")
 
-    elif msg_type == "system":
-        msg = event.get("message", "")
-        if msg:
-            print(f"{tag}{DIM}{msg}{RESET}")
+    elif event_type == "system":
+        system_message = event.get("message", "")
+        if system_message:
+            print(f"{elapsed_prefix}{DIM}{system_message}{RESET}")
 
-    elif msg_type == "result":
+    elif event_type == "result":
         result_text = event.get("result", "")
         if result_text:
-            print(f"\n{tag}{GREEN}--- Result ---{RESET}")
+            print(f"\n{elapsed_prefix}{GREEN}--- Result ---{RESET}")
             print(result_text)
 
 
 def _process_lines(
-    line_buffer: bytes,
-    start: float,
+    line_buffer: bytearray,
+    pass_start_time: float,
     verbose: bool,
-) -> bytes:
+) -> bytearray:
     """Process complete JSONL lines from the buffer, return the remainder."""
     while b"\n" in line_buffer:
-        line, line_buffer = line_buffer.split(b"\n", 1)
+        newline_pos = line_buffer.index(b"\n")
+        line = bytes(line_buffer[:newline_pos])
+        del line_buffer[:newline_pos + 1]
         line_str = line.decode("utf-8", errors="replace").strip()
         if not line_str:
             continue
         try:
-            _print_event(json.loads(line_str), start)
+            _print_event(json.loads(line_str), pass_start_time)
         except json.JSONDecodeError:
             if verbose:
                 print(f"{DIM}{line_str}{RESET}")
     return line_buffer
 
 
+def _build_claude_command(prompt: str, skip_permissions: bool) -> list[str]:
+    """Assemble the CLI command list for invoking Claude Code."""
+    cmd = ["claude"]
+    if skip_permissions:
+        cmd.append("--dangerously-skip-permissions")
+    cmd += ["-p", prompt, "--output-format", "stream-json", "--verbose"]
+    return cmd
+
+
+def _spawn_claude_process(
+    cmd: list[str],
+    workdir: str,
+) -> subprocess.Popen[bytes]:
+    """Launch the Claude subprocess, exiting with a clear message if not installed."""
+    # When claudeloop is invoked from within a Claude Code session, the CLAUDECODE
+    # env var causes the child `claude` process to refuse to start. Strip it out.
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+
+    logger.debug("Spawning subprocess: %s (cwd=%s)", cmd[:3], workdir)
+    try:
+        return subprocess.Popen(
+            cmd,
+            cwd=workdir,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env=env,
+        )
+    except FileNotFoundError:
+        _fatal(
+            "Error: `claude` not found. Is Claude Code installed?\n"
+            "  Install: npm install -g @anthropic-ai/claude-code"
+        )
+
+
+def _read_stdout_chunk(stdout: IO[bytes]) -> bytes:
+    """Read a chunk from stdout, preferring non-blocking read1 when available."""
+    try:
+        read1 = getattr(stdout, "read1", None)
+        if read1 is not None:
+            result: bytes = read1(8192)
+            return result
+        return os.read(stdout.fileno(), 8192)
+    except OSError as exc:
+        logger.debug("stdout read failed: %s", exc)
+        return b""
+
+
+def _drain_remaining_stdout(
+    stdout: IO[bytes],
+    output_buffer: bytearray,
+    pass_start_time: float,
+    verbose: bool,
+) -> bytearray:
+    """Read all remaining data from stdout after the process has exited."""
+    try:
+        while True:
+            remaining = os.read(stdout.fileno(), 65536)
+            if not remaining:
+                break
+            output_buffer.extend(remaining)
+            output_buffer = _process_lines(output_buffer, pass_start_time, verbose)
+    except OSError as exc:
+        logger.debug("Failed to drain remaining stdout: %s", exc)
+    return output_buffer
+
+
+def _stream_process_output(
+    process: subprocess.Popen[bytes],
+    idle_timeout: int,
+    verbose: bool,
+) -> float:
+    """Stream and display JSONL output from the Claude process.
+
+    Kills the process if it produces no output for *idle_timeout* seconds.
+    Returns the wall-clock start time used for elapsed-time display.
+    """
+    assert process.stdout is not None
+    stdout = process.stdout
+    pass_start_time = time.time()
+    last_output_time = time.time()
+    output_buffer = bytearray()
+
+    try:
+        while True:
+            now = time.time()
+            if now - last_output_time > idle_timeout:
+                print(
+                    f"\n{RED}Idle for {idle_timeout}s — killing "
+                    f"(ran {_format_duration(now - pass_start_time)}).{RESET}"
+                )
+                process.kill()
+                break
+
+            # Poll stdout with a 1-second timeout so we can check for idle/exit
+            try:
+                ready, _, _ = select.select([stdout], [], [], 1.0)
+            except (OSError, ValueError) as exc:
+                logger.debug("select() failed (fd may be closed): %s", exc)
+                break
+            if not ready and process.poll() is not None:
+                output_buffer = _drain_remaining_stdout(
+                    stdout, output_buffer, pass_start_time, verbose,
+                )
+                break
+            if not ready:
+                continue
+
+            chunk = _read_stdout_chunk(stdout)
+            if not chunk:
+                break
+
+            last_output_time = time.time()
+            output_buffer.extend(chunk)
+            output_buffer = _process_lines(output_buffer, pass_start_time, verbose)
+
+    finally:
+        # Flush any remaining partial line by appending a newline
+        output_buffer.extend(b"\n")
+        _process_lines(output_buffer, pass_start_time, verbose)
+
+        try:
+            stdout.close()
+        except OSError as exc:
+            logger.debug("Failed to close stdout pipe: %s", exc)
+
+    return pass_start_time
+
+
 def run_claude(
     prompt: str,
     workdir: str,
     *,
-    skip_permissions: bool = True,
+    skip_permissions: bool = False,
     dry_run: bool = False,
-    idle_timeout: int = 120,
+    idle_timeout: int = DEFAULT_IDLE_TIMEOUT,
     verbose: bool = False,
 ) -> int:
     """Run a single Claude Code review pass.
@@ -254,107 +562,56 @@ def run_claude(
     There is no hard timeout — the process runs as long as it produces output.
     It is only killed after *idle_timeout* seconds of silence.
     """
-    cmd = ["claude"]
-    if skip_permissions:
-        cmd.append("--dangerously-skip-permissions")
-    cmd += ["-p", prompt, "--output-format", "stream-json", "--verbose"]
-
-    log(f"$ {' '.join(cmd[:3])} [prompt omitted for brevity]", DIM)
+    cmd = _build_claude_command(prompt, skip_permissions)
+    print_status(f"$ {' '.join(cmd[:3])} [prompt omitted for brevity]", DIM)
 
     if dry_run:
         print(f"{YELLOW}[DRY RUN] Would run in {workdir}:{RESET}")
-        print(f"  Prompt: {prompt[:120]}...")
+        truncated = prompt[:120] + ("..." if len(prompt) > 120 else "")
+        print(f"  Prompt: {truncated}")
         return 0
 
-    # Allow launching from within a Claude Code session.
-    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+    process = _spawn_claude_process(cmd, workdir)
+    pass_start_time = _stream_process_output(process, idle_timeout, verbose)
 
     try:
-        process = subprocess.Popen(
-            cmd,
-            cwd=workdir,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-        )
-    except FileNotFoundError:
-        print(f"{RED}Error: `claude` not found. Is Claude Code installed?{RESET}")
-        print("  Install: npm install -g @anthropic-ai/claude-code")
-        sys.exit(1)
-
-    start = time.time()
-    last_output = time.time()
-    buf = b""
-
-    try:
-        while True:
-            now = time.time()
-            if now - last_output > idle_timeout:
-                print(
-                    f"\n{RED}Idle for {idle_timeout}s — killing "
-                    f"(ran {_format_duration(now - start)}).{RESET}"
-                )
-                process.kill()
-                break
-
-            ready, _, _ = select.select([process.stdout], [], [], 1.0)
-            if not ready:
-                if process.poll() is not None:
-                    remaining = process.stdout.read()
-                    if remaining:
-                        buf += remaining
-                    break
-                continue
-
-            chunk = (
-                process.stdout.read1(8192)
-                if hasattr(process.stdout, "read1")
-                else os.read(process.stdout.fileno(), 8192)
-            )
-            if not chunk:
-                break
-
-            last_output = time.time()
-            buf += chunk
-            buf = _process_lines(buf, start, verbose)
-
-    finally:
-        buf = _process_lines(buf + b"\n", start, verbose)
-
-        stderr_bytes = process.stderr.read() if process.stderr else b""
-        if stderr_bytes:
-            stderr_str = stderr_bytes.decode("utf-8", errors="replace").strip()
-            if stderr_str:
-                print(f"{RED}stderr: {stderr_str}{RESET}")
-
-    process.wait()
-    elapsed = _format_duration(time.time() - start)
-    rc = process.returncode
-    colour = GREEN if rc == 0 else YELLOW
-    status = "completed" if rc == 0 else f"exited with code {rc}"
-    log(f"  Pass {status} in {elapsed}", colour)
-    return rc
+        process.wait(timeout=idle_timeout)
+    except subprocess.TimeoutExpired:
+        logger.warning("process.wait() timed out after %ds — killing", idle_timeout)
+        process.kill()
+        process.wait()
+    elapsed = _format_duration(time.time() - pass_start_time)
+    exit_code = process.returncode
+    colour = GREEN if exit_code == 0 else YELLOW
+    status = "completed" if exit_code == 0 else f"exited with code {exit_code}"
+    logger.info("Pass %s (exit_code=%d, elapsed=%s)", status, exit_code, elapsed)
+    print_status(f"  Pass {status} in {elapsed}", colour)
+    return exit_code
 
 
 # --- CLI entry point ----------------------------------------------------------
 
-def main() -> None:
+def _build_argument_parser() -> argparse.ArgumentParser:
+    """Create and configure the CLI argument parser."""
+    tier_names = ", ".join(TIERS)
     parser = argparse.ArgumentParser(
         description="Autonomous multi-pass code review using Claude Code.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="\n".join([
-            "Available review passes (use with --passes):",
+            "Review tiers:",
+            f"  basic       {', '.join(TIER_BASIC)}",
+            f"  thorough    basic + {', '.join(p for p in TIER_THOROUGH if p not in TIER_BASIC)}",
+            f"  exhaustive  thorough + {', '.join(p for p in TIER_EXHAUSTIVE if p not in TIER_THOROUGH)}",
+            "",
+            "All available passes (use with --passes to override tier):",
             *(f"  {p['id']:14s}  {p['label']}" for p in REVIEW_PASSES),
             "",
-            f"Default passes: {', '.join(DEFAULT_PASSES)}",
-            "",
             "Examples:",
-            "  claudeloop",
-            "  claudeloop --dir ~/my-project",
-            "  claudeloop --cycles 3",
-            "  claudeloop --passes readability dry tests security",
-            "  claudeloop --all-passes --cycles 2",
+            "  claudeloop                                  # basic tier (default)",
+            "  claudeloop --level thorough                 # thorough tier",
+            "  claudeloop --level exhaustive --cycles 2    # exhaustive, repeat 2x",
+            "  claudeloop --passes readability security    # manual override",
+            "  claudeloop --all-passes                     # same as --level exhaustive",
             "  claudeloop --dry-run",
         ]),
     )
@@ -364,21 +621,26 @@ def main() -> None:
         help="Project directory to review (default: current directory)",
     )
     parser.add_argument(
-        "--passes", nargs="+", choices=PASS_IDS, default=DEFAULT_PASSES,
+        "--level", "-l", choices=list(TIERS), default=None,
+        metavar="TIER",
+        help=f"Review depth: {tier_names} (default: basic)",
+    )
+    parser.add_argument(
+        "--passes", nargs="+", choices=PASS_IDS, default=None,
         metavar="PASS",
-        help=f"Review passes to run. Choices: {', '.join(PASS_IDS)}",
+        help="Manually select passes (overrides --level)",
     )
     parser.add_argument(
         "--all-passes", action="store_true",
-        help="Run every available review pass",
+        help="Run every available review pass (same as --level exhaustive)",
     )
     parser.add_argument(
         "--cycles", "-c", type=int, default=1, metavar="N",
         help="Repeat the full suite N times (default: 1)",
     )
     parser.add_argument(
-        "--idle-timeout", type=int, default=120, metavar="SECS",
-        help="Kill a pass after this many seconds of silence (default: 120)",
+        "--idle-timeout", type=int, default=DEFAULT_IDLE_TIMEOUT, metavar="SECS",
+        help=f"Kill a pass after this many seconds of silence (default: {DEFAULT_IDLE_TIMEOUT})",
     )
     parser.add_argument(
         "--dry-run", action="store_true",
@@ -389,60 +651,157 @@ def main() -> None:
         help="Show raw non-JSON output from Claude",
     )
     parser.add_argument(
-        "--pause", type=int, default=2,
-        help="Seconds to pause between passes (default: 2)",
+        "--pause", type=int, default=DEFAULT_PAUSE_SECONDS,
+        help=f"Seconds to pause between passes (default: {DEFAULT_PAUSE_SECONDS})",
+    )
+    parser.add_argument(
+        "--dangerously-skip-permissions", action="store_true",
+        help="Pass --dangerously-skip-permissions to Claude Code (bypasses all permission checks)",
     )
 
-    args = parser.parse_args()
+    return parser
 
-    workdir = str(Path(args.dir).resolve())
-    if not Path(workdir).is_dir():
-        print(f"{RED}Directory not found: {workdir}{RESET}")
-        sys.exit(1)
 
-    passes = REVIEW_PASSES if args.all_passes else [
-        p for p in REVIEW_PASSES if p["id"] in args.passes
-    ]
-    cycles = max(1, args.cycles)
-    total = len(passes) * cycles
-
+def _print_run_summary(
+    workdir: str,
+    selected_passes: list[dict[str, str]],
+    num_cycles: int,
+    total_steps: int,
+    idle_timeout: int,
+    dry_run: bool,
+) -> None:
+    """Print a summary of the configured review run before starting."""
     print(f"\n{BOLD}claudeloop{RESET}")
     print(f"  Directory    : {workdir}")
-    print(f"  Passes       : {', '.join(p['id'] for p in passes)}")
-    print(f"  Cycles       : {cycles}")
-    print(f"  Total steps  : {total}  ({len(passes)} passes x {cycles} cycle{'s' if cycles != 1 else ''})")
-    print(f"  Idle timeout : {args.idle_timeout}s (no hard limit)")
-    if args.dry_run:
+    print(f"  Passes       : {', '.join(p['id'] for p in selected_passes)}")
+    print(f"  Cycles       : {num_cycles}")
+    print(f"  Total steps  : {total_steps}  ({len(selected_passes)} passes x {num_cycles} cycle{'s' if num_cycles != 1 else ''})")
+    print(f"  Idle timeout : {idle_timeout}s (no hard limit)")
+    if dry_run:
         print(f"  {YELLOW}DRY RUN{RESET}")
 
-    t0 = time.time()
-    step = 0
 
-    for cycle in range(1, cycles + 1):
-        if cycles > 1:
-            print(f"\n{BOLD}{CYAN}===  Cycle {cycle}/{cycles}  ==={RESET}")
+def _run_review_suite(
+    selected_passes: list[dict[str, str]],
+    num_cycles: int,
+    workdir: str,
+    args: argparse.Namespace,
+) -> None:
+    """Execute all review passes across all cycles."""
+    total_steps = len(selected_passes) * num_cycles
+    current_step = 0
 
-        for pass_cfg in passes:
+    for cycle in range(1, num_cycles + 1):
+        if num_cycles > 1:
+            print(f"\n{BOLD}{CYAN}===  Cycle {cycle}/{num_cycles}  ==={RESET}")
+
+        for review_pass in selected_passes:
             time.sleep(args.pause)
-            step += 1
-            cycle_label = f" (cycle {cycle}/{cycles})" if cycles > 1 else ""
-            banner(f"[{step}/{total}] {pass_cfg['label']}{cycle_label}", CYAN)
+            current_step += 1
+            cycle_label = f" (cycle {cycle}/{num_cycles})" if num_cycles > 1 else ""
+            banner(f"[{current_step}/{total_steps}] {review_pass['label']}{cycle_label}", CYAN)
 
-            if _looks_dangerous(pass_cfg["prompt"]):
-                print(f"{YELLOW}Skipping '{pass_cfg['id']}' — dangerous keywords detected.{RESET}")
+            if _looks_dangerous(review_pass["prompt"]):
+                logger.warning("Skipping pass '%s' — dangerous keywords detected in prompt", review_pass["id"])
+                print(f"{YELLOW}Skipping '{review_pass['id']}' — dangerous keywords detected.{RESET}")
                 continue
 
-            rc = run_claude(
-                pass_cfg["prompt"],
+            exit_code = run_claude(
+                review_pass["prompt"],
                 workdir,
+                skip_permissions=args.dangerously_skip_permissions,
                 dry_run=args.dry_run,
                 idle_timeout=args.idle_timeout,
                 verbose=args.verbose,
             )
-            if rc != 0:
-                print(f"{YELLOW}Pass '{pass_cfg['id']}' exited with code {rc}. Continuing...{RESET}")
+            if exit_code != 0:
+                logger.warning("Pass '%s' exited with code %d", review_pass["id"], exit_code)
+                print(f"{YELLOW}Pass '{review_pass['id']}' exited with code {exit_code}. Continuing...{RESET}")
 
-    banner(f"All done! ({_format_duration(time.time() - t0)} total)", GREEN)
+
+def _display_pre_run_warning(skip_permissions: bool) -> None:
+    """Show a warning about permissions and wait 5 seconds for the user to abort."""
+    if skip_permissions:
+        colour = RED
+        heading = "WARNING: --dangerously-skip-permissions is ENABLED"
+        body_lines = [
+            "Claude Code will execute ALL actions without asking for approval.",
+            "This includes writing files, running shell commands, and deleting code.",
+            "Make sure you have committed or backed up your work before proceeding.",
+        ]
+        countdown = "Starting in 5 seconds (Ctrl+C to abort)..."
+    else:
+        colour = YELLOW
+        heading = "WARNING: Running without --dangerously-skip-permissions"
+        body_lines = [
+            "Claude Code requires interactive permission prompts to write files,",
+            "but claudeloop cannot relay those prompts (stdin is disconnected).",
+            "Passes that modify code will likely FAIL or HANG.",
+            "",
+            "Re-run with:",
+            f"  {BOLD}claudeloop --dangerously-skip-permissions ...{RESET}{colour}",
+        ]
+        countdown = "Continuing anyway in 5 seconds (Ctrl+C to abort)..."
+
+    print(f"\n{colour}{BOLD}{'=' * RULE_WIDTH}")
+    print(f"  {heading}")
+    print(f"{'=' * RULE_WIDTH}{RESET}")
+    for line in body_lines:
+        print(f"{colour}  {line}{RESET}")
+    print(f"\n{colour}  {countdown}{RESET}")
+
+    try:
+        time.sleep(5)
+    except KeyboardInterrupt:
+        print(f"\n{DIM}Aborted.{RESET}")
+        sys.exit(0)
+
+
+def main() -> None:
+    """CLI entry point: parse arguments and run the configured review suite."""
+    args = _build_argument_parser().parse_args()
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.WARNING,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    try:
+        workdir = str(Path(args.dir).resolve())
+    except OSError as exc:
+        _fatal(f"Cannot resolve directory '{args.dir}': {exc}")
+    if not Path(workdir).is_dir():
+        _fatal(f"Directory not found: {workdir}")
+
+    if args.idle_timeout < 1:
+        _fatal("--idle-timeout must be at least 1 second")
+    if args.pause < 0:
+        _fatal("--pause cannot be negative")
+
+    if args.all_passes:
+        selected_ids = PASS_IDS
+    elif args.passes:
+        selected_ids = args.passes
+    else:
+        selected_ids = TIERS[args.level or DEFAULT_TIER]
+    selected_passes = [p for p in REVIEW_PASSES if p["id"] in selected_ids]
+    num_cycles = max(1, args.cycles)
+    total_steps = len(selected_passes) * num_cycles
+
+    _print_run_summary(workdir, selected_passes, num_cycles, total_steps, args.idle_timeout, args.dry_run)
+
+    if not args.dry_run:
+        _display_pre_run_warning(args.dangerously_skip_permissions)
+
+    suite_start_time = time.time()
+    try:
+        _run_review_suite(selected_passes, num_cycles, workdir, args)
+    except KeyboardInterrupt:
+        elapsed = _format_duration(time.time() - suite_start_time)
+        print(f"\n{YELLOW}Interrupted after {elapsed}. Partial results may have been applied.{RESET}")
+        sys.exit(130)
+    banner(f"All done! ({_format_duration(time.time() - suite_start_time)} total)", GREEN)
 
 
 if __name__ == "__main__":
