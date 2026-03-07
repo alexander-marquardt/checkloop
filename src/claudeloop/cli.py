@@ -6,12 +6,12 @@ Runs a configurable suite of review passes (readability, DRY, tests, security,
 etc.) over an existing codebase. Point it at a directory and walk away.
 
 Usage:
-    claudeloop                            # review current directory (basic tier)
-    claudeloop --dir ~/my-project         # review a specific directory
-    claudeloop --cycles 3                 # repeat the full suite 3x
-    claudeloop --passes readability dry tests
-    claudeloop --all-passes --cycles 2
-    claudeloop --dry-run                  # preview without running
+    claudeloop --dir ~/my-project                        # basic tier review
+    claudeloop --dir ~/my-project --level thorough       # thorough review
+    claudeloop --dir ~/my-project --cycles 3             # repeat the full suite 3x
+    claudeloop --dir ~/my-project --passes readability dry tests
+    claudeloop --dir ~/my-project --all-passes --cycles 2
+    claudeloop --dir ~/my-project --dry-run              # preview without running
 """
 
 from __future__ import annotations
@@ -1007,18 +1007,18 @@ def _build_argument_parser() -> argparse.ArgumentParser:
             *(f"  {p['id']:14s}  {p['label']}" for p in REVIEW_PASSES),
             "",
             "Examples:",
-            "  claudeloop                                  # basic tier (default)",
-            "  claudeloop --level thorough                 # thorough tier",
-            "  claudeloop --level exhaustive --cycles 2    # exhaustive, repeat 2x",
-            "  claudeloop --passes readability security    # manual override",
-            "  claudeloop --all-passes                     # same as --level exhaustive",
-            "  claudeloop --dry-run",
+            "  claudeloop --dir .                                  # basic tier (default)",
+            "  claudeloop --dir ~/proj --level thorough            # thorough tier",
+            "  claudeloop --dir ~/proj --level exhaustive --cycles 2",
+            "  claudeloop --dir ~/proj --passes readability security",
+            "  claudeloop --dir ~/proj --all-passes                # same as --level exhaustive",
+            "  claudeloop --dir ~/proj --dry-run",
         ]),
     )
 
     parser.add_argument(
-        "--dir", "-d", default=".",
-        help="Project directory to review (default: current directory)",
+        "--dir", "-d", required=True,
+        help="Project directory to review",
     )
     parser.add_argument(
         "--level", "-l", choices=list(TIERS), default=None,

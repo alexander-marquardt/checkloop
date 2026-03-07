@@ -18,26 +18,26 @@ uv sync
 
 ## Usage
 
-Run with `uv run claudeloop` from the project directory:
+Run with `uv run claudeloop` from the project directory. `--dir` is required:
 
 ```bash
-# Review the current directory (basic tier: readability, dry, tests, docs)
-uv run claudeloop
+# Review a project (basic tier: readability, dry, tests, docs)
+uv run claudeloop --dir ~/my-project
 
 # Use the thorough tier for deeper review
-uv run claudeloop --level thorough
+uv run claudeloop --dir ~/my-project --level thorough
 
 # Exhaustive review — all 17 passes, repeat twice
-uv run claudeloop --level exhaustive --cycles 2
+uv run claudeloop --dir ~/my-project --level exhaustive --cycles 2
 
 # Pick specific passes manually (overrides tier)
-uv run claudeloop --passes readability security tests
+uv run claudeloop --dir ~/my-project --passes readability security tests
 
 # Preview without running
-uv run claudeloop --dry-run
+uv run claudeloop --dir ~/my-project --dry-run
 
 # See what Claude is doing in detail
-uv run claudeloop -v
+uv run claudeloop --dir ~/my-project -v
 ```
 
 To make `claudeloop` available globally (without `uv run`):
@@ -105,7 +105,7 @@ uv run claudeloop --cycles 5 --converged-at-percentage 0.5
 ## Options
 
 ```
---dir, -d DIR          Project directory (default: current directory)
+--dir, -d DIR          Project directory to review (required)
 --level, -l TIER       Review depth: basic, thorough, exhaustive (default: basic)
 --passes PASS [...]    Manually select passes (overrides --level)
 --all-passes           Run all 17 passes (same as --level exhaustive)

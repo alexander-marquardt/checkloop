@@ -600,9 +600,9 @@ class TestBuildArgumentParser:
         assert ns.verbose is False
         assert ns.pause == cli.DEFAULT_PAUSE_SECONDS
 
-    def test_dir_defaults_to_current_directory(self) -> None:
-        ns = cli._build_argument_parser().parse_args([])
-        assert ns.dir == "."
+    def test_dir_is_required(self) -> None:
+        with pytest.raises(SystemExit):
+            cli._build_argument_parser().parse_args([])
 
     def test_dir(self) -> None:
         ns = _parse_cli(["--dir", "/foo"])
