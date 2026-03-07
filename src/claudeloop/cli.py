@@ -196,10 +196,10 @@ def _git_run(
 
 def _is_git_repo(workdir: str) -> bool:
     """Return True if workdir is inside a git repository."""
-    result = _git_run(workdir, "rev-parse", "--is-inside-work-tree").returncode == 0
-    if not result:
+    is_repo = _git_run(workdir, "rev-parse", "--is-inside-work-tree").returncode == 0
+    if not is_repo:
         logger.info("Not a git repo: %s", workdir)
-    return result
+    return is_repo
 
 
 def _git_head_sha(workdir: str) -> str | None:
@@ -262,11 +262,12 @@ def _count_tracked_lines(workdir: str) -> int:
     Reads files in small chunks to avoid loading large files entirely into
     memory, which matters for long-running sessions on big repos.
     """
-    t0 = time.time()
+    start_time = time.time()
     ls_result = _git_run(workdir, "ls-files", "-z", text=False)
     if ls_result.returncode != 0:
         logger.warning("git ls-files failed (rc=%d) — cannot count tracked lines", ls_result.returncode)
         return 1  # avoid division by zero
+    # -z flag outputs null-separated paths; split and decode, dropping empty trailing entry
     tracked_paths = [f.decode("utf-8", errors="replace") for f in ls_result.stdout.split(b"\0") if f]
     total = 0
     resolved_workdir = Path(workdir).resolve()
@@ -278,10 +279,10 @@ def _count_tracked_lines(workdir: str) -> int:
             total += _count_file_lines(absolute_path)
         except OSError as exc:
             logger.debug("Could not read tracked file %s: %s", relative_path, exc)
-    result = max(total, 1)  # minimum 1 to avoid division by zero
-    elapsed = time.time() - t0
-    logger.info("Counted %d tracked lines across %d files in %.2fs", result, len(tracked_paths), elapsed)
-    return result
+    total_or_min = max(total, 1)  # minimum 1 to avoid division by zero
+    elapsed = time.time() - start_time
+    logger.info("Counted %d tracked lines across %d files in %.2fs", total_or_min, len(tracked_paths), elapsed)
+    return total_or_min
 
 
 # Cache: resolved workdir path → total tracked line count. Avoids re-scanning per pass.
@@ -296,7 +297,7 @@ def _count_lines_changed(workdir: str, base_sha: str, target: str = "HEAD") -> i
     changes, pass ``target=""`` (empty string triggers ``git diff <base>``).
     """
     diff_args = ["diff", "--shortstat", base_sha]
-    if target:
+    if target:  # empty string means diff against working tree (uncommitted changes)
         diff_args.append(target)
     result = _git_run(workdir, *diff_args)
     if result.returncode != 0:
@@ -827,9 +828,9 @@ def _spawn_claude_process(
     children it spawns (language servers, tool runners, etc.), preventing
     orphaned processes from accumulating memory across many passes.
     """
-    # Strip CLAUDECODE env var — its presence causes nested `claude` processes
-    # to refuse to start when claudeloop is invoked from within a Claude session.
-    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+    # Strip CLAUDECODE env var — its presence causes nested claude processes
+    # to refuse to start when claudeloop is invoked from within a Claude Code session.
+    clean_env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
 
     logger.info("Spawning subprocess: %s (cwd=%s)", cmd[:3], workdir)
     try:
@@ -839,7 +840,7 @@ def _spawn_claude_process(
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            env=env,
+            env=clean_env,
             start_new_session=True,  # creates a new process group
         )
     except FileNotFoundError:
@@ -852,12 +853,16 @@ def _spawn_claude_process(
 
 
 def _read_stdout_chunk(stdout: IO[bytes]) -> bytes:
-    """Read a chunk from stdout, preferring non-blocking read1 when available."""
+    """Read a chunk from stdout, preferring non-blocking read1 when available.
+
+    BufferedReader exposes read1() which returns available data without blocking
+    for the full chunk size. Falls back to os.read() for raw file descriptors.
+    """
     try:
         read1 = getattr(stdout, "read1", None)
         if read1 is not None:
-            result: bytes = read1(_READ_CHUNK_SIZE)
-            return result
+            chunk: bytes = read1(_READ_CHUNK_SIZE)
+            return chunk
         return os.read(stdout.fileno(), _READ_CHUNK_SIZE)
     except OSError as exc:
         logger.debug("stdout read failed: %s", exc)
@@ -937,7 +942,7 @@ def _stream_process_output(
                 break
 
             try:
-                # Poll stdout with a 1-second timeout so we can check idle/exit between reads
+                # 1s timeout lets us check idle timeout and process exit between reads
                 ready, _, _ = select.select([stdout], [], [], 1.0)
             except (OSError, ValueError) as exc:
                 logger.debug("select() failed (fd may be closed): %s", exc)
@@ -1295,6 +1300,7 @@ def _run_single_pass(
     logger.info("Pass started: id=%s, label=%s, step=%s", review_pass["id"], review_pass["label"], step_label)
     _print_banner(f"{step_label} {review_pass['label']}", CYAN)
 
+    # changed_files_prefix is dynamically attached to args by main() when --changed-only is used
     changed_prefix = getattr(args, "changed_files_prefix", "")
     prompt = changed_prefix + review_pass["prompt"] + COMMIT_MESSAGE_INSTRUCTIONS
 
