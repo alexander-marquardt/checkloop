@@ -31,15 +31,17 @@ def _parse_cli(args: list[str]) -> argparse.Namespace:
     return cli._build_argument_parser().parse_args(args)
 
 
+_SHARED_ARG_DEFAULTS: dict[str, Any] = dict(
+    pause=0,
+    idle_timeout=cli.DEFAULT_IDLE_TIMEOUT,
+    verbose=False,
+    dangerously_skip_permissions=False,
+)
+
+
 def _make_suite_args(*, dry_run: bool = True, **overrides: Any) -> argparse.Namespace:
     """Build an argparse.Namespace for _run_review_suite / _run_single_pass tests."""
-    defaults = dict(
-        pause=0,
-        dry_run=dry_run,
-        idle_timeout=120,
-        verbose=False,
-        dangerously_skip_permissions=False,
-    )
+    defaults = {**_SHARED_ARG_DEFAULTS, "dry_run": dry_run}
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
 
@@ -47,20 +49,17 @@ def _make_suite_args(*, dry_run: bool = True, **overrides: Any) -> argparse.Name
 def _make_main_mock_args(*, dry_run: bool = False, **overrides: Any) -> mock.MagicMock:
     """Build a MagicMock with all attributes main() reads from parsed args."""
     args = mock.MagicMock()
-    defaults = dict(
-        verbose=False,
-        debug=False,
-        dir="/tmp",
-        idle_timeout=120,
-        pause=0,
-        cycles=1,
-        converged_at_percentage=0.1,
-        all_passes=False,
-        passes=["readability"],
-        level=None,
-        dry_run=dry_run,
-        dangerously_skip_permissions=False,
-    )
+    defaults = {
+        **_SHARED_ARG_DEFAULTS,
+        "debug": False,
+        "dir": "/tmp",
+        "cycles": 1,
+        "converged_at_percentage": cli.DEFAULT_CONVERGENCE_THRESHOLD,
+        "all_passes": False,
+        "passes": ["readability"],
+        "level": None,
+        "dry_run": dry_run,
+    }
     defaults.update(overrides)
     for key, value in defaults.items():
         setattr(args, key, value)
@@ -277,14 +276,14 @@ class TestSummariseToolUse:
         result = cli._summarise_tool_use("Bash", {"command": ""})
         assert "$ " in result
 
-    def test_bash_command_exactly_80_chars(self) -> None:
-        cmd = "x" * 80
+    def test_bash_command_at_display_limit(self) -> None:
+        cmd = "x" * cli._BASH_DISPLAY_LIMIT
         result = cli._summarise_tool_use("Bash", {"command": cmd})
         assert "..." not in result
         assert cmd in result
 
-    def test_bash_command_81_chars(self) -> None:
-        cmd = "x" * 81
+    def test_bash_command_over_display_limit(self) -> None:
+        cmd = "x" * (cli._BASH_DISPLAY_LIMIT + 1)
         result = cli._summarise_tool_use("Bash", {"command": cmd})
         assert result.endswith("...")
 
@@ -596,10 +595,10 @@ class TestBuildArgumentParser:
         assert ns.level is None
         assert ns.all_passes is False
         assert ns.cycles == 1
-        assert ns.idle_timeout == 120
+        assert ns.idle_timeout == cli.DEFAULT_IDLE_TIMEOUT
         assert ns.dry_run is False
         assert ns.verbose is False
-        assert ns.pause == 2
+        assert ns.pause == cli.DEFAULT_PAUSE_SECONDS
 
     def test_dir_defaults_to_current_directory(self) -> None:
         ns = cli._build_argument_parser().parse_args([])
@@ -1062,7 +1061,7 @@ class TestDisplayPreRunWarning:
             cli._display_pre_run_warning(skip_permissions=True)
         out = capsys.readouterr().out
         assert "dangerously-skip-permissions is ENABLED" in out
-        assert "Starting in 5 seconds" in out
+        assert f"Starting in {cli._PRE_RUN_WARNING_DELAY} seconds" in out
 
     def test_skip_permissions_false(self, capsys: pytest.CaptureFixture[str]) -> None:
         with mock.patch("time.sleep"):
@@ -1108,7 +1107,7 @@ class TestReadStdoutChunk:
         mock_stdout.read1.return_value = b"data"
         result = cli._read_stdout_chunk(mock_stdout)
         assert result == b"data"
-        mock_stdout.read1.assert_called_once_with(8192)
+        mock_stdout.read1.assert_called_once_with(cli._READ_CHUNK_SIZE)
 
     def test_falls_back_to_os_read(self) -> None:
         mock_stdout = mock.MagicMock(spec=["fileno"])
@@ -1484,9 +1483,9 @@ class TestCountTrackedLines:
             assert count == 3  # only text file lines
 
     def test_large_file_multi_chunk(self, tmp_path: Path) -> None:
-        """Files larger than the initial 8192-byte header are read in chunks."""
+        """Files larger than the initial header read are processed in chunks."""
         large_file = tmp_path / "big.txt"
-        # Create a file with content larger than the 8192-byte header read
+        # Create a file with content larger than _READ_CHUNK_SIZE
         line = "x" * 100 + "\n"  # 101 bytes per line
         num_lines = 200  # ~20200 bytes total, well beyond 8192
         large_file.write_text(line * num_lines)

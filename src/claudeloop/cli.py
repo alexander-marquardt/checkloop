@@ -49,6 +49,12 @@ DEFAULT_IDLE_TIMEOUT = 120
 DEFAULT_PAUSE_SECONDS = 2
 DEFAULT_CONVERGENCE_THRESHOLD = 0.1  # percent of total lines changed
 
+_READ_CHUNK_SIZE = 8192
+_DRAIN_CHUNK_SIZE = 65536
+_PROCESS_WAIT_TIMEOUT = 5
+_PRE_RUN_WARNING_DELAY = 5
+_BASH_DISPLAY_LIMIT = 80
+
 COMMIT_MESSAGE_INSTRUCTIONS = (
     "\n\nIf you make any git commits, follow these commit message rules:\n"
     "- Maximum 5-10 lines\n"
@@ -221,11 +227,11 @@ def _count_file_lines(filepath: Path) -> int:
     """Count newlines in a text file, reading in chunks. Returns 0 for binary files."""
     with open(filepath, "rb") as file:
         # Sniff the first 8 KB for null bytes to detect binary files
-        header = file.read(8192)
+        header = file.read(_READ_CHUNK_SIZE)
         if b"\0" in header:
             return 0  # null byte detected — skip binary files
         total = header.count(b"\n")
-        for chunk in iter(lambda: file.read(65536), b""):
+        for chunk in iter(lambda: file.read(_DRAIN_CHUNK_SIZE), b""):
             total += chunk.count(b"\n")
         return total
 
@@ -593,7 +599,7 @@ def _summarise_tool_use(tool_name: str, tool_input: dict[str, Any]) -> str:
         return f" {tool_input['file_path']}"
     if normalised_name == "bash" and "command" in tool_input:
         command = tool_input["command"]
-        return f" $ {command[:77]}..." if len(command) > 80 else f" $ {command}"
+        return f" $ {command[:_BASH_DISPLAY_LIMIT - 3]}..." if len(command) > _BASH_DISPLAY_LIMIT else f" $ {command}"
     if normalised_name == "glob" and "pattern" in tool_input:
         return f" {tool_input['pattern']}"
     if normalised_name == "grep" and "pattern" in tool_input:
@@ -721,9 +727,9 @@ def _read_stdout_chunk(stdout: IO[bytes]) -> bytes:
     try:
         read1 = getattr(stdout, "read1", None)
         if read1 is not None:
-            result: bytes = read1(8192)
+            result: bytes = read1(_READ_CHUNK_SIZE)
             return result
-        return os.read(stdout.fileno(), 8192)
+        return os.read(stdout.fileno(), _READ_CHUNK_SIZE)
     except OSError as exc:
         logger.debug("stdout read failed: %s", exc)
         return b""
@@ -738,7 +744,7 @@ def _drain_remaining_stdout(
     """Read all remaining data from stdout after the process has exited."""
     try:
         while True:
-            remaining = os.read(stdout.fileno(), 65536)
+            remaining = os.read(stdout.fileno(), _DRAIN_CHUNK_SIZE)
             if not remaining:
                 break
             output_buffer.extend(remaining)
@@ -853,14 +859,14 @@ def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
 
     _signal_process_group(pgid, signal.SIGTERM)
     try:
-        process.wait(timeout=5)
+        process.wait(timeout=_PROCESS_WAIT_TIMEOUT)
         return
     except subprocess.TimeoutExpired:
         pass
 
     _signal_process_group(pgid, signal.SIGKILL)
     try:
-        process.wait(timeout=5)
+        process.wait(timeout=_PROCESS_WAIT_TIMEOUT)
     except subprocess.TimeoutExpired:
         logger.warning("Process %d did not exit after SIGKILL", process.pid)
 
@@ -1200,7 +1206,7 @@ def _display_pre_run_warning(skip_permissions: bool) -> None:
             "This includes writing files, running shell commands, and deleting code.",
             "Make sure you have committed or backed up your work before proceeding.",
         ]
-        countdown = "Starting in 5 seconds (Ctrl+C to abort)..."
+        countdown = f"Starting in {_PRE_RUN_WARNING_DELAY} seconds (Ctrl+C to abort)..."
     else:
         warning_colour = YELLOW
         heading = "WARNING: Running without --dangerously-skip-permissions"
@@ -1212,7 +1218,7 @@ def _display_pre_run_warning(skip_permissions: bool) -> None:
             "Re-run with:",
             f"  {BOLD}claudeloop --dangerously-skip-permissions ...{RESET}{warning_colour}",
         ]
-        countdown = "Continuing anyway in 5 seconds (Ctrl+C to abort)..."
+        countdown = f"Continuing anyway in {_PRE_RUN_WARNING_DELAY} seconds (Ctrl+C to abort)..."
 
     print(f"\n{warning_colour}{BOLD}{'=' * RULE_WIDTH}")
     print(f"  {heading}")
@@ -1222,7 +1228,7 @@ def _display_pre_run_warning(skip_permissions: bool) -> None:
     print(f"\n{warning_colour}  {countdown}{RESET}")
 
     try:
-        time.sleep(5)
+        time.sleep(_PRE_RUN_WARNING_DELAY)
     except KeyboardInterrupt:
         print(f"\n{DIM}Aborted.{RESET}")
         sys.exit(0)
