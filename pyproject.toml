@@ -25,6 +25,7 @@ dependencies = []
 Homepage = "https://github.com/alexander-marquardt/claudeloop"
 Repository = "https://github.com/alexander-marquardt/claudeloop"
 Issues = "https://github.com/alexander-marquardt/claudeloop/issues"
+Blog = "https://alexmarquardt.com/ai-tools/claudeloop-autonomous-code-review/"
 
 [project.scripts]
 claudeloop = "claudeloop.cli:main"
