@@ -44,16 +44,16 @@ DIM    = "\033[2m"
 BLUE   = "\033[94m"
 
 
-RULE_WIDTH = 72
-DEFAULT_IDLE_TIMEOUT = 120
-DEFAULT_PAUSE_SECONDS = 2
+RULE_WIDTH = 72  # character width for banner horizontal rules
+DEFAULT_IDLE_TIMEOUT = 120  # seconds before killing a silent subprocess
+DEFAULT_PAUSE_SECONDS = 2  # seconds between consecutive review passes
 DEFAULT_CONVERGENCE_THRESHOLD = 0.1  # percent of total lines changed
 
-_READ_CHUNK_SIZE = 8192
-_DRAIN_CHUNK_SIZE = 65536
-_PROCESS_WAIT_TIMEOUT = 5
-_PRE_RUN_WARNING_DELAY = 5
-_BASH_DISPLAY_LIMIT = 80
+_READ_CHUNK_SIZE = 8192  # bytes per stdout read during streaming
+_DRAIN_CHUNK_SIZE = 65536  # bytes per read when draining after process exit
+_PROCESS_WAIT_TIMEOUT = 5  # seconds to wait for process group to die
+_PRE_RUN_WARNING_DELAY = 5  # countdown seconds before starting review
+_BASH_DISPLAY_LIMIT = 80  # max chars shown for bash commands in tool summaries
 
 COMMIT_MESSAGE_INSTRUCTIONS: str = (
     "\n\nIf you make any git commits, follow these commit message rules:\n"
@@ -68,11 +68,11 @@ COMMIT_MESSAGE_INSTRUCTIONS: str = (
 def _fatal(msg: str) -> NoReturn:
     """Log an error, print it in red, and exit with code 1."""
     logger.error("%s", msg)
-    print(f"{RED}{msg}{RESET}")
+    print_status(msg, RED)
     sys.exit(1)
 
 
-def _get_current_rss_mb() -> float:
+def _measure_current_rss_mb() -> float:
     """Return the current RSS of this process in MB (not peak — actual current)."""
     try:
         pid = os.getpid()
@@ -91,7 +91,7 @@ def _get_current_rss_mb() -> float:
     return usage.ru_maxrss / scale
 
 
-def _get_child_pids() -> list[int]:
+def _find_child_pids() -> list[int]:
     """Return PIDs of surviving child processes (including orphaned grandchildren)."""
     try:
         result = subprocess.run(
@@ -118,7 +118,7 @@ def _kill_orphaned_children(pids: list[int] | None = None) -> int:
     Accepts an optional pre-fetched pid list to avoid a redundant pgrep spawn.
     """
     killed = 0
-    for child_pid in (pids if pids is not None else _get_child_pids()):
+    for child_pid in (pids if pids is not None else _find_child_pids()):
         try:
             os.kill(child_pid, signal.SIGKILL)
             killed += 1
@@ -130,16 +130,21 @@ def _kill_orphaned_children(pids: list[int] | None = None) -> int:
 
 def _log_memory_usage(label: str) -> None:
     """Log current RSS and child process count after each pass."""
-    rss_mb = _get_current_rss_mb()
-    child_pids = _get_child_pids()
+    rss_mb = _measure_current_rss_mb()
+    child_pids = _find_child_pids()
     logger.info("Memory [%s]: rss=%.0fMB, children=%d", label, rss_mb, len(child_pids))
     print_status(f"  Memory: {rss_mb:.0f}MB RSS, {len(child_pids)} child processes", DIM)
     if child_pids:
-        print(f"{YELLOW}  Warning: {len(child_pids)} child process(es) still alive — killing.{RESET}")
-        # Pass pids directly to avoid a second pgrep subprocess spawn.
-        killed = _kill_orphaned_children(child_pids)
-        if killed:
-            print_status(f"  Killed {killed} orphaned process(es).", YELLOW)
+        _warn_and_kill_orphans(child_pids)
+
+
+def _warn_and_kill_orphans(child_pids: list[int]) -> None:
+    """Warn about surviving child processes and kill them."""
+    print_status(f"  Warning: {len(child_pids)} child process(es) still alive — killing.", YELLOW)
+    # Pass pids directly to avoid a second pgrep subprocess spawn.
+    killed = _kill_orphaned_children(child_pids)
+    if killed:
+        print_status(f"  Killed {killed} orphaned process(es).", YELLOW)
 
 
 # --- Git helpers (convergence detection) --------------------------------------
@@ -263,10 +268,11 @@ def _count_tracked_lines(workdir: str) -> int:
     return max(total, 1)  # minimum 1 to avoid division by zero
 
 
+# Cache: resolved workdir path → total tracked line count. Avoids re-scanning per pass.
 _total_lines_cache: dict[str, int] = {}
 
 
-def _get_lines_changed(workdir: str, base_sha: str, target: str = "HEAD") -> int:
+def _count_lines_changed(workdir: str, base_sha: str, target: str = "HEAD") -> int:
     """Return total lines changed (insertions + deletions) between two refs.
 
     If *target* is ``"HEAD"``, compares *base_sha* to ``HEAD``.  Pass a different
@@ -283,7 +289,7 @@ def _get_lines_changed(workdir: str, base_sha: str, target: str = "HEAD") -> int
     return _parse_shortstat(result.stdout)
 
 
-def _get_total_tracked_lines(workdir: str) -> int:
+def _cached_total_tracked_lines(workdir: str) -> int:
     """Return cached total line count for all tracked files in *workdir*."""
     cache_key = str(Path(workdir).resolve())
     if cache_key not in _total_lines_cache:
@@ -291,12 +297,17 @@ def _get_total_tracked_lines(workdir: str) -> int:
     return _total_lines_cache[cache_key]
 
 
-def _get_change_percentage(workdir: str, base_sha: str) -> float:
-    """Return the percentage of total tracked lines that changed since *base_sha*."""
-    lines_changed = _get_lines_changed(workdir, base_sha)
+def _compute_change_stats(workdir: str, base_sha: str) -> tuple[int, float]:
+    """Return (lines_changed, change_percentage) since *base_sha*."""
+    lines_changed = _count_lines_changed(workdir, base_sha)
     if lines_changed == 0:
-        return 0.0
-    return (lines_changed / _get_total_tracked_lines(workdir)) * 100
+        return 0, 0.0
+    return lines_changed, (lines_changed / _cached_total_tracked_lines(workdir)) * 100
+
+
+def _compute_change_percentage(workdir: str, base_sha: str) -> float:
+    """Return the percentage of total tracked lines that changed since *base_sha*."""
+    return _compute_change_stats(workdir, base_sha)[1]
 
 
 def print_banner(title: str, colour: str = CYAN) -> None:
@@ -626,20 +637,20 @@ def _format_duration(total_seconds: float) -> str:
     return f"{hours}h{minutes:02d}m{seconds:02d}s"
 
 
-_TOOLS_WITH_FILE_PATH: set[str] = {"read", "read_file", "edit", "edit_file", "write", "write_file"}
+_FILE_PATH_TOOL_NAMES: set[str] = {"read", "read_file", "edit", "edit_file", "write", "write_file"}
 
 
 def _summarise_tool_use(tool_name: str, tool_input: dict[str, Any]) -> str:
     """Return a short human-readable summary for a tool-use event."""
-    normalised_name = tool_name.lower()
-    if normalised_name in _TOOLS_WITH_FILE_PATH and "file_path" in tool_input:
+    tool_name_lower = tool_name.lower()
+    if tool_name_lower in _FILE_PATH_TOOL_NAMES and "file_path" in tool_input:
         return f" {tool_input['file_path']}"
-    if normalised_name == "bash" and "command" in tool_input:
+    if tool_name_lower == "bash" and "command" in tool_input:
         command = tool_input["command"]
         return f" $ {command[:_BASH_DISPLAY_LIMIT - 3]}..." if len(command) > _BASH_DISPLAY_LIMIT else f" $ {command}"
-    if normalised_name == "glob" and "pattern" in tool_input:
+    if tool_name_lower == "glob" and "pattern" in tool_input:
         return f" {tool_input['pattern']}"
-    if normalised_name == "grep" and "pattern" in tool_input:
+    if tool_name_lower == "grep" and "pattern" in tool_input:
         return f" /{tool_input['pattern']}/"
     return ""
 
@@ -678,6 +689,7 @@ def _print_result_event(event: dict[str, Any], elapsed_prefix: str) -> None:
         print(result_text)
 
 
+# Maps stream-json event types to their display handlers.
 _EVENT_TYPE_HANDLERS: dict[str, Any] = {
     "assistant": _print_assistant_event,
     "tool_use": _print_tool_use_event,
@@ -802,10 +814,8 @@ def _check_idle_timeout(
     """Return True and kill the process if it has been idle too long."""
     now = time.time()
     if now - last_output_time > idle_timeout:
-        print(
-            f"\n{RED}Idle for {idle_timeout}s — killing "
-            f"(ran {_format_duration(now - pass_start_time)}).{RESET}"
-        )
+        print_status(f"\nIdle for {idle_timeout}s — killing "
+                     f"(ran {_format_duration(now - pass_start_time)}).", RED)
         _kill_process_group(process)
         return True
     return False
@@ -940,7 +950,7 @@ def run_claude(
     print_status(f"$ {' '.join(cmd[:3])} [prompt omitted for brevity]", DIM)
 
     if dry_run:
-        print(f"{YELLOW}[DRY RUN] Would run in {workdir}:{RESET}")
+        print_status(f"[DRY RUN] Would run in {workdir}:", YELLOW)
         truncated = prompt[:120] + ("..." if len(prompt) > 120 else "")
         print(f"  Prompt: {truncated}")
         return 0
@@ -1094,7 +1104,7 @@ def _print_run_summary(
     if convergence_threshold > 0:
         print(f"  Convergence  : stop when < {convergence_threshold}% of lines change")
     if dry_run:
-        print(f"  {YELLOW}DRY RUN{RESET}")
+        print_status("  DRY RUN", YELLOW)
 
 
 def _check_cycle_convergence(
@@ -1113,20 +1123,20 @@ def _check_cycle_convergence(
 
     if current_sha == base_sha:
         logger.info("Cycle %d: no changes detected — converged", cycle)
-        print(f"\n{GREEN}No changes in cycle {cycle} — converged.{RESET}")
+        print_status(f"\nNo changes in cycle {cycle} — converged.", GREEN)
         return True, prev_change_pct
 
-    change_pct = _get_change_percentage(workdir, base_sha)
-    print(f"\n{DIM}Cycle {cycle}: {change_pct:.2f}% of lines changed "
-          f"(threshold: {convergence_threshold}%){RESET}")
+    change_pct = _compute_change_percentage(workdir, base_sha)
+    print_status(f"\nCycle {cycle}: {change_pct:.2f}% of lines changed "
+                 f"(threshold: {convergence_threshold}%)")
 
     if prev_change_pct is not None and change_pct > prev_change_pct:
-        print(f"{YELLOW}Warning: changes increased ({prev_change_pct:.2f}% -> {change_pct:.2f}%) — "
-              f"possible oscillation.{RESET}")
+        print_status(f"Warning: changes increased ({prev_change_pct:.2f}% -> {change_pct:.2f}%) — "
+                     f"possible oscillation.", YELLOW)
 
     if change_pct < convergence_threshold:
         logger.info("Cycle %d: converged at %.2f%% (threshold: %.2f%%)", cycle, change_pct, convergence_threshold)
-        print(f"{GREEN}Converged at {change_pct:.2f}% (below {convergence_threshold}% threshold).{RESET}")
+        print_status(f"Converged at {change_pct:.2f}% (below {convergence_threshold}% threshold).", GREEN)
         return True, change_pct
 
     logger.info("Cycle %d: %.2f%% lines changed (threshold: %.2f%%), continuing", cycle, change_pct, convergence_threshold)
@@ -1149,7 +1159,7 @@ def _run_single_pass(
 
     if _looks_dangerous(prompt):
         logger.warning("Skipping pass '%s' — dangerous keywords detected in prompt", review_pass["id"])
-        print(f"{YELLOW}Skipping '{review_pass['id']}' — dangerous keywords detected.{RESET}")
+        print_status(f"Skipping '{review_pass['id']}' — dangerous keywords detected.", YELLOW)
         return False
 
     # Snapshot git state to detect changes
@@ -1165,24 +1175,24 @@ def _run_single_pass(
     )
     if exit_code != 0:
         logger.warning("Pass '%s' exited with code %d", review_pass["id"], exit_code)
-        print(f"{YELLOW}Pass '{review_pass['id']}' exited with code {exit_code}. Continuing...{RESET}")
+        print_status(f"Pass '{review_pass['id']}' exited with code {exit_code}. Continuing...", YELLOW)
 
-    # Check if anything changed and report stats
-    if sha_before is not None:
-        sha_after = _git_head_sha(workdir)
-        made_changes = sha_after != sha_before
-        if made_changes:
-            lines_changed = _get_lines_changed(workdir, sha_before, sha_after)
-            total_lines = _get_total_tracked_lines(workdir)
-            pct = (lines_changed / total_lines * 100) if total_lines > 0 else 0.0
-            print(f"{DIM}  {review_pass['id']}: {lines_changed} lines changed "
-                  f"({pct:.2f}% of codebase){RESET}")
-        else:
-            print(f"{DIM}  {review_pass['id']}: no changes{RESET}")
-    else:
-        made_changes = True  # assume changes if not a git repo
+    made_changes = _report_pass_changes(workdir, review_pass["id"], sha_before)
     logger.info("Pass '%s' made_changes=%s", review_pass["id"], made_changes)
     return made_changes
+
+
+def _report_pass_changes(workdir: str, pass_id: str, sha_before: str | None) -> bool:
+    """Compare git state before/after a pass, print stats, and return whether changes were made."""
+    if sha_before is None:
+        return True  # assume changes if not a git repo
+    sha_after = _git_head_sha(workdir)
+    if sha_after == sha_before:
+        print_status(f"  {pass_id}: no changes")
+        return False
+    lines_changed, pct = _compute_change_stats(workdir, sha_before)
+    print_status(f"  {pass_id}: {lines_changed} lines changed ({pct:.2f}% of codebase)")
+    return True
 
 
 def _run_review_suite(
@@ -1254,7 +1264,7 @@ def _filter_active_passes(
     ]
     skipped = len(selected_passes) - len(cycle_passes)
     if skipped > 0:
-        print(f"{DIM}Skipping {skipped} pass(es) that made no changes last cycle.{RESET}")
+        print_status(f"Skipping {skipped} pass(es) that made no changes last cycle.")
     return cycle_passes
 
 
@@ -1292,7 +1302,7 @@ def _display_pre_run_warning(skip_permissions: bool) -> None:
     try:
         time.sleep(_PRE_RUN_WARNING_DELAY)
     except KeyboardInterrupt:
-        print(f"\n{DIM}Aborted.{RESET}")
+        print_status("\nAborted.")
         sys.exit(0)
 
 
@@ -1345,7 +1355,7 @@ def _configure_logging(args: argparse.Namespace) -> None:
     )
 
 
-def _execute_suite(
+def _run_suite_with_error_handling(
     selected_passes: list[dict[str, str]],
     num_cycles: int,
     workdir: str,
@@ -1358,7 +1368,7 @@ def _execute_suite(
         _run_review_suite(selected_passes, num_cycles, workdir, args, convergence_threshold)
     except KeyboardInterrupt:
         elapsed = _format_duration(time.time() - suite_start_time)
-        print(f"\n{YELLOW}Interrupted after {elapsed}. Partial results may have been applied.{RESET}")
+        print_status(f"\nInterrupted after {elapsed}. Partial results may have been applied.", YELLOW)
         sys.exit(130)
     except FileNotFoundError as exc:
         logger.error("Required external tool not found: %s", exc)
@@ -1366,7 +1376,7 @@ def _execute_suite(
     except Exception:
         logger.exception("Unexpected error during review suite")
         elapsed = _format_duration(time.time() - suite_start_time)
-        print(f"\n{RED}Unexpected error after {elapsed}. Partial results may have been applied.{RESET}")
+        print_status(f"\nUnexpected error after {elapsed}. Partial results may have been applied.", RED)
         raise
     suite_elapsed = _format_duration(time.time() - suite_start_time)
     logger.info("Suite completed: elapsed=%s", suite_elapsed)
@@ -1407,7 +1417,7 @@ def main() -> None:
     if not args.dry_run:
         _display_pre_run_warning(args.dangerously_skip_permissions)
 
-    _execute_suite(selected_passes, num_cycles, workdir, args, convergence_threshold)
+    _run_suite_with_error_handling(selected_passes, num_cycles, workdir, args, convergence_threshold)
 
 
 if __name__ == "__main__":  # pragma: no cover

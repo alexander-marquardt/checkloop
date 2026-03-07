@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import io
 import json
 import logging
@@ -12,7 +13,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from unittest import mock
 
 import pytest
@@ -64,6 +65,32 @@ def _make_main_mock_args(*, dry_run: bool = False, **overrides: Any) -> mock.Mag
     for key, value in defaults.items():
         setattr(args, key, value)
     return args
+
+
+@contextlib.contextmanager
+def _patch_main_pipeline(
+    *,
+    suite_side_effect: type[BaseException] | BaseException | None = None,
+    **arg_overrides: Any,
+) -> Iterator[None]:
+    """Mock the standard main() pipeline for exception-path tests.
+
+    Patches argument parsing, directory resolution, validation, the pre-run
+    warning, and the review suite.  *suite_side_effect* is passed through
+    to ``_run_review_suite``'s mock so callers can inject exceptions.
+    """
+    mock_args = _make_main_mock_args(**arg_overrides)
+    suite_kwargs: dict[str, Any] = {}
+    if suite_side_effect is not None:
+        suite_kwargs["side_effect"] = suite_side_effect
+    with mock.patch.object(cli, "_build_argument_parser") as mock_parser:
+        mock_parser.return_value.parse_args.return_value = mock_args
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(cli, "_resolve_working_directory", return_value="/tmp"))
+            stack.enter_context(mock.patch.object(cli, "_validate_arguments"))
+            stack.enter_context(mock.patch.object(cli, "_display_pre_run_warning"))
+            stack.enter_context(mock.patch.object(cli, "_run_review_suite", **suite_kwargs))
+            yield
 
 
 # =============================================================================
@@ -759,8 +786,8 @@ class TestRunReviewSuite:
         with mock.patch.object(cli, "run_claude", return_value=0), \
              mock.patch.object(cli, "_is_git_repo", return_value=True), \
              mock.patch.object(cli, "_git_head_sha", side_effect=sha_sequence), \
-             mock.patch.object(cli, "_get_lines_changed", return_value=10), \
-             mock.patch.object(cli, "_get_total_tracked_lines", return_value=1000):
+             mock.patch.object(cli, "_count_lines_changed", return_value=10), \
+             mock.patch.object(cli, "_cached_total_tracked_lines", return_value=1000):
             cli._run_review_suite(passes, 2, "/tmp", args)
         out = capsys.readouterr().out
         assert "Skipping 1 pass(es)" in out
@@ -810,8 +837,8 @@ class TestRunReviewSuite:
         with mock.patch.object(cli, "run_claude", return_value=0), \
              mock.patch.object(cli, "_is_git_repo", return_value=True), \
              mock.patch.object(cli, "_git_head_sha", side_effect=sha_sequence), \
-             mock.patch.object(cli, "_get_lines_changed", return_value=10), \
-             mock.patch.object(cli, "_get_total_tracked_lines", return_value=1000):
+             mock.patch.object(cli, "_count_lines_changed", return_value=10), \
+             mock.patch.object(cli, "_cached_total_tracked_lines", return_value=1000):
             cli._run_review_suite(passes, 2, "/tmp", args)
         out = capsys.readouterr().out
         assert "Skipping" not in out
@@ -823,8 +850,8 @@ class TestRunReviewSuite:
         with mock.patch.object(cli, "run_claude", return_value=0), \
              mock.patch.object(cli, "_is_git_repo", return_value=True), \
              mock.patch.object(cli, "_git_head_sha", side_effect=["sha1", "sha2"]), \
-             mock.patch.object(cli, "_get_lines_changed", return_value=42), \
-             mock.patch.object(cli, "_get_total_tracked_lines", return_value=5000):
+             mock.patch.object(cli, "_count_lines_changed", return_value=42), \
+             mock.patch.object(cli, "_cached_total_tracked_lines", return_value=5000):
             cli._run_review_suite(passes, 1, "/tmp", args)
         out = capsys.readouterr().out
         assert "42 lines changed" in out
@@ -922,9 +949,9 @@ class TestConstants:
             assert "prompt" in p
 
     def test_file_path_tools_set(self) -> None:
-        assert "read" in cli._TOOLS_WITH_FILE_PATH
-        assert "edit" in cli._TOOLS_WITH_FILE_PATH
-        assert "write" in cli._TOOLS_WITH_FILE_PATH
+        assert "read" in cli._FILE_PATH_TOOL_NAMES
+        assert "edit" in cli._FILE_PATH_TOOL_NAMES
+        assert "write" in cli._FILE_PATH_TOOL_NAMES
 
 
 # =============================================================================
@@ -1251,8 +1278,8 @@ class TestGitCommitCycle:
             assert cli._git_commit_cycle("/tmp", 1) is False
 
 
-class TestGetChangePercentage:
-    """Tests for _get_change_percentage() convergence metric."""
+class TestComputeChangePercentage:
+    """Tests for _compute_change_percentage() convergence metric."""
 
     def test_calculates_percentage(self) -> None:
         resolved = str(Path("/tmp").resolve())
@@ -1267,20 +1294,20 @@ class TestGetChangePercentage:
             file_content = b"line\n" * 1000
             mock_open = mock.mock_open(read_data=file_content)
             with mock.patch("builtins.open", mock_open):
-                pct = cli._get_change_percentage("/tmp", "abc123")
+                pct = cli._compute_change_percentage("/tmp", "abc123")
                 assert 0 < pct < 100
         cli._total_lines_cache.pop(resolved, None)
 
     def test_zero_when_no_changes(self) -> None:
         with mock.patch("subprocess.run") as mock_run:
             mock_run.return_value = mock.MagicMock(returncode=0, stdout="")
-            pct = cli._get_change_percentage("/tmp", "abc123")
+            pct = cli._compute_change_percentage("/tmp", "abc123")
             assert pct == 0.0
 
     def test_failed_git_diff_returns_zero(self) -> None:
         with mock.patch.object(cli, "_git_run") as mock_git:
             mock_git.return_value = mock.Mock(returncode=1, stderr="error")
-            result = cli._get_change_percentage("/tmp", "abc123")
+            result = cli._compute_change_percentage("/tmp", "abc123")
             assert result == 0.0
 
     def test_cache_hit_skips_line_count(self) -> None:
@@ -1294,7 +1321,7 @@ class TestGetChangePercentage:
                     stdout=" 1 file changed, 10 insertions(+)",
                 )
                 with mock.patch.object(cli, "_count_tracked_lines") as mock_count:
-                    pct = cli._get_change_percentage("/tmp", "abc123")
+                    pct = cli._compute_change_percentage("/tmp", "abc123")
                     mock_count.assert_not_called()
                     assert pct == (10 / 500) * 100
         finally:
@@ -1327,7 +1354,7 @@ class TestConvergenceInSuite:
             with mock.patch.object(cli, "_is_git_repo", return_value=True):
                 with mock.patch.object(cli, "_git_head_sha", side_effect=["sha1", "sha2", "sha2", "sha3"]):
                     with mock.patch.object(cli, "_git_commit_cycle", return_value=True):
-                        with mock.patch.object(cli, "_get_change_percentage", return_value=0.05):
+                        with mock.patch.object(cli, "_compute_change_percentage", return_value=0.05):
                             cli._run_review_suite(passes, 3, "/tmp", args, convergence_threshold=0.1)
         out = capsys.readouterr().out
         assert "Converged" in out
@@ -1389,29 +1416,29 @@ class TestKillProcessGroup:
             cli._kill_process_group(mock_proc)
 
 
-class TestGetCurrentRssMb:
-    """Tests for _get_current_rss_mb() memory measurement."""
+class TestMeasureCurrentRssMb:
+    """Tests for _measure_current_rss_mb() memory measurement."""
 
     def test_returns_positive_value(self) -> None:
-        rss = cli._get_current_rss_mb()
+        rss = cli._measure_current_rss_mb()
         assert rss > 0
 
     def test_fallback_on_ps_failure(self) -> None:
         with mock.patch("subprocess.run", return_value=mock.MagicMock(returncode=1, stdout="")):
-            rss = cli._get_current_rss_mb()
+            rss = cli._measure_current_rss_mb()
             assert rss > 0  # falls back to resource.getrusage
 
 
-class TestGetChildPids:
-    """Tests for _get_child_pids()."""
+class TestFindChildPids:
+    """Tests for _find_child_pids()."""
 
     def test_returns_empty_when_no_children(self) -> None:
         with mock.patch("subprocess.run", return_value=mock.MagicMock(returncode=1, stdout="")):
-            assert cli._get_child_pids() == []
+            assert cli._find_child_pids() == []
 
     def test_returns_pids(self) -> None:
         with mock.patch("subprocess.run", return_value=mock.MagicMock(returncode=0, stdout="123\n456\n")):
-            assert cli._get_child_pids() == [123, 456]
+            assert cli._find_child_pids() == [123, 456]
 
 
 class TestKillOrphanedChildren:
@@ -1439,16 +1466,16 @@ class TestLogMemoryUsage:
     """Tests for _log_memory_usage() reporting."""
 
     def test_prints_memory_info(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch.object(cli, "_get_current_rss_mb", return_value=42.0):
-            with mock.patch.object(cli, "_get_child_pids", return_value=[]):
+        with mock.patch.object(cli, "_measure_current_rss_mb", return_value=42.0):
+            with mock.patch.object(cli, "_find_child_pids", return_value=[]):
                 cli._log_memory_usage("test-label")
         out = capsys.readouterr().out
         assert "42MB" in out
         assert "0 child" in out
 
     def test_kills_orphans_when_found(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch.object(cli, "_get_current_rss_mb", return_value=100.0):
-            with mock.patch.object(cli, "_get_child_pids", return_value=[123, 456]):
+        with mock.patch.object(cli, "_measure_current_rss_mb", return_value=100.0):
+            with mock.patch.object(cli, "_find_child_pids", return_value=[123, 456]):
                 with mock.patch.object(cli, "_kill_orphaned_children", return_value=2):
                     cli._log_memory_usage("test-label")
         out = capsys.readouterr().out
@@ -1458,8 +1485,8 @@ class TestLogMemoryUsage:
 
     def test_orphans_found_but_none_killed(self, capsys: pytest.CaptureFixture[str]) -> None:
         """Branch: child_pids is truthy but _kill_orphaned_children returns 0."""
-        with mock.patch.object(cli, "_get_current_rss_mb", return_value=50.0):
-            with mock.patch.object(cli, "_get_child_pids", return_value=[999]):
+        with mock.patch.object(cli, "_measure_current_rss_mb", return_value=50.0):
+            with mock.patch.object(cli, "_find_child_pids", return_value=[999]):
                 with mock.patch.object(cli, "_kill_orphaned_children", return_value=0):
                     cli._log_memory_usage("test-label")
         out = capsys.readouterr().out
@@ -1492,40 +1519,40 @@ class TestCommitMessageInstructions:
 
 
 # =============================================================================
-# _get_current_rss_mb — exception paths
+# _measure_current_rss_mb — exception paths
 # =============================================================================
 
-class TestGetCurrentRssMbExceptions:
-    """Tests for _get_current_rss_mb() exception fallback paths."""
+class TestMeasureCurrentRssMbExceptions:
+    """Tests for _measure_current_rss_mb() exception fallback paths."""
 
     def test_oserror_falls_back_to_resource(self) -> None:
         with mock.patch("subprocess.run", side_effect=OSError("nope")):
-            rss = cli._get_current_rss_mb()
+            rss = cli._measure_current_rss_mb()
             assert rss > 0  # uses resource.getrusage fallback
 
     def test_valueerror_falls_back_to_resource(self) -> None:
         with mock.patch("subprocess.run", side_effect=ValueError("bad")):
-            rss = cli._get_current_rss_mb()
+            rss = cli._measure_current_rss_mb()
             assert rss > 0
 
 
 # =============================================================================
-# _get_child_pids — exception paths
+# _find_child_pids — exception paths
 # =============================================================================
 
-class TestGetChildPidsExceptions:
-    """Tests for _get_child_pids() exception and edge-case paths."""
+class TestFindChildPidsExceptions:
+    """Tests for _find_child_pids() exception and edge-case paths."""
 
     def test_oserror_returns_empty(self) -> None:
         with mock.patch("subprocess.run", side_effect=OSError("nope")):
-            assert cli._get_child_pids() == []
+            assert cli._find_child_pids() == []
 
     def test_invalid_pid_lines_skipped(self) -> None:
         """Non-numeric lines in pgrep output are silently skipped."""
         with mock.patch("subprocess.run", return_value=mock.MagicMock(
             returncode=0, stdout="123\nnot_a_number\n456\n"
         )):
-            assert cli._get_child_pids() == [123, 456]
+            assert cli._find_child_pids() == [123, 456]
 
 
 # =============================================================================
@@ -1722,7 +1749,7 @@ class TestCheckCycleConvergence:
         """When changes increase, print oscillation warning."""
         with mock.patch.object(cli, "_git_commit_cycle"):
             with mock.patch.object(cli, "_git_head_sha", return_value="def456"):
-                with mock.patch.object(cli, "_get_change_percentage", return_value=5.0):
+                with mock.patch.object(cli, "_compute_change_percentage", return_value=5.0):
                     should_stop, pct = cli._check_cycle_convergence(
                         "/tmp", cycle=2, base_sha="abc123",
                         convergence_threshold=0.1, prev_change_pct=2.0,
@@ -1735,7 +1762,7 @@ class TestCheckCycleConvergence:
         """When changes are above threshold, return False."""
         with mock.patch.object(cli, "_git_commit_cycle"):
             with mock.patch.object(cli, "_git_head_sha", return_value="def456"):
-                with mock.patch.object(cli, "_get_change_percentage", return_value=1.5):
+                with mock.patch.object(cli, "_compute_change_percentage", return_value=1.5):
                     should_stop, pct = cli._check_cycle_convergence(
                         "/tmp", cycle=1, base_sha="abc123",
                         convergence_threshold=0.1, prev_change_pct=None,
@@ -1765,19 +1792,11 @@ class TestMainKeyboardInterrupt:
     """Tests for main() KeyboardInterrupt handling."""
 
     def test_keyboard_interrupt_exits_130(self, capsys: pytest.CaptureFixture[str]) -> None:
-        mock_args = _make_main_mock_args(dry_run=False)
-        with mock.patch.object(cli, "_build_argument_parser") as mock_parser:
-            mock_parser.return_value.parse_args.return_value = mock_args
-            with mock.patch.object(cli, "_resolve_working_directory", return_value="/tmp"):
-                with mock.patch.object(cli, "_validate_arguments"):
-                    with mock.patch.object(cli, "_display_pre_run_warning"):
-                        with mock.patch.object(cli, "_run_review_suite", side_effect=KeyboardInterrupt):
-                            with pytest.raises(SystemExit) as exc_info:
-                                cli.main()
-                            assert exc_info.value.code == 130
-
-        out = capsys.readouterr().out
-        assert "Interrupted" in out
+        with _patch_main_pipeline(suite_side_effect=KeyboardInterrupt):
+            with pytest.raises(SystemExit) as exc_info:
+                cli.main()
+            assert exc_info.value.code == 130
+        assert "Interrupted" in capsys.readouterr().out
 
 
 # =============================================================================
@@ -1934,31 +1953,19 @@ class TestMainFileNotFoundError:
     """Test main() FileNotFoundError handling."""
 
     def test_file_not_found_during_suite(self) -> None:
-        mock_args = _make_main_mock_args(dry_run=False)
-        with mock.patch.object(cli, "_build_argument_parser") as mock_parser:
-            mock_parser.return_value.parse_args.return_value = mock_args
-            with mock.patch.object(cli, "_resolve_working_directory", return_value="/tmp"):
-                with mock.patch.object(cli, "_validate_arguments"):
-                    with mock.patch.object(cli, "_display_pre_run_warning"):
-                        with mock.patch.object(cli, "_run_review_suite", side_effect=FileNotFoundError("claude")):
-                            with pytest.raises(SystemExit) as exc_info:
-                                cli.main()
-                            assert exc_info.value.code == 1
+        with _patch_main_pipeline(suite_side_effect=FileNotFoundError("claude")):
+            with pytest.raises(SystemExit) as exc_info:
+                cli.main()
+            assert exc_info.value.code == 1
 
 
 class TestMainUnexpectedException:
     """Test main() generic exception handling."""
 
     def test_unexpected_error_reraises(self) -> None:
-        mock_args = _make_main_mock_args(dry_run=False)
-        with mock.patch.object(cli, "_build_argument_parser") as mock_parser:
-            mock_parser.return_value.parse_args.return_value = mock_args
-            with mock.patch.object(cli, "_resolve_working_directory", return_value="/tmp"):
-                with mock.patch.object(cli, "_validate_arguments"):
-                    with mock.patch.object(cli, "_display_pre_run_warning"):
-                        with mock.patch.object(cli, "_run_review_suite", side_effect=RuntimeError("boom")):
-                            with pytest.raises(RuntimeError, match="boom"):
-                                cli.main()
+        with _patch_main_pipeline(suite_side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError, match="boom"):
+                cli.main()
 
 
 class TestMainVerboseLogging:
