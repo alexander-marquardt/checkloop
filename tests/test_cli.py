@@ -231,18 +231,23 @@ class TestLooksDangerous:
     def test_chmod_777_root(self) -> None:
         assert cli._looks_dangerous("chmod 777 /") is True
 
-    def test_delete_all(self) -> None:
-        assert cli._looks_dangerous("delete all files") is True
+    def test_delete_all_files(self) -> None:
+        assert cli._looks_dangerous("delete all files now") is True
+        assert cli._looks_dangerous("delete all records") is False  # only "delete all files" matches
 
-    def test_truncate(self) -> None:
-        assert cli._looks_dangerous("truncate the table") is True
+    def test_truncate_table(self) -> None:
+        assert cli._looks_dangerous("truncate table users") is True
+        assert cli._looks_dangerous("truncate the string") is False  # bare "truncate" no longer matches
 
     def test_format_keyword(self) -> None:
         assert cli._looks_dangerous("format c: drive") is True
         assert cli._looks_dangerous("format /dev/sda") is True
 
     def test_wipe(self) -> None:
-        assert cli._looks_dangerous("wipe everything") is True
+        assert cli._looks_dangerous("wipe disk now") is True
+        assert cli._looks_dangerous("wipe drive") is True
+        assert cli._looks_dangerous("wipe partition") is True
+        assert cli._looks_dangerous("wipe the cache") is False  # bare "wipe" no longer matches
 
     def test_etc_passwd(self) -> None:
         assert cli._looks_dangerous("cat /etc/passwd") is True
@@ -2551,5 +2556,216 @@ class TestPrintEventEdgeCases:
         # Should print since 42 is truthy
         out = capsys.readouterr().out
         assert "42" in out
+
+
+# =============================================================================
+# Edge cases: _git_head_sha with empty stdout
+# =============================================================================
+
+class TestGitHeadShaEdgeCases:
+    """Edge case tests for _git_head_sha()."""
+
+    def test_empty_stdout_returns_none(self) -> None:
+        """If git succeeds but stdout is empty, return None (not empty string)."""
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = mock.MagicMock(returncode=0, stdout="")
+            assert cli._git_head_sha("/tmp") is None
+
+    def test_whitespace_only_stdout_returns_none(self) -> None:
+        """If git succeeds but stdout is only whitespace, return None."""
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = mock.MagicMock(returncode=0, stdout="   \n  ")
+            assert cli._git_head_sha("/tmp") is None
+
+    def test_oserror_returns_none(self) -> None:
+        with mock.patch("subprocess.run", side_effect=OSError("no git")):
+            assert cli._git_head_sha("/tmp") is None
+
+
+# =============================================================================
+# Edge cases: _count_lines_changed with empty/invalid base_sha
+# =============================================================================
+
+class TestCountLinesChangedEdgeCases:
+    """Edge case tests for _count_lines_changed()."""
+
+    def test_empty_base_sha_returns_zero(self) -> None:
+        """Empty base_sha should return 0 instead of passing empty arg to git."""
+        result = cli._count_lines_changed("/tmp", "")
+        assert result == 0
+
+    def test_none_like_base_sha_returns_zero(self) -> None:
+        """Empty string base_sha should be handled gracefully."""
+        result = cli._count_lines_changed("/tmp", "")
+        assert result == 0
+
+    def test_valid_sha_with_empty_target(self) -> None:
+        """target='' means diff against working tree (no target appended)."""
+        with mock.patch.object(cli, "_git_run") as mock_git:
+            mock_git.return_value = mock.MagicMock(
+                returncode=0, stdout=" 1 file changed, 3 insertions(+)"
+            )
+            result = cli._count_lines_changed("/tmp", "abc123", target="")
+        assert result == 3
+        # Verify target was not appended
+        call_args = mock_git.call_args[0]
+        assert "abc123" in call_args
+        assert "" not in call_args[2:]  # no empty string after shortstat args
+
+    def test_git_diff_nonzero_returncode(self) -> None:
+        with mock.patch.object(cli, "_git_run") as mock_git:
+            mock_git.return_value = mock.MagicMock(
+                returncode=128, stdout="", stderr="fatal: bad revision"
+            )
+            result = cli._count_lines_changed("/tmp", "badref")
+        assert result == 0
+
+    def test_git_diff_oserror(self) -> None:
+        with mock.patch.object(cli, "_git_run", side_effect=OSError("no git")):
+            result = cli._count_lines_changed("/tmp", "abc123")
+        assert result == 0
+
+
+# =============================================================================
+# Edge cases: _compile_danger_patterns with empty keyword
+# =============================================================================
+
+class TestCompileDangerPatternsEdgeCases:
+    """Edge case tests for _compile_danger_patterns()."""
+
+    def test_empty_keyword_skipped(self) -> None:
+        """Empty keywords in the list should be skipped without crashing."""
+        original = cli._DANGEROUS_PROMPT_KEYWORDS[:]
+        try:
+            cli._DANGEROUS_PROMPT_KEYWORDS.insert(0, "")
+            patterns = cli._compile_danger_patterns()
+            # Should have one fewer pattern than keywords (empty one skipped)
+            assert len(patterns) == len(cli._DANGEROUS_PROMPT_KEYWORDS) - 1
+        finally:
+            cli._DANGEROUS_PROMPT_KEYWORDS[:] = original
+
+
+# =============================================================================
+# Edge cases: _configure_logging default level
+# =============================================================================
+
+class TestConfigureLoggingEdgeCases:
+    """Edge case tests for _configure_logging()."""
+
+    def test_default_level_is_warning(self) -> None:
+        args = argparse.Namespace(verbose=False, debug=False)
+        with mock.patch("logging.basicConfig") as mock_log:
+            cli._configure_logging(args)
+            mock_log.assert_called_once()
+            assert mock_log.call_args.kwargs["level"] == logging.WARNING
+
+
+# =============================================================================
+# Edge cases: _detect_default_branch with OSError
+# =============================================================================
+
+class TestDetectDefaultBranchEdgeCases:
+    """Edge case tests for _detect_default_branch()."""
+
+    def test_oserror_on_both_branches_returns_main(self) -> None:
+        with mock.patch.object(cli, "_git_run", side_effect=OSError("no git")):
+            assert cli._detect_default_branch("/tmp") == "main"
+
+    def test_oserror_on_main_then_master_found(self) -> None:
+        with mock.patch.object(cli, "_git_run") as mock_git:
+            mock_git.side_effect = [
+                OSError("no main"),
+                mock.MagicMock(returncode=0),
+            ]
+            assert cli._detect_default_branch("/tmp") == "master"
+
+
+# =============================================================================
+# Edge cases: _get_changed_files with OSError
+# =============================================================================
+
+class TestGetChangedFilesOSError:
+    """Edge case tests for _get_changed_files() exception handling."""
+
+    def test_merge_base_oserror(self) -> None:
+        with mock.patch.object(cli, "_git_run", side_effect=OSError("no git")):
+            assert cli._get_changed_files("/tmp", "main") == []
+
+    def test_diff_oserror(self) -> None:
+        with mock.patch.object(cli, "_git_run") as mock_git:
+            mock_git.side_effect = [
+                mock.MagicMock(returncode=0, stdout="abc123"),
+                OSError("diff failed"),
+            ]
+            assert cli._get_changed_files("/tmp", "main") == []
+
+    def test_diff_nonzero_returncode(self) -> None:
+        with mock.patch.object(cli, "_git_run") as mock_git:
+            mock_git.side_effect = [
+                mock.MagicMock(returncode=0, stdout="abc123"),
+                mock.MagicMock(returncode=128, stdout=""),
+            ]
+            assert cli._get_changed_files("/tmp", "main") == []
+
+
+# =============================================================================
+# Edge cases: _is_git_repo with OSError
+# =============================================================================
+
+class TestIsGitRepoOSError:
+    """Edge case tests for _is_git_repo() exception handling."""
+
+    def test_oserror_returns_false(self) -> None:
+        with mock.patch("subprocess.run", side_effect=OSError("no git")):
+            assert cli._is_git_repo("/tmp") is False
+
+
+# =============================================================================
+# Edge cases: _resolve_changed_files_prefix
+# =============================================================================
+
+class TestResolveChangedFilesPrefixEdgeCases:
+    """Edge case tests for _resolve_changed_files_prefix()."""
+
+    def test_changed_only_none_returns_empty(self) -> None:
+        args = argparse.Namespace(changed_only=None)
+        result = cli._resolve_changed_files_prefix(args, "/tmp")
+        assert result == ""
+
+    def test_not_git_repo_exits(self) -> None:
+        args = argparse.Namespace(changed_only="auto")
+        with mock.patch.object(cli, "_is_git_repo", return_value=False):
+            with pytest.raises(SystemExit) as exc_info:
+                cli._resolve_changed_files_prefix(args, "/tmp")
+            assert exc_info.value.code == 1
+
+    def test_no_changed_files_exits(self) -> None:
+        args = argparse.Namespace(changed_only="main")
+        with mock.patch.object(cli, "_is_git_repo", return_value=True), \
+             mock.patch.object(cli, "_get_changed_files", return_value=[]):
+            with pytest.raises(SystemExit) as exc_info:
+                cli._resolve_changed_files_prefix(args, "/tmp")
+            assert exc_info.value.code == 1
+
+
+# =============================================================================
+# Edge cases: _print_run_summary convergence display
+# =============================================================================
+
+class TestPrintRunSummaryConvergence:
+    """Edge case tests for _print_run_summary() convergence display."""
+
+    def test_convergence_threshold_displayed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        passes = [{"id": "dry", "label": "DRY"}]
+        cli._print_run_summary("/dir", passes, 1, 1, 60, False, convergence_threshold=0.5)
+        out = capsys.readouterr().out
+        assert "0.5%" in out
+        assert "Convergence" in out
+
+    def test_zero_convergence_not_displayed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        passes = [{"id": "dry", "label": "DRY"}]
+        cli._print_run_summary("/dir", passes, 1, 1, 60, False, convergence_threshold=0.0)
+        out = capsys.readouterr().out
+        assert "Convergence" not in out
 
 

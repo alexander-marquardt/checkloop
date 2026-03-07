@@ -218,7 +218,8 @@ def _git_head_sha(workdir: str) -> str | None:
     except OSError as exc:
         logger.warning("Could not read HEAD SHA in %s: %s", workdir, exc)
         return None
-    return result.stdout.strip() if result.returncode == 0 else None
+    sha = result.stdout.strip() if result.returncode == 0 else ""
+    return sha or None  # treat empty stdout as unavailable
 
 
 def _git_commit_cycle(workdir: str, cycle: int) -> bool:
@@ -324,6 +325,9 @@ def _count_lines_changed(workdir: str, base_sha: str, target: str = "HEAD") -> i
     ref or SHA to compare arbitrary points.  To include uncommitted working-tree
     changes, pass ``target=""`` (empty string triggers ``git diff <base>``).
     """
+    if not base_sha:
+        logger.warning("_count_lines_changed called with empty base_sha")
+        return 0
     diff_args = ["diff", "--shortstat", base_sha]
     if target:  # empty string means diff against working tree (uncommitted changes)
         diff_args.append(target)
@@ -705,6 +709,8 @@ def _compile_danger_patterns() -> list[re.Pattern[str]]:
     """
     patterns: list[re.Pattern[str]] = []
     for keyword in _DANGEROUS_PROMPT_KEYWORDS:
+        if not keyword:
+            continue
         escaped = re.escape(keyword)
         leading_boundary = r"\b" if keyword[0].isalnum() else ""
         trailing_boundary = r"\b" if keyword[-1].isalnum() else ""
