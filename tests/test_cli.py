@@ -44,6 +44,29 @@ def _make_suite_args(*, dry_run: bool = True, **overrides: Any) -> argparse.Name
     return argparse.Namespace(**defaults)
 
 
+def _make_main_mock_args(*, dry_run: bool = False, **overrides: Any) -> mock.MagicMock:
+    """Build a MagicMock with all attributes main() reads from parsed args."""
+    args = mock.MagicMock()
+    defaults = dict(
+        verbose=False,
+        debug=False,
+        dir="/tmp",
+        idle_timeout=120,
+        pause=0,
+        cycles=1,
+        converged_at_percentage=0.1,
+        all_passes=False,
+        passes=["readability"],
+        level=None,
+        dry_run=dry_run,
+        dangerously_skip_permissions=False,
+    )
+    defaults.update(overrides)
+    for key, value in defaults.items():
+        setattr(args, key, value)
+    return args
+
+
 # =============================================================================
 # banner / log
 # =============================================================================
@@ -105,6 +128,9 @@ class TestFormatDuration:
 
     def test_large_value(self) -> None:
         assert cli._format_duration(7384) == "2h03m04s"
+
+    def test_very_large_value(self) -> None:
+        assert cli._format_duration(360000) == "100h00m00s"
 
     def test_just_under_one_hour(self) -> None:
         assert cli._format_duration(3599) == "59m59s"
@@ -1066,6 +1092,9 @@ class TestParseShortstat:
     def test_no_match(self) -> None:
         assert cli._parse_shortstat("nothing here") == 0
 
+    def test_zero_insertions_and_deletions(self) -> None:
+        assert cli._parse_shortstat(" 1 file changed, 0 insertions(+), 0 deletions(-)") == 0
+
 
 class TestIsGitRepo:
     """Tests for _is_git_repo() detection."""
@@ -1143,6 +1172,12 @@ class TestGetChangePercentage:
             mock_run.return_value = mock.MagicMock(returncode=0, stdout="")
             pct = cli._get_change_percentage("/tmp", "abc123")
             assert pct == 0.0
+
+    def test_failed_git_diff_returns_zero(self) -> None:
+        with mock.patch.object(cli, "_git_run") as mock_git:
+            mock_git.return_value = mock.Mock(returncode=1, stderr="error")
+            result = cli._get_change_percentage("/tmp", "abc123")
+            assert result == 0.0
 
 
 class TestConvergedAtPercentageArg:
@@ -1391,6 +1426,13 @@ class TestCountTrackedLines:
             count = cli._count_tracked_lines(str(tmp_path))
             assert count == num_lines
 
+    def test_empty_repo_returns_minimum_one(self) -> None:
+        """Even an empty repo should return at least 1 to avoid division by zero."""
+        with mock.patch.object(cli, "_git_run") as mock_git:
+            mock_git.return_value = mock.Mock(returncode=0, stdout=b"")
+            result = cli._count_tracked_lines("/tmp")
+            assert result == 1
+
     def test_oserror_on_file_open(self, tmp_path: Path) -> None:
         """OSError when opening a file is silently skipped."""
         ls_result = mock.MagicMock(
@@ -1578,20 +1620,9 @@ class TestMainKeyboardInterrupt:
     """Tests for main() KeyboardInterrupt handling."""
 
     def test_keyboard_interrupt_exits_130(self, capsys: pytest.CaptureFixture[str]) -> None:
+        mock_args = _make_main_mock_args(dry_run=False)
         with mock.patch.object(cli, "_build_argument_parser") as mock_parser:
-            mock_args = mock.MagicMock()
-            mock_args.verbose = False
-            mock_args.dir = "/tmp"
-            mock_args.idle_timeout = 120
-            mock_args.pause = 0
-            mock_args.cycles = 1
-            mock_args.converged_at_percentage = 0.1
-            mock_args.all_passes = False
-            mock_args.passes = ["readability"]
-            mock_args.dry_run = False
-            mock_args.dangerously_skip_permissions = False
             mock_parser.return_value.parse_args.return_value = mock_args
-
             with mock.patch.object(cli, "_resolve_working_directory", return_value="/tmp"):
                 with mock.patch.object(cli, "_validate_arguments"):
                     with mock.patch.object(cli, "_display_pre_run_warning"):
@@ -1627,164 +1658,8 @@ class TestMainGuard:
 # Edge cases and boundary conditions
 # =============================================================================
 
-class TestFormatDurationEdgeCases:
-    """Edge cases for _format_duration()."""
-
-    def test_negative_input_clamped_to_zero(self) -> None:
-        assert cli._format_duration(-10) == "0m00s"
-
-    def test_fractional_seconds(self) -> None:
-        assert cli._format_duration(0.9) == "0m00s"
-
-    def test_large_value(self) -> None:
-        # 100 hours = 360000 seconds
-        assert cli._format_duration(360000) == "100h00m00s"
-
-    def test_just_under_one_hour(self) -> None:
-        assert cli._format_duration(3599) == "59m59s"
-
-
-class TestParseShortstatEdgeCases:
-    """Edge cases for _parse_shortstat()."""
-
-    def test_empty_string(self) -> None:
-        assert cli._parse_shortstat("") == 0
-
-    def test_insertions_only(self) -> None:
-        assert cli._parse_shortstat(" 3 files changed, 10 insertions(+)") == 10
-
-    def test_deletions_only(self) -> None:
-        assert cli._parse_shortstat(" 1 file changed, 5 deletions(-)") == 5
-
-    def test_no_numbers(self) -> None:
-        assert cli._parse_shortstat("no changes") == 0
-
-    def test_zero_insertions_and_deletions(self) -> None:
-        assert cli._parse_shortstat(" 1 file changed, 0 insertions(+), 0 deletions(-)") == 0
-
-
-class TestLooksDangerousEdgeCases:
-    """Edge cases for _looks_dangerous()."""
-
-    def test_empty_string(self) -> None:
-        assert cli._looks_dangerous("") is False
-
-    def test_safe_prompt(self) -> None:
-        assert cli._looks_dangerous("Review the code for readability.") is False
-
-    def test_reformat_not_matched(self) -> None:
-        """The word 'reformat' should NOT match the 'format' danger keyword."""
-        assert cli._looks_dangerous("reformat the output") is False
-
-    def test_unicode_prompt(self) -> None:
-        assert cli._looks_dangerous("Review the café code — très bien! 日本語テスト") is False
-
-    def test_danger_keyword_case_insensitive(self) -> None:
-        assert cli._looks_dangerous("DROP DATABASE users") is True
-
-
-class TestSummariseToolUseEdgeCases:
-    """Edge cases for _summarise_tool_use()."""
-
-    def test_empty_tool_input(self) -> None:
-        assert cli._summarise_tool_use("read", {}) == ""
-
-    def test_unknown_tool(self) -> None:
-        assert cli._summarise_tool_use("unknown_tool", {"foo": "bar"}) == ""
-
-    def test_bash_very_long_command(self) -> None:
-        long_cmd = "x" * 200
-        result = cli._summarise_tool_use("bash", {"command": long_cmd})
-        assert result.endswith("...")
-        assert len(result) < 200
-
-    def test_bash_exactly_80_chars(self) -> None:
-        cmd = "x" * 80
-        result = cli._summarise_tool_use("bash", {"command": cmd})
-        assert result == f" $ {cmd}"
-
-    def test_bash_81_chars_truncated(self) -> None:
-        cmd = "x" * 81
-        result = cli._summarise_tool_use("bash", {"command": cmd})
-        assert result.endswith("...")
-
-
-class TestPrintEventEdgeCases:
-    """Edge cases for _print_event()."""
-
-    def test_unknown_event_type(self, capsys: pytest.CaptureFixture[str]) -> None:
-        cli._print_event({"type": "unknown_type"}, time.time())
-        out = capsys.readouterr().out
-        assert out == ""
-
-    def test_empty_event(self, capsys: pytest.CaptureFixture[str]) -> None:
-        cli._print_event({}, time.time())
-        out = capsys.readouterr().out
-        assert out == ""
-
-    def test_assistant_event_whitespace_only_text(self, capsys: pytest.CaptureFixture[str]) -> None:
-        event = {"type": "assistant", "message": {"content": [{"type": "text", "text": "   "}]}}
-        cli._print_event(event, time.time())
-        out = capsys.readouterr().out
-        assert out == ""
-
-    def test_assistant_event_empty_content(self, capsys: pytest.CaptureFixture[str]) -> None:
-        event = {"type": "assistant", "message": {"content": []}}
-        cli._print_event(event, time.time())
-        out = capsys.readouterr().out
-        assert out == ""
-
-    def test_result_event_empty_result(self, capsys: pytest.CaptureFixture[str]) -> None:
-        event = {"type": "result", "result": ""}
-        cli._print_event(event, time.time())
-        out = capsys.readouterr().out
-        assert out == ""
-
-    def test_tool_use_missing_input(self, capsys: pytest.CaptureFixture[str]) -> None:
-        event = {"type": "tool_use", "tool": "bash", "input": None}
-        cli._print_event(event, time.time())
-        out = capsys.readouterr().out
-        assert "[bash]" in out
-
-
-class TestProcessJsonlBufferEdgeCases:
-    """Edge cases for _process_jsonl_buffer()."""
-
-    def test_empty_buffer(self) -> None:
-        buf = bytearray(b"")
-        result = cli._process_jsonl_buffer(buf, time.time(), False)
-        assert result == bytearray(b"")
-
-    def test_partial_line_no_newline(self) -> None:
-        buf = bytearray(b'{"type": "system"')
-        result = cli._process_jsonl_buffer(buf, time.time(), False)
-        # Partial line should remain in buffer
-        assert b'{"type": "system"' in result
-
-    def test_invalid_json_line(self, capsys: pytest.CaptureFixture[str]) -> None:
-        buf = bytearray(b'not json\n')
-        result = cli._process_jsonl_buffer(buf, time.time(), verbose=True)
-        assert result == bytearray(b"")
-        out = capsys.readouterr().out
-        assert "not json" in out
-
-    def test_blank_lines_skipped(self, capsys: pytest.CaptureFixture[str]) -> None:
-        buf = bytearray(b'\n\n\n')
-        result = cli._process_jsonl_buffer(buf, time.time(), False)
-        assert result == bytearray(b"")
-        assert capsys.readouterr().out == ""
-
-    def test_unicode_in_json(self, capsys: pytest.CaptureFixture[str]) -> None:
-        event = json.dumps({"type": "system", "message": "Héllo wörld 日本語"})
-        buf = bytearray(event.encode("utf-8") + b"\n")
-        result = cli._process_jsonl_buffer(buf, time.time(), False)
-        assert result == bytearray(b"")
-        out = capsys.readouterr().out
-        assert "Héllo wörld 日本語" in out
-
-
-class TestValidateArgumentsEdgeCases:
-    """Edge cases for _validate_arguments()."""
+class TestValidateArguments:
+    """Tests for _validate_arguments()."""
 
     def test_cycles_zero_exits(self) -> None:
         args = argparse.Namespace(idle_timeout=120, pause=0, cycles=0, converged_at_percentage=0.1)
@@ -1809,56 +1684,8 @@ class TestValidateArgumentsEdgeCases:
         cli._validate_arguments(args)  # should not raise
 
 
-class TestCountTrackedLinesEdgeCases:
-    """Edge cases for _count_tracked_lines()."""
-
-    def test_git_ls_files_fails(self) -> None:
-        """When git ls-files fails, returns 1 to avoid division by zero."""
-        with mock.patch.object(cli, "_git_run") as mock_git:
-            mock_git.return_value = mock.Mock(returncode=128, stdout=b"")
-            result = cli._count_tracked_lines("/tmp")
-            assert result == 1
-
-    def test_returns_minimum_one(self) -> None:
-        """Even an empty repo should return at least 1 to avoid division by zero."""
-        with mock.patch.object(cli, "_git_run") as mock_git:
-            # Simulate empty ls-files output
-            mock_git.return_value = mock.Mock(returncode=0, stdout=b"")
-            result = cli._count_tracked_lines("/tmp")
-            assert result == 1
-
-    def test_binary_file_skipped(self, tmp_path: Path) -> None:
-        """Binary files (containing null bytes) should not be counted."""
-        binary_file = tmp_path / "binary.dat"
-        binary_file.write_bytes(b"\x00\x01\x02\n\n\n")
-        with mock.patch.object(cli, "_git_run") as mock_git:
-            mock_git.return_value = mock.Mock(
-                returncode=0, stdout=b"binary.dat\0"
-            )
-            result = cli._count_tracked_lines(str(tmp_path))
-            assert result == 1  # binary skipped, 0 lines, max(0,1) = 1
-
-
-class TestGetChangePercentageEdgeCases:
-    """Edge cases for _get_change_percentage()."""
-
-    def test_failed_git_diff(self) -> None:
-        with mock.patch.object(cli, "_git_run") as mock_git:
-            mock_git.return_value = mock.Mock(
-                returncode=1, stderr="error"
-            )
-            result = cli._get_change_percentage("/tmp", "abc123")
-            assert result == 0.0
-
-    def test_zero_changes(self) -> None:
-        with mock.patch.object(cli, "_git_run") as mock_git:
-            mock_git.return_value = mock.Mock(returncode=0, stdout="")
-            result = cli._get_change_percentage("/tmp", "abc123")
-            assert result == 0.0
-
-
-class TestResolveSelectedPassesEdgeCases:
-    """Edge cases for _resolve_selected_passes()."""
+class TestResolveSelectedPasses:
+    """Tests for _resolve_selected_passes()."""
 
     def test_level_basic(self) -> None:
         args = argparse.Namespace(all_passes=False, passes=None, level="basic")
@@ -1882,21 +1709,9 @@ class TestMainEmptyPassesExit:
     """Test that main() exits if no passes are resolved."""
 
     def test_empty_passes_exits(self) -> None:
+        mock_args = _make_main_mock_args(dry_run=True, passes=None, level=None)
         with mock.patch.object(cli, "_build_argument_parser") as mock_parser:
-            mock_args = mock.MagicMock()
-            mock_args.verbose = False
-            mock_args.dir = "/tmp"
-            mock_args.idle_timeout = 120
-            mock_args.pause = 0
-            mock_args.cycles = 1
-            mock_args.converged_at_percentage = 0.1
-            mock_args.all_passes = False
-            mock_args.passes = None
-            mock_args.level = None
-            mock_args.dry_run = True
-            mock_args.dangerously_skip_permissions = False
             mock_parser.return_value.parse_args.return_value = mock_args
-
             with mock.patch.object(cli, "_resolve_working_directory", return_value="/tmp"):
                 with mock.patch.object(cli, "_validate_arguments"):
                     with mock.patch.object(cli, "_resolve_selected_passes", return_value=[]):
@@ -1915,13 +1730,12 @@ class TestMainNegativeConvergenceExit:
             assert exc_info.value.code == 1
 
 
-class TestGitRunEdgeCases:
-    """Edge cases for _git_run()."""
+class TestGitRun:
+    """Tests for _git_run()."""
 
     def test_empty_args(self) -> None:
         """_git_run with no args should just run 'git'."""
         result = cli._git_run("/tmp")
-        # git with no subcommand returns non-zero
         assert result.returncode != 0
 
     def test_git_not_found(self) -> None:
@@ -1940,7 +1754,6 @@ class TestCountTrackedLinesPathTraversal:
 
     def test_symlink_outside_workdir_skipped(self, tmp_path: Path) -> None:
         """Files that resolve outside the workdir are skipped."""
-        # Create a text file inside the workdir
         real_file = tmp_path / "real.txt"
         real_file.write_text("line1\nline2\n")
 
@@ -1976,21 +1789,9 @@ class TestMainFileNotFoundError:
     """Test main() FileNotFoundError handling."""
 
     def test_file_not_found_during_suite(self) -> None:
+        mock_args = _make_main_mock_args(dry_run=False)
         with mock.patch.object(cli, "_build_argument_parser") as mock_parser:
-            mock_args = mock.MagicMock()
-            mock_args.verbose = False
-            mock_args.debug = False
-            mock_args.dir = "/tmp"
-            mock_args.idle_timeout = 120
-            mock_args.pause = 0
-            mock_args.cycles = 1
-            mock_args.converged_at_percentage = 0.1
-            mock_args.all_passes = False
-            mock_args.passes = ["readability"]
-            mock_args.dry_run = False
-            mock_args.dangerously_skip_permissions = False
             mock_parser.return_value.parse_args.return_value = mock_args
-
             with mock.patch.object(cli, "_resolve_working_directory", return_value="/tmp"):
                 with mock.patch.object(cli, "_validate_arguments"):
                     with mock.patch.object(cli, "_display_pre_run_warning"):
@@ -2004,21 +1805,9 @@ class TestMainUnexpectedException:
     """Test main() generic exception handling."""
 
     def test_unexpected_error_reraises(self) -> None:
+        mock_args = _make_main_mock_args(dry_run=False)
         with mock.patch.object(cli, "_build_argument_parser") as mock_parser:
-            mock_args = mock.MagicMock()
-            mock_args.verbose = False
-            mock_args.debug = False
-            mock_args.dir = "/tmp"
-            mock_args.idle_timeout = 120
-            mock_args.pause = 0
-            mock_args.cycles = 1
-            mock_args.converged_at_percentage = 0.1
-            mock_args.all_passes = False
-            mock_args.passes = ["readability"]
-            mock_args.dry_run = False
-            mock_args.dangerously_skip_permissions = False
             mock_parser.return_value.parse_args.return_value = mock_args
-
             with mock.patch.object(cli, "_resolve_working_directory", return_value="/tmp"):
                 with mock.patch.object(cli, "_validate_arguments"):
                     with mock.patch.object(cli, "_display_pre_run_warning"):
