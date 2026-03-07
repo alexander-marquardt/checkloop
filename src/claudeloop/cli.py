@@ -60,7 +60,7 @@ _BASH_DISPLAY_LIMIT = 80  # max chars shown for bash commands in tool summaries
 # Perf: build once instead of copying os.environ on every subprocess spawn.
 # Strips CLAUDECODE env var whose presence causes nested claude processes
 # to refuse to start when claudeloop is invoked from within a Claude Code session.
-_clean_env: dict[str, str] = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+_SANITIZED_ENV: dict[str, str] = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
 
 COMMIT_MESSAGE_INSTRUCTIONS: str = (
     "\n\nIf you make any git commits, follow these commit message rules:\n"
@@ -146,10 +146,10 @@ def _log_memory_usage(label: str) -> None:
     logger.info("Memory [%s]: rss=%.0fMB, children=%d", label, rss_mb, len(child_pids))
     _print_status(f"  Memory: {rss_mb:.0f}MB RSS, {len(child_pids)} child processes", DIM)
     if child_pids:
-        _warn_and_kill_orphans(child_pids)
+        _warn_and_kill_orphan_processes(child_pids)
 
 
-def _warn_and_kill_orphans(child_pids: list[int]) -> None:
+def _warn_and_kill_orphan_processes(child_pids: list[int]) -> None:
     """Warn about surviving child processes and kill them."""
     _print_status(f"  Warning: {len(child_pids)} child process(es) still alive — killing.", YELLOW)
     # Pass pids directly to avoid a second pgrep subprocess spawn.
@@ -258,19 +258,19 @@ def _parse_shortstat(text: str) -> int:
 def _count_file_lines(filepath: Path) -> int:
     """Count newlines in a text file, reading in chunks. Returns 0 for binary files."""
     try:
-        fh = open(filepath, "rb")
+        raw_file = open(filepath, "rb")
     except OSError as exc:
         logger.debug("Cannot open file for line counting %s: %s", filepath, exc)
         return 0
-    with fh as file:
+    with raw_file:
         # Read a small header to check for null bytes (binary file indicator).
         # If the file is text, count newlines in the header, then continue
         # counting through the rest of the file in larger chunks.
-        header = file.read(_READ_CHUNK_SIZE)
+        header = raw_file.read(_READ_CHUNK_SIZE)
         if b"\0" in header:
             return 0
         total = header.count(b"\n")
-        for chunk in iter(lambda: file.read(_DRAIN_CHUNK_SIZE), b""):
+        for chunk in iter(lambda: raw_file.read(_DRAIN_CHUNK_SIZE), b""):
             total += chunk.count(b"\n")
         return total
 
@@ -292,11 +292,11 @@ def _count_tracked_lines(workdir: str) -> int:
         return 1  # avoid division by zero
     # -z flag outputs null-separated paths; split once, iterate as generator
     # to avoid materialising a full decoded-path list for large repos.
-    raw_parts = ls_result.stdout.split(b"\0")
-    total = 0
+    raw_path_segments = ls_result.stdout.split(b"\0")
+    total_lines = 0
     file_count = 0
     resolved_workdir = Path(workdir).resolve()
-    for raw_path in raw_parts:
+    for raw_path in raw_path_segments:
         if not raw_path:
             continue
         relative_path = raw_path.decode("utf-8", errors="replace")
@@ -305,13 +305,14 @@ def _count_tracked_lines(workdir: str) -> int:
             absolute_path = (resolved_workdir / relative_path).resolve()
             if not absolute_path.is_relative_to(resolved_workdir):
                 continue  # skip paths that escape the workdir (path traversal guard)
-            total += _count_file_lines(absolute_path)
+            total_lines += _count_file_lines(absolute_path)
         except OSError as exc:
             logger.debug("Could not read tracked file %s: %s", relative_path, exc)
-    total_or_min = max(total, 1)  # minimum 1 to avoid division by zero
+    # Clamp to minimum 1 to prevent division-by-zero in convergence percentage calculations.
+    total_clamped = max(total_lines, 1)
     elapsed = time.time() - start_time
-    logger.info("Counted %d tracked lines across %d files in %.2fs", total_or_min, file_count, elapsed)
-    return total_or_min
+    logger.info("Counted %d tracked lines across %d files in %.2fs", total_clamped, file_count, elapsed)
+    return total_clamped
 
 
 # Cache: resolved workdir path → total tracked line count. Avoids re-scanning per pass.
@@ -750,15 +751,17 @@ _FILE_PATH_TOOL_NAMES: set[str] = {"read", "read_file", "edit", "edit_file", "wr
 
 def _summarise_tool_use(tool_name: str, tool_input: dict[str, Any]) -> str:
     """Return a short human-readable summary for a tool-use event."""
-    tool_name_lower = tool_name.lower()
-    if tool_name_lower in _FILE_PATH_TOOL_NAMES and "file_path" in tool_input:
+    normalized_name = tool_name.lower()
+    if normalized_name in _FILE_PATH_TOOL_NAMES and "file_path" in tool_input:
         return f" {tool_input['file_path']}"
-    if tool_name_lower == "bash" and "command" in tool_input:
+    if normalized_name == "bash" and "command" in tool_input:
         command = tool_input["command"]
-        return f" $ {command[:_BASH_DISPLAY_LIMIT - 3]}..." if len(command) > _BASH_DISPLAY_LIMIT else f" $ {command}"
-    if tool_name_lower == "glob" and "pattern" in tool_input:
+        if len(command) > _BASH_DISPLAY_LIMIT:
+            return f" $ {command[:_BASH_DISPLAY_LIMIT - 3]}..."
+        return f" $ {command}"
+    if normalized_name == "glob" and "pattern" in tool_input:
         return f" {tool_input['pattern']}"
-    if tool_name_lower == "grep" and "pattern" in tool_input:
+    if normalized_name == "grep" and "pattern" in tool_input:
         return f" /{tool_input['pattern']}/"
     return ""
 
@@ -840,15 +843,15 @@ def _process_jsonl_buffer(
     Returns:
         The same *output_buffer* object, with consumed lines removed.
     """
-    # Process all complete lines, then remove consumed bytes once.
-    # Avoids repeated del output_buffer[:n] which is O(n) per call,
-    # making the naive approach O(n²) when many lines arrive at once.
+    # Find the last complete line boundary. Everything before it can be parsed;
+    # everything after stays in the buffer for the next call.
+    # This single-delete approach avoids O(n²) cost from repeated del [:n].
     last_newline = output_buffer.rfind(b"\n")
     if last_newline == -1:
-        return output_buffer
-    complete = bytes(output_buffer[:last_newline])
+        return output_buffer  # no complete line yet
+    complete_lines_bytes = bytes(output_buffer[:last_newline])
     del output_buffer[:last_newline + 1]
-    for line_bytes in complete.split(b"\n"):
+    for line_bytes in complete_lines_bytes.split(b"\n"):
         line_str = line_bytes.decode("utf-8", errors="replace").strip()
         if not line_str:
             continue
@@ -888,7 +891,7 @@ def _spawn_claude_process(
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            env=_clean_env,
+            env=_SANITIZED_ENV,
             start_new_session=True,  # creates a new process group
         )
     except FileNotFoundError:
@@ -901,16 +904,13 @@ def _spawn_claude_process(
 
 
 def _read_stdout_chunk(stdout: IO[bytes]) -> bytes:
-    """Read a chunk from stdout, preferring non-blocking read1 when available.
-
-    BufferedReader exposes read1() which returns available data without blocking
-    for the full chunk size. Falls back to os.read() for raw file descriptors.
-    """
+    """Read a chunk from stdout, preferring non-blocking read1 when available."""
     try:
+        # BufferedReader.read1() returns available data without blocking for the
+        # full chunk size. Fall back to os.read() for raw file descriptors.
         read1 = getattr(stdout, "read1", None)
         if read1 is not None:
-            chunk: bytes = read1(_READ_CHUNK_SIZE)
-            return chunk
+            return read1(_READ_CHUNK_SIZE)
         return os.read(stdout.fileno(), _READ_CHUNK_SIZE)
     except OSError as exc:
         logger.debug("stdout read failed: %s", exc)
@@ -981,7 +981,7 @@ def _stream_process_output(
     assert process.stdout is not None
     stdout = process.stdout
     pass_start_time = time.time()
-    last_output_time = time.time()
+    last_output_time = pass_start_time  # idle timer starts from launch
     output_buffer = bytearray()
 
     try:
@@ -1348,9 +1348,10 @@ def _run_single_pass(
     logger.info("Pass started: id=%s, label=%s, step=%s", review_pass["id"], review_pass["label"], step_label)
     _print_banner(f"{step_label} {review_pass['label']}", CYAN)
 
-    # changed_files_prefix is dynamically attached to args by main() when --changed-only is used
-    changed_prefix = getattr(args, "changed_files_prefix", "")
-    prompt = changed_prefix + review_pass["prompt"] + COMMIT_MESSAGE_INSTRUCTIONS
+    # main() attaches changed_files_prefix to args when --changed-only is used;
+    # it restricts the review to only the files that differ from the base ref.
+    changed_files_prefix = getattr(args, "changed_files_prefix", "")
+    prompt = changed_files_prefix + review_pass["prompt"] + COMMIT_MESSAGE_INSTRUCTIONS
 
     if _looks_dangerous(prompt):
         logger.warning("Skipping pass '%s' — dangerous keywords detected in prompt", review_pass["id"])
@@ -1437,13 +1438,13 @@ def _run_review_suite(
             print(f"\n{BOLD}{CYAN}===  Cycle {cycle}/{num_cycles}  ==={RESET}")
 
         base_sha = _git_head_sha(workdir) if convergence_enabled else None
-        cycle_passes = _filter_active_passes(selected_passes, previously_changed_ids)
+        active_passes = _filter_active_passes(selected_passes, previously_changed_ids)
         changed_this_cycle: set[str] = set()
 
-        for i, review_pass in enumerate(cycle_passes, 1):
+        for i, review_pass in enumerate(active_passes, 1):
             time.sleep(args.pause)
             cycle_suffix = f" (cycle {cycle}/{num_cycles})" if num_cycles > 1 else ""
-            step_label = f"[{i}/{len(cycle_passes)}]{cycle_suffix}"
+            step_label = f"[{i}/{len(active_passes)}]{cycle_suffix}"
 
             made_changes = _run_single_pass(review_pass, workdir, args, step_label, is_git=is_git)
             if made_changes:
@@ -1471,15 +1472,50 @@ def _filter_active_passes(
     if previously_changed_ids is None:
         return selected_passes
 
-    cycle_passes = [
+    active_passes = [
         p for p in selected_passes
         if p["id"] in previously_changed_ids or p["id"] in _BOOKEND_IDS
     ]
-    skipped_ids = [p["id"] for p in selected_passes if p["id"] not in previously_changed_ids and p["id"] not in _BOOKEND_IDS]
+    skipped_ids = [
+        p["id"] for p in selected_passes
+        if p["id"] not in previously_changed_ids and p["id"] not in _BOOKEND_IDS
+    ]
     if skipped_ids:
         logger.info("Skipping %d no-op pass(es) from last cycle: %s", len(skipped_ids), skipped_ids)
         _print_status(f"Skipping {len(skipped_ids)} pass(es) that made no changes last cycle.")
-    return cycle_passes
+    return active_passes
+
+
+def _build_permission_warning(skip_permissions: bool) -> tuple[str, str, list[str], str]:
+    """Build the warning message components based on permission mode.
+
+    Returns:
+        A (colour, heading, body_lines, countdown) tuple.
+    """
+    if skip_permissions:
+        return (
+            RED,
+            "WARNING: --dangerously-skip-permissions is ENABLED",
+            [
+                "Claude Code will execute ALL actions without asking for approval.",
+                "This includes writing files, running shell commands, and deleting code.",
+                "Make sure you have committed or backed up your work before proceeding.",
+            ],
+            f"Starting in {_PRE_RUN_WARNING_DELAY} seconds (Ctrl+C to abort)...",
+        )
+    return (
+        YELLOW,
+        "WARNING: Running without --dangerously-skip-permissions",
+        [
+            "Claude Code requires interactive permission prompts to write files,",
+            "but claudeloop cannot relay those prompts (stdin is disconnected).",
+            "Passes that modify code will likely FAIL or HANG.",
+            "",
+            "Re-run with:",
+            f"  {BOLD}claudeloop --dangerously-skip-permissions ...{RESET}{YELLOW}",
+        ],
+        f"Continuing anyway in {_PRE_RUN_WARNING_DELAY} seconds (Ctrl+C to abort)...",
+    )
 
 
 def _display_pre_run_warning(skip_permissions: bool) -> None:
@@ -1489,31 +1525,8 @@ def _display_pre_run_warning(skip_permissions: bool) -> None:
     without approval.  Without it, warns that passes will likely hang because
     claudeloop cannot relay interactive permission prompts.  Either way, the
     user has 5 seconds to Ctrl+C before the suite begins.
-
-    Args:
-        skip_permissions: Whether ``--dangerously-skip-permissions`` is enabled.
     """
-    if skip_permissions:
-        warning_colour = RED
-        heading = "WARNING: --dangerously-skip-permissions is ENABLED"
-        body_lines = [
-            "Claude Code will execute ALL actions without asking for approval.",
-            "This includes writing files, running shell commands, and deleting code.",
-            "Make sure you have committed or backed up your work before proceeding.",
-        ]
-        countdown = f"Starting in {_PRE_RUN_WARNING_DELAY} seconds (Ctrl+C to abort)..."
-    else:
-        warning_colour = YELLOW
-        heading = "WARNING: Running without --dangerously-skip-permissions"
-        body_lines = [
-            "Claude Code requires interactive permission prompts to write files,",
-            "but claudeloop cannot relay those prompts (stdin is disconnected).",
-            "Passes that modify code will likely FAIL or HANG.",
-            "",
-            "Re-run with:",
-            f"  {BOLD}claudeloop --dangerously-skip-permissions ...{RESET}{warning_colour}",
-        ]
-        countdown = f"Continuing anyway in {_PRE_RUN_WARNING_DELAY} seconds (Ctrl+C to abort)..."
+    warning_colour, heading, body_lines, countdown = _build_permission_warning(skip_permissions)
 
     print(f"\n{warning_colour}{BOLD}{'=' * RULE_WIDTH}")
     print(f"  {heading}")
