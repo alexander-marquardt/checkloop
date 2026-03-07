@@ -12,6 +12,7 @@ import time
 from unittest import mock
 
 import pytest
+from pathlib import Path
 
 from claudeloop import cli
 
@@ -1002,3 +1003,171 @@ class TestMainNonDryRun:
         out = capsys.readouterr().out
         assert "security" in out
         assert "All done" in out
+
+
+# =============================================================================
+# Git helpers (convergence)
+# =============================================================================
+
+class TestParseShortstat:
+    """Tests for _parse_shortstat() diff output parsing."""
+
+    def test_insertions_and_deletions(self):
+        text = " 3 files changed, 20 insertions(+), 10 deletions(-)"
+        assert cli._parse_shortstat(text) == 30
+
+    def test_insertions_only(self):
+        text = " 1 file changed, 5 insertions(+)"
+        assert cli._parse_shortstat(text) == 5
+
+    def test_deletions_only(self):
+        text = " 2 files changed, 8 deletions(-)"
+        assert cli._parse_shortstat(text) == 8
+
+    def test_empty_string(self):
+        assert cli._parse_shortstat("") == 0
+
+    def test_no_match(self):
+        assert cli._parse_shortstat("nothing here") == 0
+
+
+class TestIsGitRepo:
+    """Tests for _is_git_repo() detection."""
+
+    def test_true_when_git_succeeds(self):
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = mock.MagicMock(returncode=0)
+            assert cli._is_git_repo("/tmp") is True
+
+    def test_false_when_git_fails(self):
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = mock.MagicMock(returncode=128)
+            assert cli._is_git_repo("/tmp") is False
+
+
+class TestGitHeadSha:
+    """Tests for _git_head_sha() SHA retrieval."""
+
+    def test_returns_sha(self):
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = mock.MagicMock(returncode=0, stdout="abc123\n")
+            assert cli._git_head_sha("/tmp") == "abc123"
+
+    def test_returns_none_on_failure(self):
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = mock.MagicMock(returncode=128, stdout="")
+            assert cli._git_head_sha("/tmp") is None
+
+
+class TestGitCommitCycle:
+    """Tests for _git_commit_cycle() post-cycle commit."""
+
+    def test_commits_when_changes_exist(self):
+        with mock.patch("subprocess.run") as mock_run:
+            # git add succeeds, git diff --cached shows changes, git commit succeeds
+            mock_run.side_effect = [
+                mock.MagicMock(returncode=0),  # git add
+                mock.MagicMock(returncode=1),  # git diff --cached --quiet (changes exist)
+                mock.MagicMock(returncode=0),  # git commit
+            ]
+            assert cli._git_commit_cycle("/tmp", 1) is True
+
+    def test_no_commit_when_clean(self):
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                mock.MagicMock(returncode=0),  # git add
+                mock.MagicMock(returncode=0),  # git diff --cached --quiet (no changes)
+            ]
+            assert cli._git_commit_cycle("/tmp", 1) is False
+
+    def test_returns_false_on_error(self):
+        with mock.patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, "git")):
+            assert cli._git_commit_cycle("/tmp", 1) is False
+
+
+class TestGetChangePercentage:
+    """Tests for _get_change_percentage() convergence metric."""
+
+    def test_calculates_percentage(self):
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                # git diff --shortstat
+                mock.MagicMock(returncode=0, stdout=" 2 files changed, 10 insertions(+), 5 deletions(-)"),
+                # git ls-files -z
+                mock.MagicMock(returncode=0, stdout=b"file1.py\0file2.py\0"),
+            ]
+            with mock.patch.object(Path, "read_bytes", return_value=b"line\n" * 1000):
+                pct = cli._get_change_percentage("/tmp", "abc123")
+                assert 0 < pct < 100
+
+    def test_zero_when_no_changes(self):
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = mock.MagicMock(returncode=0, stdout="")
+            pct = cli._get_change_percentage("/tmp", "abc123")
+            assert pct == 0.0
+
+
+class TestConvergedAtPercentageArg:
+    """Tests for --converged-at-percentage CLI argument."""
+
+    def _parse(self, args: list[str]) -> argparse.Namespace:
+        return cli._build_argument_parser().parse_args(args)
+
+    def test_default(self):
+        ns = self._parse([])
+        assert ns.converged_at_percentage == cli.DEFAULT_CONVERGENCE_THRESHOLD
+
+    def test_custom_value(self):
+        ns = self._parse(["--converged-at-percentage", "0.5"])
+        assert ns.converged_at_percentage == 0.5
+
+    def test_zero_disables(self):
+        ns = self._parse(["--converged-at-percentage", "0"])
+        assert ns.converged_at_percentage == 0.0
+
+
+class TestConvergenceInSuite:
+    """Tests for convergence detection within _run_review_suite."""
+
+    def test_stops_early_when_converged(self, capsys):
+        passes = [{"id": "readability", "label": "Readability", "prompt": "review code"}]
+        args = argparse.Namespace(
+            pause=0, dry_run=False, idle_timeout=120, verbose=False,
+            dangerously_skip_permissions=False,
+        )
+        with mock.patch.object(cli, "run_claude", return_value=0):
+            with mock.patch.object(cli, "_is_git_repo", return_value=True):
+                with mock.patch.object(cli, "_git_head_sha", side_effect=["sha1", "sha2", "sha2", "sha3"]):
+                    with mock.patch.object(cli, "_git_commit_cycle", return_value=True):
+                        with mock.patch.object(cli, "_get_change_percentage", return_value=0.05):
+                            cli._run_review_suite(passes, 3, "/tmp", args, convergence_threshold=0.1)
+        out = capsys.readouterr().out
+        assert "Converged" in out
+
+    def test_no_convergence_without_git(self, capsys):
+        passes = [{"id": "dry", "label": "DRY", "prompt": "check dry"}]
+        args = argparse.Namespace(
+            pause=0, dry_run=True, idle_timeout=120, verbose=False,
+            dangerously_skip_permissions=False,
+        )
+        cli._run_review_suite(passes, 2, "/tmp", args, convergence_threshold=0.1)
+        out = capsys.readouterr().out
+        # Should run both cycles without convergence checks (dry run)
+        assert "Cycle 1/2" in out
+        assert "Cycle 2/2" in out
+
+
+class TestCommitMessageInstructions:
+    """Tests that commit message instructions are appended to prompts."""
+
+    def test_prompt_includes_commit_instructions(self, capsys):
+        passes = [{"id": "readability", "label": "Readability", "prompt": "review code"}]
+        args = argparse.Namespace(
+            pause=0, dry_run=True, idle_timeout=120, verbose=False,
+            dangerously_skip_permissions=False,
+        )
+        with mock.patch.object(cli, "run_claude", return_value=0) as mock_run:
+            cli._run_review_suite(passes, 1, "/tmp", args)
+            prompt_used = mock_run.call_args[0][0]
+            assert "commit message rules" in prompt_used
+            assert "Do not mention Claude" in prompt_used

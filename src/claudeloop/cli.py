@@ -45,12 +45,112 @@ BLUE   = "\033[94m"
 RULE_WIDTH = 72
 DEFAULT_IDLE_TIMEOUT = 120
 DEFAULT_PAUSE_SECONDS = 2
+DEFAULT_CONVERGENCE_THRESHOLD = 0.1  # percent of total lines changed
+
+COMMIT_MESSAGE_INSTRUCTIONS = (
+    "\n\nIf you make any git commits, follow these commit message rules:\n"
+    "- Maximum 5-10 lines\n"
+    "- Do not mention Claude, AI, or any AI tools\n"
+    "- Provide only a high-level summary of what was cleaned up, fixed, or changed\n"
+    "- Use clear, professional commit message style"
+)
 
 
 def _fatal(msg: str) -> NoReturn:
     """Print an error message in red and exit with code 1."""
     print(f"{RED}{msg}{RESET}")
     sys.exit(1)
+
+
+# --- Git helpers (convergence detection) --------------------------------------
+
+def _is_git_repo(workdir: str) -> bool:
+    """Return True if workdir is inside a git repository."""
+    result = subprocess.run(
+        ["git", "rev-parse", "--is-inside-work-tree"],
+        cwd=workdir, capture_output=True, text=True,
+    )
+    return result.returncode == 0
+
+
+def _git_head_sha(workdir: str) -> str | None:
+    """Return the current HEAD commit SHA, or None if unavailable."""
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=workdir, capture_output=True, text=True,
+    )
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _git_commit_cycle(workdir: str, cycle: int) -> bool:
+    """Stage and commit any uncommitted changes after a review cycle.
+
+    Returns True if a commit was created (i.e. there were changes).
+    """
+    try:
+        subprocess.run(
+            ["git", "add", "-A"], cwd=workdir, capture_output=True, check=True,
+        )
+        # Check for staged changes
+        result = subprocess.run(
+            ["git", "diff", "--cached", "--quiet"], cwd=workdir, capture_output=True,
+        )
+        if result.returncode == 0:
+            return False  # nothing to commit
+        msg = f"Review cycle {cycle} cleanup"
+        subprocess.run(
+            ["git", "commit", "-m", msg],
+            cwd=workdir, capture_output=True, check=True,
+        )
+        return True
+    except subprocess.CalledProcessError as exc:
+        logger.warning("Git commit failed after cycle %d: %s", cycle, exc)
+        return False
+
+
+def _parse_shortstat(text: str) -> int:
+    """Parse ``git diff --shortstat`` output into total lines changed."""
+    insertions = deletions = 0
+    m = re.search(r"(\d+) insertion", text)
+    if m:
+        insertions = int(m.group(1))
+    m = re.search(r"(\d+) deletion", text)
+    if m:
+        deletions = int(m.group(1))
+    return insertions + deletions
+
+
+def _count_tracked_lines(workdir: str) -> int:
+    """Count total lines across all git-tracked text files."""
+    ls_result = subprocess.run(
+        ["git", "ls-files", "-z"], cwd=workdir, capture_output=True,
+    )
+    if ls_result.returncode != 0:
+        return 1  # avoid division by zero
+    files = [f.decode("utf-8", errors="replace") for f in ls_result.stdout.split(b"\0") if f]
+    total = 0
+    for filename in files:
+        try:
+            content = (Path(workdir) / filename).read_bytes()
+            if b"\0" in content[:8192]:  # skip binary files
+                continue
+            total += content.count(b"\n")
+        except OSError:
+            pass
+    return max(total, 1)
+
+
+def _get_change_percentage(workdir: str, base_sha: str) -> float:
+    """Return the percentage of total tracked lines that changed since *base_sha*."""
+    result = subprocess.run(
+        ["git", "diff", "--shortstat", base_sha, "HEAD"],
+        cwd=workdir, capture_output=True, text=True,
+    )
+    lines_changed = _parse_shortstat(result.stdout)
+    if lines_changed == 0:
+        return 0.0
+    total_lines = _count_tracked_lines(workdir)
+    return (lines_changed / total_lines) * 100
 
 
 def banner(title: str, colour: str = CYAN) -> None:
@@ -658,6 +758,15 @@ def _build_argument_parser() -> argparse.ArgumentParser:
         "--dangerously-skip-permissions", action="store_true",
         help="Pass --dangerously-skip-permissions to Claude Code (bypasses all permission checks)",
     )
+    parser.add_argument(
+        "--converged-at-percentage", type=float, default=DEFAULT_CONVERGENCE_THRESHOLD,
+        metavar="PCT",
+        help=(
+            f"Stop cycling early when less than PCT%% of total lines changed "
+            f"in a cycle (default: {DEFAULT_CONVERGENCE_THRESHOLD}). "
+            "Requires a git repo. Set to 0 to disable convergence detection."
+        ),
+    )
 
     return parser
 
@@ -669,14 +778,17 @@ def _print_run_summary(
     total_steps: int,
     idle_timeout: int,
     dry_run: bool,
+    convergence_threshold: float = 0.0,
 ) -> None:
     """Print a summary of the configured review run before starting."""
     print(f"\n{BOLD}claudeloop{RESET}")
     print(f"  Directory    : {workdir}")
     print(f"  Passes       : {', '.join(p['id'] for p in selected_passes)}")
-    print(f"  Cycles       : {num_cycles}")
-    print(f"  Total steps  : {total_steps}  ({len(selected_passes)} passes x {num_cycles} cycle{'s' if num_cycles != 1 else ''})")
+    print(f"  Cycles       : {num_cycles} (max)")
+    print(f"  Total steps  : {total_steps}  ({len(selected_passes)} passes x {num_cycles} cycle{'s' if num_cycles != 1 else ''}) max")
     print(f"  Idle timeout : {idle_timeout}s (no hard limit)")
+    if convergence_threshold > 0:
+        print(f"  Convergence  : stop when < {convergence_threshold}% of lines change")
     if dry_run:
         print(f"  {YELLOW}DRY RUN{RESET}")
 
@@ -686,14 +798,25 @@ def _run_review_suite(
     num_cycles: int,
     workdir: str,
     args: argparse.Namespace,
+    convergence_threshold: float = 0.0,
 ) -> None:
-    """Execute all review passes across all cycles."""
+    """Execute all review passes across all cycles.
+
+    When *convergence_threshold* > 0 and the project is a git repo, a commit
+    is created after each cycle and the percentage of lines changed is compared
+    to the threshold.  If changes fall below the threshold the loop stops early.
+    """
     total_steps = len(selected_passes) * num_cycles
     current_step = 0
+    use_convergence = convergence_threshold > 0 and _is_git_repo(workdir)
+    prev_pct: float | None = None
 
     for cycle in range(1, num_cycles + 1):
         if num_cycles > 1:
             print(f"\n{BOLD}{CYAN}===  Cycle {cycle}/{num_cycles}  ==={RESET}")
+
+        # Snapshot HEAD before this cycle so we can measure changes afterwards.
+        base_sha = _git_head_sha(workdir) if use_convergence else None
 
         for review_pass in selected_passes:
             time.sleep(args.pause)
@@ -701,13 +824,15 @@ def _run_review_suite(
             cycle_label = f" (cycle {cycle}/{num_cycles})" if num_cycles > 1 else ""
             banner(f"[{current_step}/{total_steps}] {review_pass['label']}{cycle_label}", CYAN)
 
-            if _looks_dangerous(review_pass["prompt"]):
+            prompt = review_pass["prompt"] + COMMIT_MESSAGE_INSTRUCTIONS
+
+            if _looks_dangerous(prompt):
                 logger.warning("Skipping pass '%s' — dangerous keywords detected in prompt", review_pass["id"])
                 print(f"{YELLOW}Skipping '{review_pass['id']}' — dangerous keywords detected.{RESET}")
                 continue
 
             exit_code = run_claude(
-                review_pass["prompt"],
+                prompt,
                 workdir,
                 skip_permissions=args.dangerously_skip_permissions,
                 dry_run=args.dry_run,
@@ -717,6 +842,29 @@ def _run_review_suite(
             if exit_code != 0:
                 logger.warning("Pass '%s' exited with code %d", review_pass["id"], exit_code)
                 print(f"{YELLOW}Pass '{review_pass['id']}' exited with code {exit_code}. Continuing...{RESET}")
+
+        # --- Post-cycle: commit & convergence check ---------------------------
+        if use_convergence and base_sha and not args.dry_run:
+            _git_commit_cycle(workdir, cycle)
+            current_sha = _git_head_sha(workdir)
+
+            if current_sha == base_sha:
+                print(f"\n{GREEN}No changes in cycle {cycle} — converged.{RESET}")
+                break
+
+            pct = _get_change_percentage(workdir, base_sha)
+            print(f"\n{DIM}Cycle {cycle}: {pct:.2f}% of lines changed "
+                  f"(threshold: {convergence_threshold}%){RESET}")
+
+            if prev_pct is not None and pct > prev_pct:
+                print(f"{YELLOW}Warning: changes increased ({prev_pct:.2f}% -> {pct:.2f}%) — "
+                      f"possible oscillation.{RESET}")
+
+            if pct < convergence_threshold:
+                print(f"{GREEN}Converged at {pct:.2f}% (below {convergence_threshold}% threshold).{RESET}")
+                break
+
+            prev_pct = pct
 
 
 def _display_pre_run_warning(skip_permissions: bool) -> None:
@@ -789,14 +937,16 @@ def main() -> None:
     num_cycles = max(1, args.cycles)
     total_steps = len(selected_passes) * num_cycles
 
-    _print_run_summary(workdir, selected_passes, num_cycles, total_steps, args.idle_timeout, args.dry_run)
+    convergence_threshold = max(0.0, args.converged_at_percentage)
+
+    _print_run_summary(workdir, selected_passes, num_cycles, total_steps, args.idle_timeout, args.dry_run, convergence_threshold)
 
     if not args.dry_run:
         _display_pre_run_warning(args.dangerously_skip_permissions)
 
     suite_start_time = time.time()
     try:
-        _run_review_suite(selected_passes, num_cycles, workdir, args)
+        _run_review_suite(selected_passes, num_cycles, workdir, args, convergence_threshold)
     except KeyboardInterrupt:
         elapsed = _format_duration(time.time() - suite_start_time)
         print(f"\n{YELLOW}Interrupted after {elapsed}. Partial results may have been applied.{RESET}")
