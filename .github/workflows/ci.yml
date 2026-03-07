@@ -28,4 +28,4 @@ jobs:
         run: uv run claudeloop --help
 
       - name: Dry run
-        run: uv run claudeloop --dry-run
+        run: uv run claudeloop --dir . --dry-run

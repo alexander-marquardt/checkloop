@@ -236,7 +236,8 @@ class TestLooksDangerous:
         assert cli._looks_dangerous("truncate the table") is True
 
     def test_format_keyword(self) -> None:
-        assert cli._looks_dangerous("format the disk") is True
+        assert cli._looks_dangerous("format c: drive") is True
+        assert cli._looks_dangerous("format /dev/sda") is True
 
     def test_wipe(self) -> None:
         assert cli._looks_dangerous("wipe everything") is True
@@ -245,8 +246,15 @@ class TestLooksDangerous:
         assert cli._looks_dangerous("cat /etc/passwd") is True
 
     def test_embedded_safe_word(self) -> None:
-        # "format" as a standalone word should match
-        assert cli._looks_dangerous("reformat") is False
+        # "mkfs" as a standalone word should match, but not as a substring
+        assert cli._looks_dangerous("run mkfs on disk") is True
+        assert cli._looks_dangerous("format the code") is False
+
+    def test_format_dev(self) -> None:
+        assert cli._looks_dangerous("format /dev/sda") is True
+
+    def test_dd_of_dev(self) -> None:
+        assert cli._looks_dangerous("dd of=/dev/sda bs=1M") is True
 
     def test_empty_string(self) -> None:
         assert cli._looks_dangerous("") is False

@@ -578,7 +578,9 @@ DEFAULT_TIER: str = "basic"
 
 _DANGEROUS_PROMPT_KEYWORDS: list[str] = [
     "rm -rf /",
-    "format",
+    "format c:",
+    "format /dev",
+    "mkfs",
     "wipe",
     "delete all",
     "drop database",
@@ -589,6 +591,7 @@ _DANGEROUS_PROMPT_KEYWORDS: list[str] = [
     "chmod 777 /",
     "/etc/passwd",
     "dd if=/dev/zero",
+    "dd of=/dev",
 ]
 
 
