@@ -159,6 +159,29 @@ src/claudeloop/
 └── cli.py        # All CLI logic: argument parsing, review passes, Claude subprocess management
 ```
 
+## Development
+
+```bash
+# Clone and install dev dependencies
+git clone https://github.com/alexander-marquardt/claudeloop.git
+cd claudeloop
+uv sync --dev
+
+# Run the test suite
+uv run pytest
+
+# Run with coverage
+uv run pytest --cov=claudeloop --cov-report=term-missing
+
+# Type checking
+uv run mypy src/claudeloop/
+
+# Run claudeloop on itself (dogfooding)
+uv run claudeloop --dir . --dangerously-skip-permissions
+```
+
+The project has no runtime dependencies — only `pytest`, `pytest-cov`, and `mypy` in the dev group.
+
 ## License
 
 MIT

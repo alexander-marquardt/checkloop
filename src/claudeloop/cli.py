@@ -273,7 +273,12 @@ def _get_change_percentage(workdir: str, base_sha: str) -> float:
 
 
 def print_banner(title: str, colour: str = CYAN) -> None:
-    """Print a prominent section header with horizontal rules."""
+    """Print a prominent section header with horizontal rules.
+
+    Args:
+        title: Text to display between the rules.
+        colour: ANSI colour code for the banner (default: CYAN).
+    """
     horizontal_rule = "\u2500" * RULE_WIDTH  # ─
     print(f"\n{colour}{BOLD}{horizontal_rule}")
     print(f"  {title}")
@@ -281,7 +286,12 @@ def print_banner(title: str, colour: str = CYAN) -> None:
 
 
 def print_status(msg: str, colour: str = DIM) -> None:
-    """Print a coloured status message to the terminal."""
+    """Print a coloured status message to the terminal.
+
+    Args:
+        msg: The status text to display.
+        colour: ANSI colour code to wrap the message in (default: DIM).
+    """
     print(f"{colour}{msg}{RESET}")
 
 
@@ -498,6 +508,7 @@ PASS_IDS: list[str] = [p["id"] for p in REVIEW_PASSES]
 
 _BOOKEND_START: list[str] = ["test-fix"]
 _BOOKEND_END: list[str] = ["test-validate"]
+_BOOKEND_IDS: set[str] = {*_BOOKEND_START, *_BOOKEND_END}
 _CORE_BASIC: list[str] = ["readability", "dry", "tests", "docs"]
 _CORE_THOROUGH: list[str] = ["security", "perf", "errors", "types"]
 _CORE_EXHAUSTIVE: list[str] = ["edge-cases", "complexity", "deps", "logging", "concurrency", "accessibility", "api-design"]
@@ -865,6 +876,17 @@ def run_claude(
     Uses ``--output-format stream-json`` so progress events stream in real time.
     There is no hard timeout — the process runs as long as it produces output.
     It is only killed after *idle_timeout* seconds of silence.
+
+    Args:
+        prompt: The review prompt to send to Claude Code.
+        workdir: Absolute path to the project directory to review.
+        skip_permissions: Pass ``--dangerously-skip-permissions`` to Claude Code.
+        dry_run: If True, print what would run without invoking Claude.
+        idle_timeout: Kill the subprocess after this many seconds of no output.
+        verbose: Show raw subprocess output (debug-level detail).
+
+    Returns:
+        The subprocess exit code (0 on success).
     """
     cmd = _build_claude_command(prompt, skip_permissions)
     print_status(f"$ {' '.join(cmd[:3])} [prompt omitted for brevity]", DIM)
@@ -1050,8 +1072,8 @@ def _run_single_pass(
     workdir: str,
     args: argparse.Namespace,
     step_label: str,
-) -> None:
-    """Execute a single review pass, skipping if the prompt looks dangerous."""
+) -> bool:
+    """Execute a single review pass. Returns True if the pass made changes."""
     logger.info("Pass started: id=%s, label=%s, step=%s", review_pass["id"], review_pass["label"], step_label)
     print_banner(f"{step_label} {review_pass['label']}", CYAN)
 
@@ -1060,7 +1082,11 @@ def _run_single_pass(
     if _looks_dangerous(prompt):
         logger.warning("Skipping pass '%s' — dangerous keywords detected in prompt", review_pass["id"])
         print(f"{YELLOW}Skipping '{review_pass['id']}' — dangerous keywords detected.{RESET}")
-        return
+        return False
+
+    # Snapshot git state to detect changes
+    is_git = _is_git_repo(workdir)
+    sha_before = _git_head_sha(workdir) if is_git else None
 
     exit_code = run_claude(
         prompt,
@@ -1073,6 +1099,15 @@ def _run_single_pass(
     if exit_code != 0:
         logger.warning("Pass '%s' exited with code %d", review_pass["id"], exit_code)
         print(f"{YELLOW}Pass '{review_pass['id']}' exited with code {exit_code}. Continuing...{RESET}")
+
+    # Check if anything changed
+    if sha_before is not None:
+        sha_after = _git_head_sha(workdir)
+        made_changes = sha_after != sha_before
+    else:
+        made_changes = True  # assume changes if not a git repo
+    logger.info("Pass '%s' made_changes=%s", review_pass["id"], made_changes)
+    return made_changes
 
 
 def _run_review_suite(
@@ -1087,12 +1122,16 @@ def _run_review_suite(
     When *convergence_threshold* > 0 and the project is a git repo, a commit
     is created after each cycle and the percentage of lines changed is compared
     to the threshold.  If changes fall below the threshold the loop stops early.
+
+    On cycle 2+, passes that made no changes in the previous cycle are skipped.
+    Bookend passes (test-fix, test-validate) always run on every cycle.
     """
-    total_steps = len(selected_passes) * num_cycles
     step_number = 0
     # Only track convergence if a threshold is set and we're in a git repo
     convergence_enabled = convergence_threshold > 0 and _is_git_repo(workdir)
     prev_change_pct: float | None = None
+    # Track which passes made changes — all passes are active for cycle 1
+    active_pass_ids: set[str] | None = None  # None means "run all"
 
     for cycle in range(1, num_cycles + 1):
         logger.info("Cycle %d/%d started", cycle, num_cycles)
@@ -1101,12 +1140,32 @@ def _run_review_suite(
 
         base_sha = _git_head_sha(workdir) if convergence_enabled else None
 
-        for review_pass in selected_passes:
+        # Determine which passes to run this cycle
+        cycle_passes = selected_passes
+        if active_pass_ids is not None:
+            cycle_passes = [
+                p for p in selected_passes
+                if p["id"] in active_pass_ids or p["id"] in _BOOKEND_IDS
+            ]
+            skipped = len(selected_passes) - len(cycle_passes)
+            if skipped > 0:
+                print(f"{DIM}Skipping {skipped} pass(es) that made no changes last cycle.{RESET}")
+
+        total_steps_this_cycle = len(cycle_passes)
+        cycle_active_ids: set[str] = set()
+
+        for i, review_pass in enumerate(cycle_passes, 1):
             time.sleep(args.pause)
             step_number += 1
             cycle_suffix = f" (cycle {cycle}/{num_cycles})" if num_cycles > 1 else ""
-            step_label = f"[{step_number}/{total_steps}]{cycle_suffix}"
-            _run_single_pass(review_pass, workdir, args, step_label)
+            step_label = f"[{i}/{total_steps_this_cycle}]{cycle_suffix}"
+
+            made_changes = _run_single_pass(review_pass, workdir, args, step_label)
+            if made_changes:
+                cycle_active_ids.add(review_pass["id"])
+
+        # Update active passes for next cycle (bookends excluded from tracking)
+        active_pass_ids = cycle_active_ids
 
         if convergence_enabled and base_sha and not args.dry_run:
             converged, prev_change_pct = _check_cycle_convergence(
@@ -1232,7 +1291,12 @@ def _execute_suite(
 
 
 def main() -> None:
-    """CLI entry point: parse arguments and run the configured review suite."""
+    """CLI entry point: parse arguments and run the configured review suite.
+
+    This is the function invoked by the ``claudeloop`` console script defined
+    in ``pyproject.toml``.  It parses CLI flags, resolves the review tier and
+    pass list, displays a pre-run summary, then delegates to the review loop.
+    """
     args = _build_argument_parser().parse_args()
     _configure_logging(args)
 
@@ -1263,5 +1327,5 @@ def main() -> None:
     _execute_suite(selected_passes, num_cycles, workdir, args, convergence_threshold)
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     main()
