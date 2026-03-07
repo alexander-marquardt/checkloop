@@ -1349,6 +1349,73 @@ class TestConvergedAtPercentageArg:
         assert ns.converged_at_percentage == 0.0
 
 
+class TestChangedOnly:
+    """Tests for --changed-only flag and related helpers."""
+
+    def test_changed_only_default_is_none(self) -> None:
+        ns = _parse_cli(["--dir", "/tmp"])
+        assert ns.changed_only is None
+
+    def test_changed_only_no_arg_sets_auto(self) -> None:
+        ns = _parse_cli(["--dir", "/tmp", "--changed-only"])
+        assert ns.changed_only == "auto"
+
+    def test_changed_only_with_ref(self) -> None:
+        ns = _parse_cli(["--dir", "/tmp", "--changed-only", "develop"])
+        assert ns.changed_only == "develop"
+
+    def test_detect_default_branch_main(self) -> None:
+        with mock.patch.object(cli, "_git_run") as mock_git:
+            mock_git.return_value = mock.MagicMock(returncode=0)
+            assert cli._detect_default_branch("/tmp") == "main"
+
+    def test_detect_default_branch_master(self) -> None:
+        with mock.patch.object(cli, "_git_run") as mock_git:
+            mock_git.side_effect = [
+                mock.MagicMock(returncode=1),   # main not found
+                mock.MagicMock(returncode=0),   # master found
+            ]
+            assert cli._detect_default_branch("/tmp") == "master"
+
+    def test_detect_default_branch_fallback(self) -> None:
+        with mock.patch.object(cli, "_git_run") as mock_git:
+            mock_git.return_value = mock.MagicMock(returncode=1)
+            assert cli._detect_default_branch("/tmp") == "main"
+
+    def test_get_changed_files(self) -> None:
+        with mock.patch.object(cli, "_git_run") as mock_git:
+            mock_git.side_effect = [
+                mock.MagicMock(returncode=0, stdout="abc123"),  # merge-base
+                mock.MagicMock(returncode=0, stdout="src/a.py\nsrc/b.py\n"),  # diff
+            ]
+            files = cli._get_changed_files("/tmp", "main")
+            assert files == ["src/a.py", "src/b.py"]
+
+    def test_get_changed_files_merge_base_fails(self) -> None:
+        with mock.patch.object(cli, "_git_run") as mock_git:
+            mock_git.return_value = mock.MagicMock(returncode=1)
+            assert cli._get_changed_files("/tmp", "main") == []
+
+    def test_build_changed_files_prefix(self) -> None:
+        prefix = cli._build_changed_files_prefix(["src/a.py", "src/b.py"])
+        assert "2 file(s)" in prefix
+        assert "src/a.py" in prefix
+        assert "src/b.py" in prefix
+        assert "IMPORTANT" in prefix
+
+    def test_changed_prefix_prepended_to_prompt(self) -> None:
+        """When changed_files_prefix is set, it's prepended to the review prompt."""
+        passes = [{"id": "readability", "label": "Readability", "prompt": "review code"}]
+        args = _make_suite_args(dry_run=False)
+        args.changed_files_prefix = "ONLY THESE FILES: a.py\n\n"
+        with mock.patch.object(cli, "run_claude", return_value=0) as mock_run, \
+             mock.patch.object(cli, "_is_git_repo", return_value=False):
+            cli._run_review_suite(passes, 1, "/tmp", args)
+            prompt_used = mock_run.call_args[0][0]
+            assert prompt_used.startswith("ONLY THESE FILES: a.py")
+            assert "review code" in prompt_used
+
+
 class TestConvergenceInSuite:
     """Tests for convergence detection within _run_review_suite."""
 
@@ -2024,5 +2091,464 @@ class TestMainVerboseLogging:
                     cli.main()
                 mock_log.assert_called_once()
                 assert mock_log.call_args.kwargs["level"] == logging.DEBUG
+
+
+# =============================================================================
+# Edge cases: _format_duration with NaN/Inf/extreme values
+# =============================================================================
+
+class TestFormatDurationEdgeCases:
+    """Edge case tests for _format_duration() with unusual float inputs."""
+
+    def test_nan_returns_zero(self) -> None:
+        assert cli._format_duration(float("nan")) == "0m00s"
+
+    def test_positive_inf_returns_zero(self) -> None:
+        assert cli._format_duration(float("inf")) == "0m00s"
+
+    def test_negative_inf_returns_zero(self) -> None:
+        assert cli._format_duration(float("-inf")) == "0m00s"
+
+    def test_very_small_positive_float(self) -> None:
+        assert cli._format_duration(0.001) == "0m00s"
+
+    def test_very_large_float(self) -> None:
+        # 1 million seconds ≈ 277 hours
+        result = cli._format_duration(1_000_000.0)
+        assert result == "277h46m40s"
+
+
+# =============================================================================
+# Edge cases: _parse_shortstat
+# =============================================================================
+
+class TestParseShortstatEdgeCases:
+    """Edge case tests for _parse_shortstat()."""
+
+    def test_empty_string(self) -> None:
+        assert cli._parse_shortstat("") == 0
+
+    def test_whitespace_only(self) -> None:
+        assert cli._parse_shortstat("   \n\t  ") == 0
+
+    def test_only_files_changed(self) -> None:
+        assert cli._parse_shortstat(" 3 files changed") == 0
+
+    def test_only_insertions(self) -> None:
+        assert cli._parse_shortstat(" 1 file changed, 42 insertions(+)") == 42
+
+    def test_only_deletions(self) -> None:
+        assert cli._parse_shortstat(" 1 file changed, 10 deletions(-)") == 10
+
+    def test_both_insertions_and_deletions(self) -> None:
+        assert cli._parse_shortstat(" 2 files changed, 10 insertions(+), 5 deletions(-)") == 15
+
+    def test_large_numbers(self) -> None:
+        assert cli._parse_shortstat(" 1 file changed, 999999 insertions(+), 888888 deletions(-)") == 1888887
+
+    def test_singular_insertion(self) -> None:
+        assert cli._parse_shortstat(" 1 file changed, 1 insertion(+)") == 1
+
+    def test_singular_deletion(self) -> None:
+        assert cli._parse_shortstat(" 1 file changed, 1 deletion(-)") == 1
+
+
+# =============================================================================
+# Edge cases: _count_file_lines
+# =============================================================================
+
+class TestCountFileLinesEdgeCases:
+    """Edge case tests for _count_file_lines()."""
+
+    def test_empty_file(self, tmp_path: Path) -> None:
+        f = tmp_path / "empty.txt"
+        f.write_bytes(b"")
+        assert cli._count_file_lines(f) == 0
+
+    def test_single_newline(self, tmp_path: Path) -> None:
+        f = tmp_path / "one.txt"
+        f.write_bytes(b"\n")
+        assert cli._count_file_lines(f) == 1
+
+    def test_no_trailing_newline(self, tmp_path: Path) -> None:
+        f = tmp_path / "no_newline.txt"
+        f.write_bytes(b"hello")
+        assert cli._count_file_lines(f) == 0
+
+    def test_binary_file_returns_zero(self, tmp_path: Path) -> None:
+        f = tmp_path / "binary.bin"
+        f.write_bytes(b"\x00\x01\x02\n\n\n")
+        assert cli._count_file_lines(f) == 0
+
+    def test_unicode_content(self, tmp_path: Path) -> None:
+        f = tmp_path / "unicode.txt"
+        f.write_bytes("こんにちは\nworld\n".encode("utf-8"))
+        assert cli._count_file_lines(f) == 2
+
+    def test_mixed_line_endings(self, tmp_path: Path) -> None:
+        f = tmp_path / "mixed.txt"
+        f.write_bytes(b"line1\r\nline2\nline3\r\n")
+        # Counts \n only: \r\n has one \n, \n has one, \r\n has one = 3
+        assert cli._count_file_lines(f) == 3
+
+    def test_null_byte_beyond_header(self, tmp_path: Path) -> None:
+        """Binary detection only checks the header chunk, not the full file."""
+        # Header is _READ_CHUNK_SIZE (8192) bytes. Put null byte after that.
+        f = tmp_path / "late_null.bin"
+        content = b"x" * (cli._READ_CHUNK_SIZE + 10)
+        content = content[:cli._READ_CHUNK_SIZE + 5] + b"\0" + content[cli._READ_CHUNK_SIZE + 6:]
+        f.write_bytes(content)
+        # No null in header → treated as text, counts \n (0 in this case)
+        assert cli._count_file_lines(f) == 0
+
+
+# =============================================================================
+# Edge cases: _count_tracked_lines
+# =============================================================================
+
+class TestCountTrackedLinesEdgeCases:
+    """Edge case tests for _count_tracked_lines()."""
+
+    def test_no_tracked_files_returns_one(self) -> None:
+        """Empty repo returns 1 to avoid division by zero."""
+        mock_result = mock.MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = b""  # no files
+        with mock.patch.object(cli, "_git_run", return_value=mock_result):
+            assert cli._count_tracked_lines("/tmp") == 1
+
+    def test_git_ls_files_failure(self) -> None:
+        mock_result = mock.MagicMock()
+        mock_result.returncode = 128
+        mock_result.stdout = b""
+        with mock.patch.object(cli, "_git_run", return_value=mock_result):
+            assert cli._count_tracked_lines("/tmp") == 1
+
+
+# =============================================================================
+# Edge cases: _compute_change_stats
+# =============================================================================
+
+class TestComputeChangeStatsEdgeCases:
+    """Edge case tests for _compute_change_stats()."""
+
+    def test_zero_lines_changed(self) -> None:
+        with mock.patch.object(cli, "_count_lines_changed", return_value=0):
+            lines, pct = cli._compute_change_stats("/tmp", "abc123")
+        assert lines == 0
+        assert pct == 0.0
+
+    def test_all_lines_changed(self) -> None:
+        with mock.patch.object(cli, "_count_lines_changed", return_value=1000):
+            with mock.patch.object(cli, "_cached_total_tracked_lines", return_value=1000):
+                lines, pct = cli._compute_change_stats("/tmp", "abc123")
+        assert lines == 1000
+        assert pct == 100.0
+
+
+# =============================================================================
+# Edge cases: _filter_active_passes
+# =============================================================================
+
+class TestFilterActivePassesEdgeCases:
+    """Edge case tests for _filter_active_passes()."""
+
+    def test_empty_pass_list(self) -> None:
+        assert cli._filter_active_passes([], None) == []
+
+    def test_empty_pass_list_with_previous(self, capsys: pytest.CaptureFixture[str]) -> None:
+        result = cli._filter_active_passes([], set())
+        assert result == []
+
+    def test_all_skipped(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """All non-bookend passes skipped when none changed."""
+        passes = [{"id": "readability", "label": "R", "prompt": "p"}]
+        result = cli._filter_active_passes(passes, set())
+        assert result == []
+        assert "Skipping 1" in capsys.readouterr().out
+
+    def test_bookend_always_included(self) -> None:
+        passes = [
+            {"id": "test-fix", "label": "TF", "prompt": "p"},
+            {"id": "readability", "label": "R", "prompt": "p"},
+            {"id": "test-validate", "label": "TV", "prompt": "p"},
+        ]
+        result = cli._filter_active_passes(passes, set())
+        assert len(result) == 2
+        assert result[0]["id"] == "test-fix"
+        assert result[1]["id"] == "test-validate"
+
+
+# =============================================================================
+# Edge cases: _validate_arguments
+# =============================================================================
+
+class TestValidateArgumentsEdgeCases:
+    """Edge case tests for _validate_arguments()."""
+
+    def test_converged_at_percentage_over_100_exits(self) -> None:
+        args = _make_main_mock_args(converged_at_percentage=101.0)
+        with pytest.raises(SystemExit) as exc_info:
+            cli._validate_arguments(args)
+        assert exc_info.value.code == 1
+
+    def test_converged_at_zero_is_valid(self) -> None:
+        args = _make_main_mock_args(converged_at_percentage=0.0)
+        cli._validate_arguments(args)  # should not raise
+
+    def test_converged_at_100_is_valid(self) -> None:
+        args = _make_main_mock_args(converged_at_percentage=100.0)
+        cli._validate_arguments(args)  # should not raise
+
+    def test_idle_timeout_exactly_one(self) -> None:
+        args = _make_main_mock_args(idle_timeout=1)
+        cli._validate_arguments(args)  # should not raise
+
+    def test_pause_zero_is_valid(self) -> None:
+        args = _make_main_mock_args(pause=0)
+        cli._validate_arguments(args)  # should not raise
+
+    def test_cycles_exactly_one(self) -> None:
+        args = _make_main_mock_args(cycles=1)
+        cli._validate_arguments(args)  # should not raise
+
+
+# =============================================================================
+# Edge cases: _resolve_selected_passes
+# =============================================================================
+
+class TestResolveSelectedPassesEdgeCases:
+    """Edge case tests for _resolve_selected_passes()."""
+
+    def test_all_passes_flag(self) -> None:
+        args = _make_main_mock_args(all_passes=True, passes=None, level=None)
+        result = cli._resolve_selected_passes(args)
+        assert len(result) == len(cli.REVIEW_PASSES)
+
+    def test_explicit_passes_override_level(self) -> None:
+        args = _make_main_mock_args(all_passes=False, passes=["security"], level="basic")
+        result = cli._resolve_selected_passes(args)
+        assert len(result) == 1
+        assert result[0]["id"] == "security"
+
+    def test_default_tier_when_nothing_specified(self) -> None:
+        args = _make_main_mock_args(all_passes=False, passes=None, level=None)
+        result = cli._resolve_selected_passes(args)
+        expected_ids = set(cli.TIERS[cli.DEFAULT_TIER])
+        assert {p["id"] for p in result} == expected_ids
+
+
+# =============================================================================
+# Edge cases: _looks_dangerous with boundary inputs
+# =============================================================================
+
+class TestLooksDangerousEdgeCases:
+    """Additional edge case tests for _looks_dangerous()."""
+
+    def test_very_long_safe_string(self) -> None:
+        assert cli._looks_dangerous("a" * 100_000) is False
+
+    def test_null_character_in_string(self) -> None:
+        assert cli._looks_dangerous("safe\x00text") is False
+
+    def test_newlines_around_keyword(self) -> None:
+        assert cli._looks_dangerous("something\nrm -rf /\nsomething") is True
+
+    def test_tabs_around_keyword(self) -> None:
+        assert cli._looks_dangerous("\t\tdd if=/dev/zero\t\t") is True
+
+    def test_mixed_case_drop_database(self) -> None:
+        assert cli._looks_dangerous("DrOp DaTaBaSe users") is True
+
+
+# =============================================================================
+# Edge cases: _build_changed_files_prefix
+# =============================================================================
+
+class TestBuildChangedFilesPrefixEdgeCases:
+    """Edge case tests for _build_changed_files_prefix()."""
+
+    def test_single_file(self) -> None:
+        result = cli._build_changed_files_prefix(["src/main.py"])
+        assert "1 file(s)" in result
+        assert "src/main.py" in result
+
+    def test_file_with_spaces(self) -> None:
+        result = cli._build_changed_files_prefix(["src/my file.py"])
+        assert "my file.py" in result
+
+    def test_file_with_unicode(self) -> None:
+        result = cli._build_changed_files_prefix(["src/日本語.py"])
+        assert "日本語.py" in result
+
+
+# =============================================================================
+# Edge cases: _git_run with empty args
+# =============================================================================
+
+class TestGitRunEdgeCases:
+    """Edge case tests for _git_run()."""
+
+    def test_git_not_installed(self) -> None:
+        with mock.patch("subprocess.run", side_effect=FileNotFoundError("git")):
+            with pytest.raises(FileNotFoundError):
+                cli._git_run("/tmp", "status")
+
+    def test_os_error(self) -> None:
+        with mock.patch("subprocess.run", side_effect=OSError("disk error")):
+            with pytest.raises(OSError):
+                cli._git_run("/tmp", "status")
+
+
+# =============================================================================
+# Edge cases: _get_changed_files
+# =============================================================================
+
+class TestGetChangedFilesEdgeCases:
+    """Edge case tests for _get_changed_files()."""
+
+    def test_empty_diff_output(self) -> None:
+        merge_base_result = mock.MagicMock(returncode=0, stdout="abc123\n")
+        diff_result = mock.MagicMock(returncode=0, stdout="")
+        with mock.patch.object(cli, "_git_run", side_effect=[merge_base_result, diff_result]):
+            result = cli._get_changed_files("/tmp", "main")
+        assert result == []
+
+    def test_merge_base_failure(self) -> None:
+        merge_base_result = mock.MagicMock(returncode=128, stdout="", stderr="")
+        with mock.patch.object(cli, "_git_run", return_value=merge_base_result):
+            result = cli._get_changed_files("/tmp", "nonexistent")
+        assert result == []
+
+
+# =============================================================================
+# Edge cases: _check_cycle_convergence
+# =============================================================================
+
+class TestCheckCycleConvergenceEdgeCases:
+    """Edge case tests for _check_cycle_convergence()."""
+
+    def test_no_changes_converges(self) -> None:
+        with mock.patch.object(cli, "_git_commit_cycle"):
+            with mock.patch.object(cli, "_git_head_sha", return_value="same_sha"):
+                converged, pct = cli._check_cycle_convergence(
+                    "/tmp", 1, "same_sha", 0.1, None,
+                )
+        assert converged is True
+        assert pct is None  # unchanged from prev
+
+    def test_changes_below_threshold_converges(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with mock.patch.object(cli, "_git_commit_cycle"):
+            with mock.patch.object(cli, "_git_head_sha", return_value="new_sha"):
+                with mock.patch.object(cli, "_compute_change_stats", return_value=(5, 0.05)):
+                    converged, pct = cli._check_cycle_convergence(
+                        "/tmp", 1, "old_sha", 0.1, None,
+                    )
+        assert converged is True
+        assert pct == 0.05
+
+    def test_increasing_changes_warns(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with mock.patch.object(cli, "_git_commit_cycle"):
+            with mock.patch.object(cli, "_git_head_sha", return_value="new_sha"):
+                with mock.patch.object(cli, "_compute_change_stats", return_value=(100, 5.0)):
+                    converged, pct = cli._check_cycle_convergence(
+                        "/tmp", 2, "old_sha", 0.1, 2.0,
+                    )
+        assert converged is False
+        assert pct == 5.0
+        out = capsys.readouterr().out
+        assert "oscillation" in out.lower()
+
+
+# =============================================================================
+# Edge cases: _report_pass_changes
+# =============================================================================
+
+class TestReportPassChangesEdgeCases:
+    """Edge case tests for _report_pass_changes()."""
+
+    def test_no_git_repo_assumes_changes(self) -> None:
+        assert cli._report_pass_changes("/tmp", "test", None) is True
+
+    def test_same_sha_no_changes(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with mock.patch.object(cli, "_git_head_sha", return_value="sha1"):
+            result = cli._report_pass_changes("/tmp", "test", "sha1")
+        assert result is False
+        assert "no changes" in capsys.readouterr().out
+
+    def test_different_sha_reports_changes(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with mock.patch.object(cli, "_git_head_sha", return_value="sha2"):
+            with mock.patch.object(cli, "_compute_change_stats", return_value=(10, 0.5)):
+                result = cli._report_pass_changes("/tmp", "test", "sha1")
+        assert result is True
+        assert "10 lines changed" in capsys.readouterr().out
+
+
+# =============================================================================
+# Edge cases: _measure_current_rss_mb
+# =============================================================================
+
+class TestMeasureCurrentRssMbEdgeCases:
+    """Edge case tests for _measure_current_rss_mb()."""
+
+    def test_ps_returns_non_numeric(self) -> None:
+        mock_result = mock.MagicMock(returncode=0, stdout="not_a_number\n")
+        with mock.patch("subprocess.run", return_value=mock_result):
+            # Falls through to resource fallback, doesn't crash
+            result = cli._measure_current_rss_mb()
+            assert isinstance(result, float)
+
+    def test_ps_fails(self) -> None:
+        with mock.patch("subprocess.run", side_effect=OSError("no ps")):
+            result = cli._measure_current_rss_mb()
+            assert isinstance(result, float)
+
+
+# =============================================================================
+# Edge cases: run_claude with empty/whitespace prompts
+# =============================================================================
+
+class TestRunClaudeEdgeCases:
+    """Edge case tests for run_claude()."""
+
+    def test_whitespace_only_prompt_dry_run(self, capsys: pytest.CaptureFixture[str]) -> None:
+        code = cli.run_claude("   \t\n  ", "/tmp", dry_run=True)
+        assert code == 0
+
+    def test_unicode_prompt_dry_run(self, capsys: pytest.CaptureFixture[str]) -> None:
+        code = cli.run_claude("レビューコード 🔍 review", "/tmp", dry_run=True)
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "レビューコード" in out
+
+
+# =============================================================================
+# Edge cases: _print_event with malformed events
+# =============================================================================
+
+class TestPrintEventEdgeCases:
+    """Edge case tests for _print_event() with unusual inputs."""
+
+    def test_none_type_field(self, capsys: pytest.CaptureFixture[str]) -> None:
+        event: dict[str, Any] = {"type": None}
+        cli._print_event(event, time.time())
+        assert capsys.readouterr().out.strip() == ""
+
+    def test_numeric_type_field(self, capsys: pytest.CaptureFixture[str]) -> None:
+        event: dict[str, Any] = {"type": 42}
+        cli._print_event(event, time.time())
+        assert capsys.readouterr().out.strip() == ""
+
+    def test_assistant_with_none_content(self, capsys: pytest.CaptureFixture[str]) -> None:
+        event: dict[str, Any] = {"type": "assistant", "message": {"content": None}}
+        cli._print_event(event, time.time())
+        assert capsys.readouterr().out.strip() == ""
+
+    def test_result_with_non_string_result(self, capsys: pytest.CaptureFixture[str]) -> None:
+        event: dict[str, Any] = {"type": "result", "result": 42}
+        cli._print_event(event, time.time())
+        # Should print since 42 is truthy
+        out = capsys.readouterr().out
+        assert "42" in out
 
 

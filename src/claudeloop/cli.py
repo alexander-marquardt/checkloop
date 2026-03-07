@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
 import re
 import resource
@@ -28,6 +29,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from collections.abc import Callable
 from typing import IO, Any, Literal, NoReturn, overload
 
 logger = logging.getLogger(__name__)
@@ -677,6 +679,8 @@ def _looks_dangerous(text: str) -> bool:
 
 def _format_duration(total_seconds: float) -> str:
     """Format elapsed seconds into a compact ``XmYYs`` or ``XhYYmZZs`` string."""
+    if math.isnan(total_seconds) or math.isinf(total_seconds):
+        return "0m00s"
     minutes, seconds = divmod(max(0, int(total_seconds)), 60)
     if minutes < 60:
         return f"{minutes}m{seconds:02d}s"
@@ -704,10 +708,11 @@ def _summarise_tool_use(tool_name: str, tool_input: dict[str, Any]) -> str:
 
 def _print_assistant_event(event: dict[str, Any], elapsed_prefix: str) -> None:
     """Print text blocks from an assistant response event."""
+    content = event.get("message", {}).get("content") or []
     text_blocks = [
         b.get("text", "")
-        for b in event.get("message", {}).get("content", [])
-        if b.get("type") == "text"
+        for b in content
+        if isinstance(b, dict) and b.get("type") == "text"
     ]
     for text in text_blocks:
         if text.strip():
@@ -736,8 +741,11 @@ def _print_result_event(event: dict[str, Any], elapsed_prefix: str) -> None:
         print(result_text)
 
 
+# Type alias for event handler functions used by _print_event dispatch.
+_EventHandler = Callable[[dict[str, Any], str], None]
+
 # Maps stream-json event types to their display handlers.
-_EVENT_TYPE_HANDLERS: dict[str, Any] = {
+_EVENT_TYPE_HANDLERS: dict[str, _EventHandler] = {
     "assistant": _print_assistant_event,
     "tool_use": _print_tool_use_event,
     "system": _print_system_event,
@@ -1484,6 +1492,8 @@ def _validate_arguments(args: argparse.Namespace) -> None:
         _fatal("--cycles must be at least 1")
     if args.converged_at_percentage < 0:
         _fatal("--converged-at-percentage cannot be negative")
+    if args.converged_at_percentage > 100:
+        _fatal("--converged-at-percentage cannot exceed 100")
 
 
 def _resolve_selected_passes(args: argparse.Namespace) -> list[dict[str, str]]:
