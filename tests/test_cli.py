@@ -36,6 +36,7 @@ _SHARED_ARG_DEFAULTS: dict[str, Any] = dict(
     pause=0,
     idle_timeout=cli.DEFAULT_IDLE_TIMEOUT,
     verbose=False,
+    debug=False,
     dangerously_skip_permissions=False,
 )
 
@@ -123,10 +124,10 @@ def _patch_main_pipeline(
 # =============================================================================
 
 class TestPrintBanner:
-    """Tests for the print_banner() terminal output helper."""
+    """Tests for the _print_banner() terminal output helper."""
 
     def test_default_colour(self, capsys: pytest.CaptureFixture[str]) -> None:
-        cli.print_banner("Hello")
+        cli._print_banner("Hello")
         out = capsys.readouterr().out
         assert "Hello" in out
         assert cli.CYAN in out
@@ -134,23 +135,23 @@ class TestPrintBanner:
         assert cli.RESET in out
 
     def test_custom_colour(self, capsys: pytest.CaptureFixture[str]) -> None:
-        cli.print_banner("Title", cli.GREEN)
+        cli._print_banner("Title", cli.GREEN)
         out = capsys.readouterr().out
         assert cli.GREEN in out
         assert "Title" in out
 
 
 class TestPrintStatus:
-    """Tests for the print_status() terminal output helper."""
+    """Tests for the _print_status() terminal output helper."""
 
     def test_default_dim(self, capsys: pytest.CaptureFixture[str]) -> None:
-        cli.print_status("info")
+        cli._print_status("info")
         out = capsys.readouterr().out
         assert "info" in out
         assert cli.DIM in out
 
     def test_custom_colour(self, capsys: pytest.CaptureFixture[str]) -> None:
-        cli.print_status("warn", cli.YELLOW)
+        cli._print_status("warn", cli.YELLOW)
         out = capsys.readouterr().out
         assert cli.YELLOW in out
 
@@ -460,65 +461,65 @@ class TestProcessJsonlBuffer:
     def test_complete_line(self, capsys: pytest.CaptureFixture[str]) -> None:
         event = json.dumps({"type": "system", "message": "hello"})
         buf = bytearray((event + "\n").encode())
-        remainder = cli._process_jsonl_buffer(buf, time.time(), verbose=False)
+        remainder = cli._process_jsonl_buffer(buf, time.time(), debug=False)
         assert remainder == bytearray()
         assert "hello" in capsys.readouterr().out
 
     def test_partial_line_returned(self) -> None:
         buf = bytearray(b"partial")
-        remainder = cli._process_jsonl_buffer(buf, time.time(), verbose=False)
+        remainder = cli._process_jsonl_buffer(buf, time.time(), debug=False)
         assert remainder == bytearray(b"partial")
 
     def test_multiple_lines(self, capsys: pytest.CaptureFixture[str]) -> None:
         e1 = json.dumps({"type": "system", "message": "one"})
         e2 = json.dumps({"type": "system", "message": "two"})
         buf = bytearray(f"{e1}\n{e2}\n".encode())
-        remainder = cli._process_jsonl_buffer(buf, time.time(), verbose=False)
+        remainder = cli._process_jsonl_buffer(buf, time.time(), debug=False)
         assert remainder == bytearray()
         out = capsys.readouterr().out
         assert "one" in out
         assert "two" in out
 
-    def test_invalid_json_verbose(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_invalid_json_debug(self, capsys: pytest.CaptureFixture[str]) -> None:
         buf = bytearray(b"not json\n")
-        remainder = cli._process_jsonl_buffer(buf, time.time(), verbose=True)
+        remainder = cli._process_jsonl_buffer(buf, time.time(), debug=True)
         assert remainder == bytearray()
         assert "not json" in capsys.readouterr().out
 
-    def test_invalid_json_not_verbose(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_invalid_json_not_debug(self, capsys: pytest.CaptureFixture[str]) -> None:
         buf = bytearray(b"not json\n")
-        remainder = cli._process_jsonl_buffer(buf, time.time(), verbose=False)
+        remainder = cli._process_jsonl_buffer(buf, time.time(), debug=False)
         assert remainder == bytearray()
-        # Should NOT print non-JSON when verbose is False
+        # Should NOT print non-JSON when debug is False
         assert "not json" not in capsys.readouterr().out
 
     def test_empty_line_skipped(self, capsys: pytest.CaptureFixture[str]) -> None:
         buf = bytearray(b"\n\n")
-        remainder = cli._process_jsonl_buffer(buf, time.time(), verbose=False)
+        remainder = cli._process_jsonl_buffer(buf, time.time(), debug=False)
         assert remainder == bytearray()
         assert capsys.readouterr().out == ""
 
     def test_line_with_remainder(self) -> None:
         event = json.dumps({"type": "system", "message": "x"})
         buf = bytearray(f"{event}\npartial".encode())
-        remainder = cli._process_jsonl_buffer(buf, time.time(), verbose=False)
+        remainder = cli._process_jsonl_buffer(buf, time.time(), debug=False)
         assert remainder == bytearray(b"partial")
 
     def test_empty_buffer(self) -> None:
         buf = bytearray(b"")
-        remainder = cli._process_jsonl_buffer(buf, time.time(), verbose=False)
+        remainder = cli._process_jsonl_buffer(buf, time.time(), debug=False)
         assert remainder == bytearray(b"")
 
     def test_whitespace_only_lines(self, capsys: pytest.CaptureFixture[str]) -> None:
         buf = bytearray(b"   \n\t\n")
-        remainder = cli._process_jsonl_buffer(buf, time.time(), verbose=False)
+        remainder = cli._process_jsonl_buffer(buf, time.time(), debug=False)
         assert remainder == bytearray()
         assert capsys.readouterr().out == ""
 
     def test_unicode_content(self, capsys: pytest.CaptureFixture[str]) -> None:
         event = json.dumps({"type": "system", "message": "こんにちは 🎉"})
         buf = bytearray((event + "\n").encode("utf-8"))
-        remainder = cli._process_jsonl_buffer(buf, time.time(), verbose=False)
+        remainder = cli._process_jsonl_buffer(buf, time.time(), debug=False)
         assert remainder == bytearray()
         assert "こんにちは" in capsys.readouterr().out
 
@@ -972,7 +973,7 @@ class TestStreamProcessOutput:
         mock_proc.poll.return_value = 0
         # select.select should indicate data ready
         with mock.patch("select.select", return_value=([mock_proc.stdout], [], [])):
-            start = cli._stream_process_output(mock_proc, idle_timeout=120, verbose=False)
+            start = cli._stream_process_output(mock_proc, idle_timeout=120, debug=False)
         assert isinstance(start, float)
         out = capsys.readouterr().out
         assert "done" in out
@@ -997,7 +998,7 @@ class TestStreamProcessOutput:
                 mock_proc.stdout.read.return_value = b""
                 with mock.patch("os.getpgid", return_value=12345):
                     with mock.patch("os.killpg"):
-                        cli._stream_process_output(mock_proc, idle_timeout=120, verbose=False)
+                        cli._stream_process_output(mock_proc, idle_timeout=120, debug=False)
         out = capsys.readouterr().out
         assert "Idle" in out
 
@@ -1017,7 +1018,7 @@ class TestStreamProcessOutput:
             ([mock_stdout], [], []),
             ([mock_stdout], [], []),
         ]):
-            cli._stream_process_output(mock_proc, idle_timeout=120, verbose=False)
+            cli._stream_process_output(mock_proc, idle_timeout=120, debug=False)
         mock_stdout.read1.assert_called()
 
     def test_os_read_fallback(self, capsys: pytest.CaptureFixture[str]) -> None:
@@ -1035,7 +1036,7 @@ class TestStreamProcessOutput:
 
         with mock.patch("select.select", return_value=([mock_stdout], [], [])):
             with mock.patch("os.read", side_effect=[data, b""]):
-                cli._stream_process_output(mock_proc, idle_timeout=120, verbose=False)
+                cli._stream_process_output(mock_proc, idle_timeout=120, debug=False)
         out = capsys.readouterr().out
         assert "yo" in out
 
@@ -1055,7 +1056,7 @@ class TestStreamProcessOutput:
 
         with mock.patch("select.select", return_value=([], [], [])):
             with mock.patch("os.read", side_effect=[data, b""]):
-                cli._stream_process_output(mock_proc, idle_timeout=120, verbose=False)
+                cli._stream_process_output(mock_proc, idle_timeout=120, debug=False)
         out = capsys.readouterr().out
         assert "final" in out
 
@@ -1076,7 +1077,7 @@ class TestDrainRemainingStdout:
 
         with mock.patch("os.read", side_effect=[data, b""]):
             result = cli._drain_remaining_stdout(
-                mock_stdout, bytearray(), time.time(), verbose=False,
+                mock_stdout, bytearray(), time.time(), debug=False,
             )
         assert result == bytearray()
         out = capsys.readouterr().out
@@ -1091,7 +1092,7 @@ class TestDrainRemainingStdout:
 
         with mock.patch("os.read", side_effect=[f"{e1}\n".encode(), f"{e2}\n".encode(), b""]):
             cli._drain_remaining_stdout(
-                mock_stdout, bytearray(), time.time(), verbose=False,
+                mock_stdout, bytearray(), time.time(), debug=False,
             )
         out = capsys.readouterr().out
         assert "chunk1" in out
@@ -1103,7 +1104,7 @@ class TestDrainRemainingStdout:
 
         with mock.patch("os.read", return_value=b""):
             result = cli._drain_remaining_stdout(
-                mock_stdout, bytearray(), time.time(), verbose=False,
+                mock_stdout, bytearray(), time.time(), debug=False,
             )
         assert result == bytearray()
 
@@ -1768,7 +1769,7 @@ class TestStreamProcessOutputExceptions:
 
         with mock.patch("select.select", side_effect=OSError("fd closed")):
             with mock.patch("os.read", return_value=b""):
-                cli._stream_process_output(mock_proc, idle_timeout=120, verbose=False)
+                cli._stream_process_output(mock_proc, idle_timeout=120, debug=False)
         # Should not raise — just breaks out of loop
 
     def test_stdout_close_oserror_handled(self) -> None:
@@ -1783,7 +1784,7 @@ class TestStreamProcessOutputExceptions:
         with mock.patch("select.select", return_value=([], [], [])):
             with mock.patch("os.read", return_value=b""):
                 mock_stdout.close.side_effect = OSError("close failed")
-                cli._stream_process_output(mock_proc, idle_timeout=120, verbose=False)
+                cli._stream_process_output(mock_proc, idle_timeout=120, debug=False)
         # Should not raise
 
 
@@ -1827,8 +1828,8 @@ class TestRunClaudeWaitTimeout:
             with mock.patch.object(cli, "_stream_process_output", return_value=time.time()):
                 with mock.patch.object(cli, "_kill_process_group") as mock_kill:
                     cli.run_claude("test prompt", "/tmp", idle_timeout=1)
-                    # Called once for timeout and once for safety net
-                    assert mock_kill.call_count == 2
+                    # Called once in the finally block (covers both timeout and safety net)
+                    assert mock_kill.call_count == 1
 
 
 # =============================================================================

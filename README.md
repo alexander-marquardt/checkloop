@@ -36,6 +36,12 @@ uv run claudeloop --dir ~/my-project --passes readability security tests
 # Preview without running
 uv run claudeloop --dir ~/my-project --dry-run
 
+# Only review files changed on this branch (vs main/master)
+uv run claudeloop --dir ~/my-project --changed-only
+
+# Only review files changed vs a specific branch
+uv run claudeloop --dir ~/my-project --changed-only develop
+
 # See what Claude is doing in detail
 uv run claudeloop --dir ~/my-project -v
 ```
@@ -115,6 +121,9 @@ uv run claudeloop --cycles 5 --converged-at-percentage 0.5
 --verbose, -v          Show operational events, timing, and memory info
 --debug                Show all details including raw subprocess output
 --pause SECS           Pause between passes (default: 2)
+--changed-only [REF]   Only review files that changed vs a base ref.
+                       With no argument, auto-detects main/master.
+                       Pass a branch or SHA to compare against.
 --dangerously-skip-permissions
                        Pass --dangerously-skip-permissions to Claude Code
                        (bypasses all permission checks)
