@@ -88,7 +88,9 @@ def _measure_current_rss_mb() -> float:
             capture_output=True, text=True,
         )
         if result.returncode == 0 and result.stdout.strip():
-            return int(result.stdout.strip()) / 1024  # ps reports in KB
+            # ps may return multiple lines; take only the first non-empty line.
+            first_line = result.stdout.strip().splitlines()[0].strip()
+            return int(first_line) / 1024  # ps reports in KB
     except (OSError, ValueError) as exc:
         logger.debug("ps-based RSS lookup failed: %s", exc)
     # Fallback: use resource (peak, not current — better than nothing)
@@ -234,7 +236,8 @@ def _git_commit_cycle(workdir: str, cycle: int) -> bool:
             logger.debug("No staged changes after cycle %d — nothing to commit", cycle)
             return False  # nothing to commit
         _git_run(workdir, "commit", "-m", f"Review cycle {cycle} cleanup", check=True)
-        logger.info("Committed changes after cycle %d", cycle)
+        new_sha = _git_head_sha(workdir)
+        logger.info("Committed changes after cycle %d (sha=%s)", cycle, new_sha)
         return True
     except (subprocess.CalledProcessError, OSError) as exc:
         logger.warning("Git commit failed after cycle %d: %s", cycle, exc, exc_info=True)
@@ -263,16 +266,20 @@ def _count_file_lines(filepath: Path) -> int:
         logger.debug("Cannot open file for line counting %s: %s", filepath, exc)
         return 0
     with raw_file:
-        # Read a small header to check for null bytes (binary file indicator).
-        # If the file is text, count newlines in the header, then continue
-        # counting through the rest of the file in larger chunks.
-        header = raw_file.read(_READ_CHUNK_SIZE)
-        if b"\0" in header:
+        try:
+            # Read a small header to check for null bytes (binary file indicator).
+            # If the file is text, count newlines in the header, then continue
+            # counting through the rest of the file in larger chunks.
+            header = raw_file.read(_READ_CHUNK_SIZE)
+            if b"\0" in header:
+                return 0
+            total = header.count(b"\n")
+            for chunk in iter(lambda: raw_file.read(_DRAIN_CHUNK_SIZE), b""):
+                total += chunk.count(b"\n")
+            return total
+        except OSError as exc:
+            logger.debug("Read error during line counting %s: %s", filepath, exc)
             return 0
-        total = header.count(b"\n")
-        for chunk in iter(lambda: raw_file.read(_DRAIN_CHUNK_SIZE), b""):
-            total += chunk.count(b"\n")
-        return total
 
 
 def _count_tracked_lines(workdir: str) -> int:
@@ -755,7 +762,7 @@ def _summarise_tool_use(tool_name: str, tool_input: dict[str, Any]) -> str:
     if normalized_name in _FILE_PATH_TOOL_NAMES and "file_path" in tool_input:
         return f" {tool_input['file_path']}"
     if normalized_name == "bash" and "command" in tool_input:
-        command = tool_input["command"]
+        command = str(tool_input["command"])
         if len(command) > _BASH_DISPLAY_LIMIT:
             return f" $ {command[:_BASH_DISPLAY_LIMIT - 3]}..."
         return f" $ {command}"
@@ -945,6 +952,9 @@ def _check_idle_timeout(
     """Return True and kill the process if it has been idle too long."""
     now = time.time()
     if now - last_output_time > idle_timeout:
+        logger.warning("Idle timeout: pid=%d, idle=%.0fs, elapsed=%s",
+                       process.pid, now - last_output_time,
+                       _format_duration(now - pass_start_time))
         _print_status(f"\nIdle for {idle_timeout}s — killing "
                      f"(ran {_format_duration(now - pass_start_time)}).", RED)
         _kill_process_group(process)
@@ -978,7 +988,9 @@ def _stream_process_output(
     Kills the process if it produces no output for *idle_timeout* seconds.
     Returns the wall-clock start time used for elapsed-time display.
     """
-    assert process.stdout is not None
+    if process.stdout is None:
+        logger.error("Subprocess stdout is None — cannot stream output (pid=%d)", process.pid)
+        return time.time()
     stdout = process.stdout
     pass_start_time = time.time()
     last_output_time = pass_start_time  # idle timer starts from launch

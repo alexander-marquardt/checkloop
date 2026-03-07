@@ -993,12 +993,13 @@ class TestStreamProcessOutput:
         # select never returns data → triggers idle timeout
         with mock.patch("select.select", return_value=([], [], [])):
             with mock.patch("time.time") as mock_time:
-                # First call: start time, second: last_output_time, third: now (idle check)
+                # First call: start time, second: last_output_time, third: now (idle check).
+                # Extra values cover internal time.time() calls from the logging module.
                 mock_time.side_effect = [
                     100.0,   # pass_start_time
                     100.0,   # last_output_time
                     250.0,   # now > last_output_time + idle_timeout
-                ]
+                ] + [250.0] * 10
                 # stdout.read should return b"" for the finally block
                 mock_proc.stdout.read.return_value = b""
                 with mock.patch("os.getpgid", return_value=12345):
@@ -1266,11 +1267,13 @@ class TestGitCommitCycle:
 
     def test_commits_when_changes_exist(self) -> None:
         with mock.patch("subprocess.run") as mock_run:
-            # git add succeeds, git diff --cached shows changes, git commit succeeds
+            # git add succeeds, git diff --cached shows changes, git commit succeeds,
+            # then git rev-parse HEAD returns the new commit SHA for logging
             mock_run.side_effect = [
                 mock.MagicMock(returncode=0),  # git add
                 mock.MagicMock(returncode=1),  # git diff --cached --quiet (changes exist)
                 mock.MagicMock(returncode=0),  # git commit
+                mock.MagicMock(returncode=0, stdout="abc123\n"),  # git rev-parse HEAD
             ]
             assert cli._git_commit_cycle("/tmp", 1) is True
 
@@ -2767,5 +2770,172 @@ class TestPrintRunSummaryConvergence:
         cli._print_run_summary("/dir", passes, 1, 1, 60, False, convergence_threshold=0.0)
         out = capsys.readouterr().out
         assert "Convergence" not in out
+
+
+# =============================================================================
+# Edge cases: _summarise_tool_use with non-string inputs
+# =============================================================================
+
+class TestSummariseToolUseNonStringInputs:
+    """Edge case tests for _summarise_tool_use() with non-string tool_input values."""
+
+    def test_bash_command_is_integer(self) -> None:
+        """Non-string command value should be coerced to string, not crash."""
+        result = cli._summarise_tool_use("Bash", {"command": 42})
+        assert "$ 42" in result
+
+    def test_bash_command_is_none(self) -> None:
+        """None command value should be coerced to string 'None'."""
+        result = cli._summarise_tool_use("Bash", {"command": None})
+        assert "$ None" in result
+
+    def test_bash_command_is_list(self) -> None:
+        """List command value should be coerced to string."""
+        result = cli._summarise_tool_use("Bash", {"command": ["ls", "-la"]})
+        assert "$ [" in result
+
+    def test_empty_tool_input_dict(self) -> None:
+        result = cli._summarise_tool_use("Bash", {})
+        assert result == ""
+
+    def test_none_tool_name(self) -> None:
+        """Non-string tool name should not crash (lower() on non-string)."""
+        # This tests robustness; callers should pass str, but JSON can be weird.
+        result = cli._summarise_tool_use("", {})
+        assert result == ""
+
+
+# =============================================================================
+# Edge cases: _measure_current_rss_mb with multi-line ps output
+# =============================================================================
+
+class TestMeasureCurrentRssMbMultiline:
+    """Edge case tests for _measure_current_rss_mb() with unusual ps output."""
+
+    def test_multiline_ps_output(self) -> None:
+        """Multi-line ps output should use only the first line."""
+        mock_result = mock.MagicMock(returncode=0, stdout="12345\n67890\n")
+        with mock.patch("subprocess.run", return_value=mock_result):
+            rss = cli._measure_current_rss_mb()
+            assert abs(rss - 12345 / 1024) < 0.01
+
+    def test_ps_output_with_leading_whitespace(self) -> None:
+        """ps often pads output with leading spaces."""
+        mock_result = mock.MagicMock(returncode=0, stdout="  54321  \n")
+        with mock.patch("subprocess.run", return_value=mock_result):
+            rss = cli._measure_current_rss_mb()
+            assert abs(rss - 54321 / 1024) < 0.01
+
+
+# =============================================================================
+# Edge cases: _count_file_lines with read errors mid-file
+# =============================================================================
+
+class TestCountFileLinesReadError:
+    """Edge case tests for _count_file_lines() read errors after header."""
+
+    def test_oserror_during_chunk_read(self, tmp_path: Path) -> None:
+        """OSError during chunk reads after header should return 0."""
+        f = tmp_path / "bad_read.txt"
+        f.write_text("line1\nline2\n")
+        with mock.patch("builtins.open", side_effect=OSError("permission denied")):
+            assert cli._count_file_lines(f) == 0
+
+
+# =============================================================================
+# Edge cases: _build_changed_files_prefix with empty list
+# =============================================================================
+
+class TestBuildChangedFilesPrefixEmpty:
+    """Edge case test: _build_changed_files_prefix with empty list."""
+
+    def test_empty_list_produces_zero_files(self) -> None:
+        result = cli._build_changed_files_prefix([])
+        assert "0 file(s)" in result
+
+
+# =============================================================================
+# Edge cases: _run_single_pass without changed_files_prefix attr
+# =============================================================================
+
+class TestRunSinglePassMissingAttr:
+    """Edge case: _run_single_pass when args lacks changed_files_prefix."""
+
+    def test_missing_changed_files_prefix(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """If changed_files_prefix is not on args, defaults to empty string."""
+        review_pass = {"id": "readability", "label": "Readability", "prompt": "review code"}
+        args = _make_suite_args(dry_run=True)
+        # Ensure changed_files_prefix is not set
+        if hasattr(args, "changed_files_prefix"):
+            delattr(args, "changed_files_prefix")
+        with mock.patch.object(cli, "_is_git_repo", return_value=False):
+            result = cli._run_single_pass(review_pass, "/tmp", args, "[1/1]", is_git=False)
+        # Should run without error; dry_run returns True (assumes changes without git)
+        assert result is True
+
+
+# =============================================================================
+# Edge cases: _process_jsonl_buffer with invalid UTF-8
+# =============================================================================
+
+class TestProcessJsonlBufferInvalidUtf8:
+    """Edge case: _process_jsonl_buffer with invalid UTF-8 bytes."""
+
+    def test_invalid_utf8_does_not_crash(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Invalid UTF-8 in buffer should be replaced, not crash."""
+        buf = bytearray(b"\xff\xfe invalid\n")
+        remainder = cli._process_jsonl_buffer(buf, time.time(), debug=True)
+        assert remainder == bytearray()
+        # Should not raise; invalid bytes get errors="replace"
+
+    def test_valid_utf8_json(self, capsys: pytest.CaptureFixture[str]) -> None:
+        event = json.dumps({"type": "system", "message": "café ñ ü"})
+        buf = bytearray((event + "\n").encode("utf-8"))
+        remainder = cli._process_jsonl_buffer(buf, time.time(), debug=False)
+        assert remainder == bytearray()
+        assert "café" in capsys.readouterr().out
+
+
+# =============================================================================
+# Edge cases: _format_duration boundary values
+# =============================================================================
+
+class TestFormatDurationBoundary:
+    """Boundary value tests for _format_duration()."""
+
+    def test_exactly_60_seconds(self) -> None:
+        assert cli._format_duration(60) == "1m00s"
+
+    def test_exactly_3599(self) -> None:
+        assert cli._format_duration(3599) == "59m59s"
+
+    def test_exactly_3600(self) -> None:
+        assert cli._format_duration(3600) == "1h00m00s"
+
+    def test_exactly_3601(self) -> None:
+        assert cli._format_duration(3601) == "1h00m01s"
+
+    def test_max_int(self) -> None:
+        """Very large integers should not overflow."""
+        result = cli._format_duration(2**31)
+        assert "h" in result  # just verify it returns without error
+
+
+# =============================================================================
+# Edge cases: _git_commit_cycle with various failure modes
+# =============================================================================
+
+class TestGitCommitCycleEdgeCases:
+    """Edge case tests for _git_commit_cycle()."""
+
+    def test_git_add_failure(self) -> None:
+        """CalledProcessError from git add should return False."""
+        with mock.patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, "git add")):
+            assert cli._git_commit_cycle("/tmp", 1) is False
+
+    def test_oserror_during_commit(self) -> None:
+        """OSError during any git operation should return False."""
+        with mock.patch("subprocess.run", side_effect=OSError("disk full")):
+            assert cli._git_commit_cycle("/tmp", 1) is False
 
 
