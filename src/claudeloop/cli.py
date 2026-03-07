@@ -21,7 +21,9 @@ import json
 import logging
 import os
 import re
+import resource
 import select
+import signal
 import subprocess
 import sys
 import time
@@ -60,6 +62,18 @@ def _fatal(msg: str) -> NoReturn:
     """Print an error message in red and exit with code 1."""
     print(f"{RED}{msg}{RESET}")
     sys.exit(1)
+
+
+def _log_memory_usage(label: str) -> None:
+    """Log the current RSS of this process (macOS/Linux)."""
+    usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+    self_usage = resource.getrusage(resource.RUSAGE_SELF)
+    # maxrss is in bytes on macOS, kilobytes on Linux
+    scale = 1024 * 1024 if sys.platform == "darwin" else 1024
+    self_mb = self_usage.ru_maxrss / scale
+    children_mb = usage.ru_maxrss / scale
+    logger.info("Memory [%s]: self=%.0fMB, children_peak=%.0fMB", label, self_mb, children_mb)
+    print_status(f"  Memory: self={self_mb:.0f}MB, children_peak={children_mb:.0f}MB", DIM)
 
 
 # --- Git helpers (convergence detection) --------------------------------------
@@ -121,7 +135,11 @@ def _parse_shortstat(text: str) -> int:
 
 
 def _count_tracked_lines(workdir: str) -> int:
-    """Count total lines across all git-tracked text files."""
+    """Count total lines across all git-tracked text files.
+
+    Reads files in small chunks to avoid loading large files entirely into
+    memory, which matters for long-running sessions on big repos.
+    """
     ls_result = subprocess.run(
         ["git", "ls-files", "-z"], cwd=workdir, capture_output=True,
     )
@@ -131,10 +149,18 @@ def _count_tracked_lines(workdir: str) -> int:
     total = 0
     for filename in files:
         try:
-            content = (Path(workdir) / filename).read_bytes()
-            if b"\0" in content[:8192]:  # skip binary files
-                continue
-            total += content.count(b"\n")
+            filepath = Path(workdir) / filename
+            with open(filepath, "rb") as fh:
+                header = fh.read(8192)
+                if b"\0" in header:  # skip binary files
+                    continue
+                # Count newlines in header, then continue in chunks
+                total += header.count(b"\n")
+                while True:
+                    chunk = fh.read(65536)
+                    if not chunk:
+                        break
+                    total += chunk.count(b"\n")
         except OSError:
             pass
     return max(total, 1)
@@ -531,7 +557,13 @@ def _spawn_claude_process(
     cmd: list[str],
     workdir: str,
 ) -> subprocess.Popen[bytes]:
-    """Launch the Claude subprocess, exiting with a clear message if not installed."""
+    """Launch the Claude subprocess in its own process group.
+
+    Using a dedicated process group (via ``os.setsid``) ensures that
+    ``_kill_process_group`` can terminate the claude process **and** any
+    children it spawns (language servers, tool runners, etc.), preventing
+    orphaned processes from accumulating memory across many passes.
+    """
     # When claudeloop is invoked from within a Claude Code session, the CLAUDECODE
     # env var causes the child `claude` process to refuse to start. Strip it out.
     env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
@@ -545,6 +577,7 @@ def _spawn_claude_process(
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             env=env,
+            start_new_session=True,  # creates a new process group
         )
     except FileNotFoundError:
         _fatal(
@@ -609,7 +642,7 @@ def _stream_process_output(
                     f"\n{RED}Idle for {idle_timeout}s — killing "
                     f"(ran {_format_duration(now - pass_start_time)}).{RESET}"
                 )
-                process.kill()
+                _kill_process_group(process)
                 break
 
             # Poll stdout with a 1-second timeout so we can check for idle/exit
@@ -647,6 +680,39 @@ def _stream_process_output(
     return pass_start_time
 
 
+def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
+    """Terminate the process and its entire process group.
+
+    Sends SIGTERM first (graceful), waits briefly, then SIGKILL if needed.
+    This prevents orphaned child processes from leaking memory.
+    """
+    pid = process.pid
+    try:
+        pgid = os.getpgid(pid)
+    except OSError:
+        # Process already gone
+        return
+
+    # Graceful termination first
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except OSError:
+        pass
+
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        # Force kill the entire group
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            logger.warning("Process %d did not exit after SIGKILL", pid)
+
+
 def run_claude(
     prompt: str,
     workdir: str,
@@ -677,15 +743,21 @@ def run_claude(
     try:
         process.wait(timeout=idle_timeout)
     except subprocess.TimeoutExpired:
-        logger.warning("process.wait() timed out after %ds — killing", idle_timeout)
-        process.kill()
-        process.wait()
+        logger.warning("process.wait() timed out after %ds — killing group", idle_timeout)
+        _kill_process_group(process)
+
+    # Safety net: ensure the entire process group is dead even on normal exit.
+    # Claude may have spawned child processes (language servers, etc.) that
+    # survive after the main process exits.
+    _kill_process_group(process)
+
     elapsed = _format_duration(time.time() - pass_start_time)
     exit_code = process.returncode
     colour = GREEN if exit_code == 0 else YELLOW
     status = "completed" if exit_code == 0 else f"exited with code {exit_code}"
     logger.info("Pass %s (exit_code=%d, elapsed=%s)", status, exit_code, elapsed)
     print_status(f"  Pass {status} in {elapsed}", colour)
+    _log_memory_usage(f"after pass")
     return exit_code
 
 

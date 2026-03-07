@@ -11,6 +11,8 @@ import sys
 import time
 from unittest import mock
 
+import signal
+
 import pytest
 from pathlib import Path
 
@@ -791,6 +793,7 @@ class TestStreamProcessOutput:
         mock_proc.stdout = mock.MagicMock()
         mock_proc.stderr = io.BytesIO(b"")
         mock_proc.poll.return_value = None
+        mock_proc.pid = 12345
 
         # select never returns data → triggers idle timeout
         with mock.patch("select.select", return_value=([], [], [])):
@@ -803,8 +806,9 @@ class TestStreamProcessOutput:
                 ]
                 # stdout.read should return b"" for the finally block
                 mock_proc.stdout.read.return_value = b""
-                cli._stream_process_output(mock_proc, idle_timeout=120, verbose=False)
-        mock_proc.kill.assert_called_once()
+                with mock.patch("os.getpgid", return_value=12345):
+                    with mock.patch("os.killpg"):
+                        cli._stream_process_output(mock_proc, idle_timeout=120, verbose=False)
         out = capsys.readouterr().out
         assert "Idle" in out
 
@@ -1096,7 +1100,9 @@ class TestGetChangePercentage:
                 # git ls-files -z
                 mock.MagicMock(returncode=0, stdout=b"file1.py\0file2.py\0"),
             ]
-            with mock.patch.object(Path, "read_bytes", return_value=b"line\n" * 1000):
+            file_content = b"line\n" * 1000
+            mock_open = mock.mock_open(read_data=file_content)
+            with mock.patch("builtins.open", mock_open):
                 pct = cli._get_change_percentage("/tmp", "abc123")
                 assert 0 < pct < 100
 
@@ -1155,6 +1161,60 @@ class TestConvergenceInSuite:
         # Should run both cycles without convergence checks (dry run)
         assert "Cycle 1/2" in out
         assert "Cycle 2/2" in out
+
+
+class TestKillProcessGroup:
+    """Tests for _kill_process_group() cleanup."""
+
+    def test_kills_process_group(self):
+        mock_proc = mock.MagicMock()
+        mock_proc.pid = 12345
+        with mock.patch("os.getpgid", return_value=12345) as mock_getpgid:
+            with mock.patch("os.killpg") as mock_killpg:
+                cli._kill_process_group(mock_proc)
+                mock_getpgid.assert_called_once_with(12345)
+                mock_killpg.assert_called_with(12345, signal.SIGTERM)
+
+    def test_sigkill_on_timeout(self):
+        mock_proc = mock.MagicMock()
+        mock_proc.pid = 99
+        mock_proc.wait.side_effect = subprocess.TimeoutExpired("cmd", 5)
+        with mock.patch("os.getpgid", return_value=99):
+            with mock.patch("os.killpg") as mock_killpg:
+                cli._kill_process_group(mock_proc)
+                # Should have been called with SIGTERM then SIGKILL
+                calls = [c for c in mock_killpg.call_args_list]
+                signals_sent = [c[0][1] for c in calls]
+                assert signal.SIGTERM in signals_sent
+                assert signal.SIGKILL in signals_sent
+
+    def test_handles_already_dead_process(self):
+        mock_proc = mock.MagicMock()
+        mock_proc.pid = 1
+        with mock.patch("os.getpgid", side_effect=OSError("No such process")):
+            # Should not raise
+            cli._kill_process_group(mock_proc)
+
+
+class TestLogMemoryUsage:
+    """Tests for _log_memory_usage() reporting."""
+
+    def test_prints_memory_info(self, capsys):
+        cli._log_memory_usage("test-label")
+        out = capsys.readouterr().out
+        assert "Memory" in out
+        assert "MB" in out
+
+
+class TestSpawnUsesNewSession:
+    """Verify _spawn_claude_process creates a new session for process group isolation."""
+
+    def test_start_new_session(self):
+        with mock.patch("subprocess.Popen") as mock_popen:
+            mock_popen.return_value = mock.MagicMock()
+            cli._spawn_claude_process(["claude"], "/tmp")
+            call_kwargs = mock_popen.call_args.kwargs
+            assert call_kwargs["start_new_session"] is True
 
 
 class TestCommitMessageInstructions:
