@@ -740,6 +740,79 @@ class TestRunReviewSuite:
         assert "A" in out
         assert "B" in out
 
+    def test_noop_passes_skipped_on_cycle2(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Passes that made no changes in cycle 1 are skipped in cycle 2."""
+        passes = [
+            {"id": "readability", "label": "Readability", "prompt": "review code"},
+            {"id": "dry", "label": "DRY", "prompt": "check dry"},
+        ]
+        args = _make_suite_args(dry_run=False)
+        # Cycle 1: readability changes (sha differs), dry doesn't (sha same)
+        # Cycle 2: only readability runs (dry skipped)
+        sha_sequence = [
+            # Cycle 1 pass "readability": before, after (different = changed)
+            "sha_r_before", "sha_r_after",
+            # Cycle 1 pass "dry": before, after (same = no change)
+            "sha_d_before", "sha_d_before",
+            # Cycle 2 pass "readability": before, after
+            "sha_r2_before", "sha_r2_after",
+        ]
+        with mock.patch.object(cli, "run_claude", return_value=0):
+            with mock.patch.object(cli, "_is_git_repo", return_value=True):
+                with mock.patch.object(cli, "_git_head_sha", side_effect=sha_sequence):
+                    cli._run_review_suite(passes, 2, "/tmp", args)
+        out = capsys.readouterr().out
+        assert "Skipping 1 pass(es)" in out
+
+    def test_bookend_passes_always_run(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Bookend passes (test-fix, test-validate) run even if they made no changes."""
+        passes = [
+            {"id": "test-fix", "label": "Test Fix", "prompt": "fix tests"},
+            {"id": "readability", "label": "Readability", "prompt": "review code"},
+            {"id": "test-validate", "label": "Test Validate", "prompt": "validate tests"},
+        ]
+        args = _make_suite_args(dry_run=False)
+        # Cycle 1: none of them make changes (all sha same)
+        # Cycle 2: bookends still run, readability skipped
+        sha_sequence = [
+            # Cycle 1: test-fix (no change), readability (no change), test-validate (no change)
+            "s1", "s1",  "s2", "s2",  "s3", "s3",
+            # Cycle 2: test-fix (bookend, runs), test-validate (bookend, runs)
+            "s4", "s4",  "s5", "s5",
+        ]
+        with mock.patch.object(cli, "run_claude", return_value=0):
+            with mock.patch.object(cli, "_is_git_repo", return_value=True):
+                with mock.patch.object(cli, "_git_head_sha", side_effect=sha_sequence):
+                    cli._run_review_suite(passes, 2, "/tmp", args)
+        out = capsys.readouterr().out
+        assert "Skipping 1 pass(es)" in out
+        # Verify cycle 2 shows bookend labels but not readability
+        # Both cycles show "Test Fix" and "Test Validate"
+        assert out.count("Test Fix") == 2
+        assert out.count("Test Validate") == 2
+        # Readability only shows once (cycle 1)
+        assert out.count("Readability") == 1
+
+    def test_all_passes_active_no_skip(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """When all passes make changes, none are skipped in cycle 2."""
+        passes = [
+            {"id": "readability", "label": "Readability", "prompt": "review code"},
+            {"id": "dry", "label": "DRY", "prompt": "check dry"},
+        ]
+        args = _make_suite_args(dry_run=False)
+        sha_sequence = [
+            # Cycle 1: both change
+            "a1", "a2",  "b1", "b2",
+            # Cycle 2: both run again
+            "c1", "c2",  "d1", "d2",
+        ]
+        with mock.patch.object(cli, "run_claude", return_value=0):
+            with mock.patch.object(cli, "_is_git_repo", return_value=True):
+                with mock.patch.object(cli, "_git_head_sha", side_effect=sha_sequence):
+                    cli._run_review_suite(passes, 2, "/tmp", args)
+        out = capsys.readouterr().out
+        assert "Skipping" not in out
+
 
 # =============================================================================
 # main
@@ -1826,3 +1899,13 @@ class TestMainVerboseLogging:
                     cli.main()
                 mock_log.assert_called_once()
                 assert mock_log.call_args.kwargs["level"] == logging.INFO
+
+    def test_debug_sets_debug_level(self) -> None:
+        with mock.patch("sys.argv", ["claudeloop", "--dir", ".", "--debug", "--dry-run", "--pause", "0"]):
+            with mock.patch("logging.basicConfig") as mock_log:
+                with mock.patch.object(cli, "_run_review_suite"):
+                    cli.main()
+                mock_log.assert_called_once()
+                assert mock_log.call_args.kwargs["level"] == logging.DEBUG
+
+
