@@ -110,13 +110,13 @@ def _kill_orphaned_children(pids: list[int] | None = None) -> int:
     Accepts an optional pre-fetched pid list to avoid a redundant pgrep spawn.
     """
     killed = 0
-    for cpid in (pids if pids is not None else _get_child_pids()):
+    for child_pid in (pids if pids is not None else _get_child_pids()):
         try:
-            os.kill(cpid, signal.SIGKILL)
+            os.kill(child_pid, signal.SIGKILL)
             killed += 1
-            logger.warning("Killed orphaned child process %d", cpid)
+            logger.warning("Killed orphaned child process %d", child_pid)
         except OSError as exc:
-            logger.debug("Could not kill child %d: %s", cpid, exc)
+            logger.debug("Could not kill child %d: %s", child_pid, exc)
     return killed
 
 
@@ -219,12 +219,12 @@ def _parse_shortstat(text: str) -> int:
 
 def _count_file_lines(filepath: Path) -> int:
     """Count newlines in a text file, reading in chunks. Returns 0 for binary files."""
-    with open(filepath, "rb") as fh:
-        header = fh.read(8192)
+    with open(filepath, "rb") as file:
+        header = file.read(8192)
         if b"\0" in header:
-            return 0  # binary file
+            return 0  # null byte detected — skip binary files
         total = header.count(b"\n")
-        for chunk in iter(lambda: fh.read(65536), b""):
+        for chunk in iter(lambda: file.read(65536), b""):
             total += chunk.count(b"\n")
         return total
 
@@ -238,18 +238,18 @@ def _count_tracked_lines(workdir: str) -> int:
     ls_result = _git_run(workdir, "ls-files", "-z", text=False)
     if ls_result.returncode != 0:
         return 1  # avoid division by zero
-    files = [f.decode("utf-8", errors="replace") for f in ls_result.stdout.split(b"\0") if f]
+    relative_paths = [f.decode("utf-8", errors="replace") for f in ls_result.stdout.split(b"\0") if f]
     total = 0
-    workdir_resolved = Path(workdir).resolve()
-    for filename in files:
+    resolved_workdir = Path(workdir).resolve()
+    for relative_path in relative_paths:
         try:
-            filepath = (workdir_resolved / filename).resolve()
-            if not filepath.is_relative_to(workdir_resolved):
-                continue  # skip paths that escape the workdir (path traversal)
-            total += _count_file_lines(filepath)
+            absolute_path = (resolved_workdir / relative_path).resolve()
+            if not absolute_path.is_relative_to(resolved_workdir):
+                continue  # skip paths that escape the workdir (path traversal guard)
+            total += _count_file_lines(absolute_path)
         except OSError as exc:
-            logger.debug("Could not read tracked file %s: %s", filename, exc)
-    return max(total, 1)
+            logger.debug("Could not read tracked file %s: %s", relative_path, exc)
+    return max(total, 1)  # minimum 1 to avoid division by zero
 
 
 _cached_total_lines: dict[str, int] = {}
@@ -266,10 +266,10 @@ def _get_change_percentage(workdir: str, base_sha: str) -> float:
         return 0.0
     # Cache total line count per workdir — it barely changes between cycles and
     # counting requires reading every tracked file, which is expensive on large repos.
-    resolved = str(Path(workdir).resolve())
-    if resolved not in _cached_total_lines:
-        _cached_total_lines[resolved] = _count_tracked_lines(workdir)
-    return (lines_changed / _cached_total_lines[resolved]) * 100
+    cache_key = str(Path(workdir).resolve())
+    if cache_key not in _cached_total_lines:
+        _cached_total_lines[cache_key] = _count_tracked_lines(workdir)
+    return (lines_changed / _cached_total_lines[cache_key]) * 100
 
 
 def print_banner(title: str, colour: str = CYAN) -> None:
@@ -532,13 +532,17 @@ _DANGER_KEYWORDS: list[str] = [
 
 
 def _compile_danger_patterns() -> list[re.Pattern[str]]:
-    """Pre-compile regex patterns for all danger keywords."""
+    """Pre-compile regex patterns for all danger keywords.
+
+    Adds word-boundary anchors (\\b) only at alphanumeric edges, so
+    "reformat" won't match "format" but "/etc/passwd" still matches.
+    """
     patterns: list[re.Pattern[str]] = []
     for keyword in _DANGER_KEYWORDS:
         escaped = re.escape(keyword)
-        prefix = r"\b" if keyword[0].isalnum() else ""
-        suffix = r"\b" if keyword[-1].isalnum() else ""
-        patterns.append(re.compile(prefix + escaped + suffix, re.IGNORECASE))
+        leading_boundary = r"\b" if keyword[0].isalnum() else ""
+        trailing_boundary = r"\b" if keyword[-1].isalnum() else ""
+        patterns.append(re.compile(leading_boundary + escaped + trailing_boundary, re.IGNORECASE))
     return patterns
 
 
@@ -572,51 +576,69 @@ _FILE_PATH_TOOLS: set[str] = {"read", "read_file", "edit", "edit_file", "write",
 
 def _summarise_tool_use(tool_name: str, tool_input: dict[str, Any]) -> str:
     """Return a short human-readable summary for a tool-use event."""
-    name = tool_name.lower()
-    if name in _FILE_PATH_TOOLS and "file_path" in tool_input:
+    normalised_name = tool_name.lower()
+    if normalised_name in _FILE_PATH_TOOLS and "file_path" in tool_input:
         return f" {tool_input['file_path']}"
-    if name == "bash" and "command" in tool_input:
+    if normalised_name == "bash" and "command" in tool_input:
         command = tool_input["command"]
         return f" $ {command[:77]}..." if len(command) > 80 else f" $ {command}"
-    if name == "glob" and "pattern" in tool_input:
+    if normalised_name == "glob" and "pattern" in tool_input:
         return f" {tool_input['pattern']}"
-    if name == "grep" and "pattern" in tool_input:
+    if normalised_name == "grep" and "pattern" in tool_input:
         return f" /{tool_input['pattern']}/"
     return ""
 
 
+def _print_assistant_event(event: dict[str, Any], elapsed_prefix: str) -> None:
+    """Print text blocks from an assistant response event."""
+    text_blocks = [
+        b.get("text", "")
+        for b in event.get("message", {}).get("content", [])
+        if b.get("type") == "text"
+    ]
+    for text in text_blocks:
+        if text.strip():
+            print(f"{elapsed_prefix}{text}")
+
+
+def _print_tool_use_event(event: dict[str, Any], elapsed_prefix: str) -> None:
+    """Print a tool invocation with its name and a short summary of inputs."""
+    tool_name = event.get("tool", event.get("name", "unknown"))
+    detail = _summarise_tool_use(tool_name, event.get("input") or {})
+    print(f"{elapsed_prefix}{BLUE}[{tool_name}]{RESET}{detail}")
+
+
+def _print_system_event(event: dict[str, Any], elapsed_prefix: str) -> None:
+    """Print a system-level message (e.g. initialisation status)."""
+    system_message = event.get("message", "")
+    if system_message:
+        print(f"{elapsed_prefix}{DIM}{system_message}{RESET}")
+
+
+def _print_result_event(event: dict[str, Any], elapsed_prefix: str) -> None:
+    """Print the final result summary from a completed pass."""
+    result_text = event.get("result", "")
+    if result_text:
+        print(f"\n{elapsed_prefix}{GREEN}--- Result ---{RESET}")
+        print(result_text)
+
+
+_EVENT_PRINTERS: dict[str, Any] = {
+    "assistant": _print_assistant_event,
+    "tool_use": _print_tool_use_event,
+    "system": _print_system_event,
+    "result": _print_result_event,
+}
+
+
 def _print_event(event: dict[str, Any], pass_start_time: float) -> None:
-    """Parse a stream-json event and print a human-readable progress line."""
+    """Parse a stream-json event and dispatch to the appropriate printer."""
     event_type = event.get("type", "")
-    if not event_type:
+    printer = _EVENT_PRINTERS.get(event_type)
+    if printer is None:
         return
     elapsed_prefix = f"{DIM}[{_format_duration(time.time() - pass_start_time)}]{RESET} "
-
-    if event_type == "assistant":
-        text_blocks = [
-            b.get("text", "")
-            for b in event.get("message", {}).get("content", [])
-            if b.get("type") == "text"
-        ]
-        for text in text_blocks:
-            if text.strip():
-                print(f"{elapsed_prefix}{text}")
-
-    elif event_type == "tool_use":
-        tool_name = event.get("tool", event.get("name", "unknown"))
-        detail = _summarise_tool_use(tool_name, event.get("input") or {})
-        print(f"{elapsed_prefix}{BLUE}[{tool_name}]{RESET}{detail}")
-
-    elif event_type == "system":
-        system_message = event.get("message", "")
-        if system_message:
-            print(f"{elapsed_prefix}{DIM}{system_message}{RESET}")
-
-    elif event_type == "result":
-        result_text = event.get("result", "")
-        if result_text:
-            print(f"\n{elapsed_prefix}{GREEN}--- Result ---{RESET}")
-            print(result_text)
+    printer(event, elapsed_prefix)
 
 
 def _process_jsonl_buffer(
@@ -660,8 +682,8 @@ def _spawn_claude_process(
     children it spawns (language servers, tool runners, etc.), preventing
     orphaned processes from accumulating memory across many passes.
     """
-    # When claudeloop is invoked from within a Claude Code session, the CLAUDECODE
-    # env var causes the child `claude` process to refuse to start. Strip it out.
+    # Strip CLAUDECODE env var — its presence causes nested `claude` processes
+    # to refuse to start when claudeloop is invoked from within a Claude session.
     env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
 
     logger.debug("Spawning subprocess: %s (cwd=%s)", cmd[:3], workdir)
@@ -714,6 +736,39 @@ def _drain_remaining_stdout(
     return output_buffer
 
 
+def _check_idle_timeout(
+    last_output_time: float,
+    idle_timeout: int,
+    pass_start_time: float,
+    process: subprocess.Popen[bytes],
+) -> bool:
+    """Return True and kill the process if it has been idle too long."""
+    now = time.time()
+    if now - last_output_time > idle_timeout:
+        print(
+            f"\n{RED}Idle for {idle_timeout}s — killing "
+            f"(ran {_format_duration(now - pass_start_time)}).{RESET}"
+        )
+        _kill_process_group(process)
+        return True
+    return False
+
+
+def _flush_and_close_stdout(
+    stdout: IO[bytes],
+    output_buffer: bytearray,
+    pass_start_time: float,
+    verbose: bool,
+) -> None:
+    """Flush any remaining partial line and close the stdout pipe."""
+    output_buffer.extend(b"\n")
+    _process_jsonl_buffer(output_buffer, pass_start_time, verbose)
+    try:
+        stdout.close()
+    except OSError as exc:
+        logger.debug("Failed to close stdout pipe: %s", exc)
+
+
 def _stream_process_output(
     process: subprocess.Popen[bytes],
     idle_timeout: int,
@@ -732,13 +787,7 @@ def _stream_process_output(
 
     try:
         while True:
-            now = time.time()
-            if now - last_output_time > idle_timeout:
-                print(
-                    f"\n{RED}Idle for {idle_timeout}s — killing "
-                    f"(ran {_format_duration(now - pass_start_time)}).{RESET}"
-                )
-                _kill_process_group(process)
+            if _check_idle_timeout(last_output_time, idle_timeout, pass_start_time, process):
                 break
 
             try:
@@ -764,14 +813,7 @@ def _stream_process_output(
             output_buffer = _process_jsonl_buffer(output_buffer, pass_start_time, verbose)
 
     finally:
-        # Flush any remaining partial line by appending a newline
-        output_buffer.extend(b"\n")
-        _process_jsonl_buffer(output_buffer, pass_start_time, verbose)
-
-        try:
-            stdout.close()
-        except OSError as exc:
-            logger.debug("Failed to close stdout pipe: %s", exc)
+        _flush_and_close_stdout(stdout, output_buffer, pass_start_time, verbose)
 
     return pass_start_time
 
@@ -851,11 +893,11 @@ def run_claude(
     exit_code = process.returncode if process.returncode is not None else -1
     if process.returncode is None:
         logger.warning("Process exited without a return code (may not have terminated cleanly)")
-    colour = GREEN if exit_code == 0 else YELLOW
-    status = "completed" if exit_code == 0 else f"exited with code {exit_code}"
-    logger.info("Pass %s (exit_code=%d, elapsed=%s)", status, exit_code, elapsed)
-    print_status(f"  Pass {status} in {elapsed}", colour)
-    _log_memory_usage(f"after pass")
+    status_colour = GREEN if exit_code == 0 else YELLOW
+    status_text = "completed" if exit_code == 0 else f"exited with code {exit_code}"
+    logger.info("Pass %s (exit_code=%d, elapsed=%s)", status_text, exit_code, elapsed)
+    print_status(f"  Pass {status_text} in {elapsed}", status_colour)
+    _log_memory_usage("after pass")
     return exit_code
 
 
@@ -1047,8 +1089,9 @@ def _run_review_suite(
     to the threshold.  If changes fall below the threshold the loop stops early.
     """
     total_steps = len(selected_passes) * num_cycles
-    current_step = 0
-    use_convergence = convergence_threshold > 0 and _is_git_repo(workdir)
+    step_number = 0
+    # Only track convergence if a threshold is set and we're in a git repo
+    convergence_enabled = convergence_threshold > 0 and _is_git_repo(workdir)
     prev_change_pct: float | None = None
 
     for cycle in range(1, num_cycles + 1):
@@ -1056,16 +1099,16 @@ def _run_review_suite(
         if num_cycles > 1:
             print(f"\n{BOLD}{CYAN}===  Cycle {cycle}/{num_cycles}  ==={RESET}")
 
-        base_sha = _git_head_sha(workdir) if use_convergence else None
+        base_sha = _git_head_sha(workdir) if convergence_enabled else None
 
         for review_pass in selected_passes:
             time.sleep(args.pause)
-            current_step += 1
-            cycle_label = f" (cycle {cycle}/{num_cycles})" if num_cycles > 1 else ""
-            step_label = f"[{current_step}/{total_steps}]{cycle_label}"
+            step_number += 1
+            cycle_suffix = f" (cycle {cycle}/{num_cycles})" if num_cycles > 1 else ""
+            step_label = f"[{step_number}/{total_steps}]{cycle_suffix}"
             _run_single_pass(review_pass, workdir, args, step_label)
 
-        if use_convergence and base_sha and not args.dry_run:
+        if convergence_enabled and base_sha and not args.dry_run:
             converged, prev_change_pct = _check_cycle_convergence(
                 workdir, cycle, base_sha, convergence_threshold, prev_change_pct,
             )
@@ -1076,7 +1119,7 @@ def _run_review_suite(
 def _display_pre_run_warning(skip_permissions: bool) -> None:
     """Show a warning about permissions and wait 5 seconds for the user to abort."""
     if skip_permissions:
-        colour = RED
+        warning_colour = RED
         heading = "WARNING: --dangerously-skip-permissions is ENABLED"
         body_lines = [
             "Claude Code will execute ALL actions without asking for approval.",
@@ -1085,7 +1128,7 @@ def _display_pre_run_warning(skip_permissions: bool) -> None:
         ]
         countdown = "Starting in 5 seconds (Ctrl+C to abort)..."
     else:
-        colour = YELLOW
+        warning_colour = YELLOW
         heading = "WARNING: Running without --dangerously-skip-permissions"
         body_lines = [
             "Claude Code requires interactive permission prompts to write files,",
@@ -1093,16 +1136,16 @@ def _display_pre_run_warning(skip_permissions: bool) -> None:
             "Passes that modify code will likely FAIL or HANG.",
             "",
             "Re-run with:",
-            f"  {BOLD}claudeloop --dangerously-skip-permissions ...{RESET}{colour}",
+            f"  {BOLD}claudeloop --dangerously-skip-permissions ...{RESET}{warning_colour}",
         ]
         countdown = "Continuing anyway in 5 seconds (Ctrl+C to abort)..."
 
-    print(f"\n{colour}{BOLD}{'=' * RULE_WIDTH}")
+    print(f"\n{warning_colour}{BOLD}{'=' * RULE_WIDTH}")
     print(f"  {heading}")
     print(f"{'=' * RULE_WIDTH}{RESET}")
     for line in body_lines:
-        print(f"{colour}  {line}{RESET}")
-    print(f"\n{colour}  {countdown}{RESET}")
+        print(f"{warning_colour}  {line}{RESET}")
+    print(f"\n{warning_colour}  {countdown}{RESET}")
 
     try:
         time.sleep(5)
@@ -1145,10 +1188,8 @@ def _resolve_selected_passes(args: argparse.Namespace) -> list[dict[str, str]]:
     return [p for p in REVIEW_PASSES if p["id"] in selected_ids]
 
 
-def main() -> None:
-    """CLI entry point: parse arguments and run the configured review suite."""
-    args = _build_argument_parser().parse_args()
-
+def _configure_logging(args: argparse.Namespace) -> None:
+    """Set up logging based on --verbose / --debug flags."""
     if args.debug:
         log_level = logging.DEBUG
     elif args.verbose:
@@ -1160,6 +1201,40 @@ def main() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+
+
+def _execute_suite(
+    selected_passes: list[dict[str, str]],
+    num_cycles: int,
+    workdir: str,
+    args: argparse.Namespace,
+    convergence_threshold: float,
+) -> None:
+    """Run the review suite with error handling and timing."""
+    suite_start_time = time.time()
+    try:
+        _run_review_suite(selected_passes, num_cycles, workdir, args, convergence_threshold)
+    except KeyboardInterrupt:
+        elapsed = _format_duration(time.time() - suite_start_time)
+        print(f"\n{YELLOW}Interrupted after {elapsed}. Partial results may have been applied.{RESET}")
+        sys.exit(130)
+    except FileNotFoundError as exc:
+        logger.error("Required external tool not found: %s", exc)
+        _fatal(f"Required tool not found: {exc}. Ensure git and claude are installed.")
+    except Exception:
+        logger.exception("Unexpected error during review suite")
+        elapsed = _format_duration(time.time() - suite_start_time)
+        print(f"\n{RED}Unexpected error after {elapsed}. Partial results may have been applied.{RESET}")
+        raise
+    suite_elapsed = _format_duration(time.time() - suite_start_time)
+    logger.info("Suite completed: elapsed=%s", suite_elapsed)
+    print_banner(f"All done! ({suite_elapsed} total)", GREEN)
+
+
+def main() -> None:
+    """CLI entry point: parse arguments and run the configured review suite."""
+    args = _build_argument_parser().parse_args()
+    _configure_logging(args)
 
     workdir = _resolve_working_directory(args.dir)
     _validate_arguments(args)
@@ -1185,24 +1260,7 @@ def main() -> None:
     if not args.dry_run:
         _display_pre_run_warning(args.dangerously_skip_permissions)
 
-    suite_start_time = time.time()
-    try:
-        _run_review_suite(selected_passes, num_cycles, workdir, args, convergence_threshold)
-    except KeyboardInterrupt:
-        elapsed = _format_duration(time.time() - suite_start_time)
-        print(f"\n{YELLOW}Interrupted after {elapsed}. Partial results may have been applied.{RESET}")
-        sys.exit(130)
-    except FileNotFoundError as exc:
-        logger.error("Required external tool not found: %s", exc)
-        _fatal(f"Required tool not found: {exc}. Ensure git and claude are installed.")
-    except Exception:
-        logger.exception("Unexpected error during review suite")
-        elapsed = _format_duration(time.time() - suite_start_time)
-        print(f"\n{RED}Unexpected error after {elapsed}. Partial results may have been applied.{RESET}")
-        raise
-    suite_elapsed = _format_duration(time.time() - suite_start_time)
-    logger.info("Suite completed: elapsed=%s", suite_elapsed)
-    print_banner(f"All done! ({suite_elapsed} total)", GREEN)
+    _execute_suite(selected_passes, num_cycles, workdir, args, convergence_threshold)
 
 
 if __name__ == "__main__":
