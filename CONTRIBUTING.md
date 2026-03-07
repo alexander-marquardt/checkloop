@@ -35,7 +35,7 @@ uv pip install -e .
 
 - Follow the existing patterns in the codebase.
 - Use type hints for function signatures.
-- Keep it simple — this is a ~300-line tool, not a framework.
+- Keep it simple — this is a single-module CLI tool, not a framework.
 
 ## Adding Review Passes
 

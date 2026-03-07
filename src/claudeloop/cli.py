@@ -6,12 +6,12 @@ Runs a configurable suite of review passes (readability, DRY, tests, security,
 etc.) over an existing codebase. Point it at a directory and walk away.
 
 Usage:
-    claudeloop                          # review current directory
-    claudeloop --dir ~/my-project
-    claudeloop --cycles 3               # repeat the full suite 3x
+    claudeloop                            # review current directory (basic tier)
+    claudeloop --dir ~/my-project         # review a specific directory
+    claudeloop --cycles 3                 # repeat the full suite 3x
     claudeloop --passes readability dry tests
     claudeloop --all-passes --cycles 2
-    claudeloop --dry-run                # preview without running
+    claudeloop --dry-run                  # preview without running
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import IO, Any, NoReturn
+from typing import IO, Any, Literal, NoReturn, overload
 
 logger = logging.getLogger(__name__)
 
@@ -59,40 +59,130 @@ COMMIT_MESSAGE_INSTRUCTIONS = (
 
 
 def _fatal(msg: str) -> NoReturn:
-    """Print an error message in red and exit with code 1."""
+    """Log an error, print it in red, and exit with code 1."""
+    logger.error("%s", msg)
     print(f"{RED}{msg}{RESET}")
     sys.exit(1)
 
 
-def _log_memory_usage(label: str) -> None:
-    """Log the current RSS of this process (macOS/Linux)."""
-    usage = resource.getrusage(resource.RUSAGE_CHILDREN)
-    self_usage = resource.getrusage(resource.RUSAGE_SELF)
-    # maxrss is in bytes on macOS, kilobytes on Linux
+def _get_current_rss_mb() -> float:
+    """Return the current RSS of this process in MB (not peak — actual current)."""
+    try:
+        pid = os.getpid()
+        result = subprocess.run(
+            ["ps", "-o", "rss=", "-p", str(pid)],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return int(result.stdout.strip()) / 1024  # ps reports in KB
+    except (OSError, ValueError) as exc:
+        logger.debug("ps-based RSS lookup failed: %s", exc)
+    # Fallback: use resource (peak, not current — better than nothing)
+    usage = resource.getrusage(resource.RUSAGE_SELF)
     scale = 1024 * 1024 if sys.platform == "darwin" else 1024
-    self_mb = self_usage.ru_maxrss / scale
-    children_mb = usage.ru_maxrss / scale
-    logger.info("Memory [%s]: self=%.0fMB, children_peak=%.0fMB", label, self_mb, children_mb)
-    print_status(f"  Memory: self={self_mb:.0f}MB, children_peak={children_mb:.0f}MB", DIM)
+    return usage.ru_maxrss / scale
+
+
+def _get_child_pids() -> list[int]:
+    """Return PIDs of surviving child processes (including orphaned grandchildren)."""
+    try:
+        result = subprocess.run(
+            ["pgrep", "-P", str(os.getpid())],
+            capture_output=True, text=True,
+        )
+    except OSError as exc:
+        logger.debug("pgrep failed: %s", exc)
+        return []
+    if result.returncode != 0 or not result.stdout.strip():
+        return []
+    pids: list[int] = []
+    for line in result.stdout.strip().split("\n"):
+        try:
+            pids.append(int(line.strip()))
+        except ValueError:
+            logger.debug("pgrep returned non-integer PID line: %r", line)
+    return pids
+
+
+def _kill_orphaned_children(pids: list[int] | None = None) -> int:
+    """Kill surviving child processes. Returns count killed.
+
+    Accepts an optional pre-fetched pid list to avoid a redundant pgrep spawn.
+    """
+    killed = 0
+    for cpid in (pids if pids is not None else _get_child_pids()):
+        try:
+            os.kill(cpid, signal.SIGKILL)
+            killed += 1
+            logger.warning("Killed orphaned child process %d", cpid)
+        except OSError as exc:
+            logger.debug("Could not kill child %d: %s", cpid, exc)
+    return killed
+
+
+def _log_memory_usage(label: str) -> None:
+    """Log current RSS and child process count after each pass."""
+    rss_mb = _get_current_rss_mb()
+    child_pids = _get_child_pids()
+    logger.info("Memory [%s]: rss=%.0fMB, children=%d", label, rss_mb, len(child_pids))
+    print_status(f"  Memory: {rss_mb:.0f}MB RSS, {len(child_pids)} child processes", DIM)
+    if child_pids:
+        print(f"{YELLOW}  Warning: {len(child_pids)} child process(es) still alive — killing.{RESET}")
+        # Pass pids directly to avoid a second pgrep subprocess spawn.
+        killed = _kill_orphaned_children(child_pids)
+        if killed:
+            print_status(f"  Killed {killed} orphaned process(es).", YELLOW)
 
 
 # --- Git helpers (convergence detection) --------------------------------------
 
+@overload
+def _git_run(
+    workdir: str,
+    *args: str,
+    check: bool = False,
+    text: Literal[True] = ...,
+) -> subprocess.CompletedProcess[str]: ...
+
+@overload
+def _git_run(
+    workdir: str,
+    *args: str,
+    check: bool = False,
+    text: Literal[False] = ...,
+) -> subprocess.CompletedProcess[bytes]: ...
+
+def _git_run(
+    workdir: str,
+    *args: str,
+    check: bool = False,
+    text: bool = True,
+) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
+    """Run a git command in *workdir* with captured output."""
+    try:
+        return subprocess.run(
+            ["git", *args],
+            cwd=workdir,
+            capture_output=True,
+            text=text,
+            check=check,
+        )
+    except FileNotFoundError:
+        logger.error("git binary not found — is git installed?")
+        raise
+    except OSError as exc:
+        logger.error("Failed to run git %s: %s", args[0] if args else "", exc)
+        raise
+
+
 def _is_git_repo(workdir: str) -> bool:
     """Return True if workdir is inside a git repository."""
-    result = subprocess.run(
-        ["git", "rev-parse", "--is-inside-work-tree"],
-        cwd=workdir, capture_output=True, text=True,
-    )
-    return result.returncode == 0
+    return _git_run(workdir, "rev-parse", "--is-inside-work-tree").returncode == 0
 
 
 def _git_head_sha(workdir: str) -> str | None:
     """Return the current HEAD commit SHA, or None if unavailable."""
-    result = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=workdir, capture_output=True, text=True,
-    )
+    result = _git_run(workdir, "rev-parse", "HEAD")
     return result.stdout.strip() if result.returncode == 0 else None
 
 
@@ -102,20 +192,13 @@ def _git_commit_cycle(workdir: str, cycle: int) -> bool:
     Returns True if a commit was created (i.e. there were changes).
     """
     try:
-        subprocess.run(
-            ["git", "add", "-A"], cwd=workdir, capture_output=True, check=True,
-        )
+        _git_run(workdir, "add", "-A", check=True)
         # Check for staged changes
-        result = subprocess.run(
-            ["git", "diff", "--cached", "--quiet"], cwd=workdir, capture_output=True,
-        )
-        if result.returncode == 0:
+        if _git_run(workdir, "diff", "--cached", "--quiet").returncode == 0:
+            logger.debug("No staged changes after cycle %d — nothing to commit", cycle)
             return False  # nothing to commit
-        msg = f"Review cycle {cycle} cleanup"
-        subprocess.run(
-            ["git", "commit", "-m", msg],
-            cwd=workdir, capture_output=True, check=True,
-        )
+        _git_run(workdir, "commit", "-m", f"Review cycle {cycle} cleanup", check=True)
+        logger.info("Committed changes after cycle %d", cycle)
         return True
     except subprocess.CalledProcessError as exc:
         logger.warning("Git commit failed after cycle %d: %s", cycle, exc)
@@ -125,13 +208,25 @@ def _git_commit_cycle(workdir: str, cycle: int) -> bool:
 def _parse_shortstat(text: str) -> int:
     """Parse ``git diff --shortstat`` output into total lines changed."""
     insertions = deletions = 0
-    m = re.search(r"(\d+) insertion", text)
-    if m:
-        insertions = int(m.group(1))
-    m = re.search(r"(\d+) deletion", text)
-    if m:
-        deletions = int(m.group(1))
+    match = re.search(r"(\d+) insertion", text)
+    if match:
+        insertions = int(match.group(1))
+    match = re.search(r"(\d+) deletion", text)
+    if match:
+        deletions = int(match.group(1))
     return insertions + deletions
+
+
+def _count_file_lines(filepath: Path) -> int:
+    """Count newlines in a text file, reading in chunks. Returns 0 for binary files."""
+    with open(filepath, "rb") as fh:
+        header = fh.read(8192)
+        if b"\0" in header:
+            return 0  # binary file
+        total = header.count(b"\n")
+        for chunk in iter(lambda: fh.read(65536), b""):
+            total += chunk.count(b"\n")
+        return total
 
 
 def _count_tracked_lines(workdir: str) -> int:
@@ -140,46 +235,44 @@ def _count_tracked_lines(workdir: str) -> int:
     Reads files in small chunks to avoid loading large files entirely into
     memory, which matters for long-running sessions on big repos.
     """
-    ls_result = subprocess.run(
-        ["git", "ls-files", "-z"], cwd=workdir, capture_output=True,
-    )
+    ls_result = _git_run(workdir, "ls-files", "-z", text=False)
     if ls_result.returncode != 0:
         return 1  # avoid division by zero
     files = [f.decode("utf-8", errors="replace") for f in ls_result.stdout.split(b"\0") if f]
     total = 0
+    workdir_resolved = Path(workdir).resolve()
     for filename in files:
         try:
-            filepath = Path(workdir) / filename
-            with open(filepath, "rb") as fh:
-                header = fh.read(8192)
-                if b"\0" in header:  # skip binary files
-                    continue
-                # Count newlines in header, then continue in chunks
-                total += header.count(b"\n")
-                while True:
-                    chunk = fh.read(65536)
-                    if not chunk:
-                        break
-                    total += chunk.count(b"\n")
-        except OSError:
-            pass
+            filepath = (workdir_resolved / filename).resolve()
+            if not filepath.is_relative_to(workdir_resolved):
+                continue  # skip paths that escape the workdir (path traversal)
+            total += _count_file_lines(filepath)
+        except OSError as exc:
+            logger.debug("Could not read tracked file %s: %s", filename, exc)
     return max(total, 1)
+
+
+_cached_total_lines: dict[str, int] = {}
 
 
 def _get_change_percentage(workdir: str, base_sha: str) -> float:
     """Return the percentage of total tracked lines that changed since *base_sha*."""
-    result = subprocess.run(
-        ["git", "diff", "--shortstat", base_sha, "HEAD"],
-        cwd=workdir, capture_output=True, text=True,
-    )
+    result = _git_run(workdir, "diff", "--shortstat", base_sha, "HEAD")
+    if result.returncode != 0:
+        logger.warning("git diff --shortstat failed (rc=%d): %s", result.returncode, result.stderr.strip())
+        return 0.0
     lines_changed = _parse_shortstat(result.stdout)
     if lines_changed == 0:
         return 0.0
-    total_lines = _count_tracked_lines(workdir)
-    return (lines_changed / total_lines) * 100
+    # Cache total line count per workdir — it barely changes between cycles and
+    # counting requires reading every tracked file, which is expensive on large repos.
+    resolved = str(Path(workdir).resolve())
+    if resolved not in _cached_total_lines:
+        _cached_total_lines[resolved] = _count_tracked_lines(workdir)
+    return (lines_changed / _cached_total_lines[resolved]) * 100
 
 
-def banner(title: str, colour: str = CYAN) -> None:
+def print_banner(title: str, colour: str = CYAN) -> None:
     """Print a prominent section header with horizontal rules."""
     horizontal_rule = "\u2500" * RULE_WIDTH  # ─
     print(f"\n{colour}{BOLD}{horizontal_rule}")
@@ -494,15 +587,18 @@ def _summarise_tool_use(tool_name: str, tool_input: dict[str, Any]) -> str:
 
 def _print_event(event: dict[str, Any], pass_start_time: float) -> None:
     """Parse a stream-json event and print a human-readable progress line."""
-    elapsed = _format_duration(time.time() - pass_start_time)
-    elapsed_prefix = f"{DIM}[{elapsed}]{RESET} "
     event_type = event.get("type", "")
+    if not event_type:
+        return
+    elapsed_prefix = f"{DIM}[{_format_duration(time.time() - pass_start_time)}]{RESET} "
 
     if event_type == "assistant":
-        for block in event.get("message", {}).get("content", []):
-            if block.get("type") != "text":
-                continue
-            text = block.get("text", "")
+        text_blocks = [
+            b.get("text", "")
+            for b in event.get("message", {}).get("content", [])
+            if b.get("type") == "text"
+        ]
+        for text in text_blocks:
             if text.strip():
                 print(f"{elapsed_prefix}{text}")
 
@@ -523,7 +619,7 @@ def _print_event(event: dict[str, Any], pass_start_time: float) -> None:
             print(result_text)
 
 
-def _process_lines(
+def _process_jsonl_buffer(
     line_buffer: bytearray,
     pass_start_time: float,
     verbose: bool,
@@ -612,7 +708,7 @@ def _drain_remaining_stdout(
             if not remaining:
                 break
             output_buffer.extend(remaining)
-            output_buffer = _process_lines(output_buffer, pass_start_time, verbose)
+            output_buffer = _process_jsonl_buffer(output_buffer, pass_start_time, verbose)
     except OSError as exc:
         logger.debug("Failed to drain remaining stdout: %s", exc)
     return output_buffer
@@ -645,18 +741,18 @@ def _stream_process_output(
                 _kill_process_group(process)
                 break
 
-            # Poll stdout with a 1-second timeout so we can check for idle/exit
             try:
                 ready, _, _ = select.select([stdout], [], [], 1.0)
             except (OSError, ValueError) as exc:
                 logger.debug("select() failed (fd may be closed): %s", exc)
                 break
-            if not ready and process.poll() is not None:
-                output_buffer = _drain_remaining_stdout(
-                    stdout, output_buffer, pass_start_time, verbose,
-                )
-                break
+
             if not ready:
+                if process.poll() is not None:
+                    output_buffer = _drain_remaining_stdout(
+                        stdout, output_buffer, pass_start_time, verbose,
+                    )
+                    break
                 continue
 
             chunk = _read_stdout_chunk(stdout)
@@ -665,12 +761,12 @@ def _stream_process_output(
 
             last_output_time = time.time()
             output_buffer.extend(chunk)
-            output_buffer = _process_lines(output_buffer, pass_start_time, verbose)
+            output_buffer = _process_jsonl_buffer(output_buffer, pass_start_time, verbose)
 
     finally:
         # Flush any remaining partial line by appending a newline
         output_buffer.extend(b"\n")
-        _process_lines(output_buffer, pass_start_time, verbose)
+        _process_jsonl_buffer(output_buffer, pass_start_time, verbose)
 
         try:
             stdout.close()
@@ -680,37 +776,37 @@ def _stream_process_output(
     return pass_start_time
 
 
+def _signal_process_group(pgid: int, sig: signal.Signals) -> None:
+    """Send a signal to a process group, ignoring errors if already gone."""
+    try:
+        os.killpg(pgid, sig)
+    except OSError as exc:
+        logger.debug("%s to pgid %d failed: %s", sig.name, pgid, exc)
+
+
 def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
     """Terminate the process and its entire process group.
 
     Sends SIGTERM first (graceful), waits briefly, then SIGKILL if needed.
     This prevents orphaned child processes from leaking memory.
     """
-    pid = process.pid
     try:
-        pgid = os.getpgid(pid)
+        pgid = os.getpgid(process.pid)
     except OSError:
-        # Process already gone
-        return
+        return  # process already gone
 
-    # Graceful termination first
+    _signal_process_group(pgid, signal.SIGTERM)
     try:
-        os.killpg(pgid, signal.SIGTERM)
-    except OSError:
+        process.wait(timeout=5)
+        return
+    except subprocess.TimeoutExpired:
         pass
 
+    _signal_process_group(pgid, signal.SIGKILL)
     try:
         process.wait(timeout=5)
     except subprocess.TimeoutExpired:
-        # Force kill the entire group
-        try:
-            os.killpg(pgid, signal.SIGKILL)
-        except OSError:
-            pass
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            logger.warning("Process %d did not exit after SIGKILL", pid)
+        logger.warning("Process %d did not exit after SIGKILL", process.pid)
 
 
 def run_claude(
@@ -752,7 +848,9 @@ def run_claude(
     _kill_process_group(process)
 
     elapsed = _format_duration(time.time() - pass_start_time)
-    exit_code = process.returncode
+    exit_code = process.returncode if process.returncode is not None else -1
+    if process.returncode is None:
+        logger.warning("Process exited without a return code (may not have terminated cleanly)")
     colour = GREEN if exit_code == 0 else YELLOW
     status = "completed" if exit_code == 0 else f"exited with code {exit_code}"
     logger.info("Pass %s (exit_code=%d, elapsed=%s)", status, exit_code, elapsed)
@@ -820,7 +918,11 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--verbose", "-v", action="store_true",
-        help="Show raw non-JSON output from Claude",
+        help="Show operational events, timing, and memory info (INFO-level logging)",
+    )
+    parser.add_argument(
+        "--debug", action="store_true",
+        help="Show all details including raw subprocess output (DEBUG-level logging)",
     )
     parser.add_argument(
         "--pause", type=int, default=DEFAULT_PAUSE_SECONDS,
@@ -865,6 +967,72 @@ def _print_run_summary(
         print(f"  {YELLOW}DRY RUN{RESET}")
 
 
+def _check_cycle_convergence(
+    workdir: str,
+    cycle: int,
+    base_sha: str,
+    convergence_threshold: float,
+    prev_change_pct: float | None,
+) -> tuple[bool, float | None]:
+    """Commit changes and check whether the review loop has converged.
+
+    Returns (should_stop, updated_prev_change_pct).
+    """
+    _git_commit_cycle(workdir, cycle)
+    current_sha = _git_head_sha(workdir)
+
+    if current_sha == base_sha:
+        logger.info("Cycle %d: no changes detected — converged", cycle)
+        print(f"\n{GREEN}No changes in cycle {cycle} — converged.{RESET}")
+        return True, prev_change_pct
+
+    change_pct = _get_change_percentage(workdir, base_sha)
+    print(f"\n{DIM}Cycle {cycle}: {change_pct:.2f}% of lines changed "
+          f"(threshold: {convergence_threshold}%){RESET}")
+
+    if prev_change_pct is not None and change_pct > prev_change_pct:
+        print(f"{YELLOW}Warning: changes increased ({prev_change_pct:.2f}% -> {change_pct:.2f}%) — "
+              f"possible oscillation.{RESET}")
+
+    if change_pct < convergence_threshold:
+        logger.info("Cycle %d: converged at %.2f%% (threshold: %.2f%%)", cycle, change_pct, convergence_threshold)
+        print(f"{GREEN}Converged at {change_pct:.2f}% (below {convergence_threshold}% threshold).{RESET}")
+        return True, change_pct
+
+    logger.info("Cycle %d: %.2f%% lines changed (threshold: %.2f%%), continuing", cycle, change_pct, convergence_threshold)
+    return False, change_pct
+
+
+def _run_single_pass(
+    review_pass: dict[str, str],
+    workdir: str,
+    args: argparse.Namespace,
+    step_label: str,
+) -> None:
+    """Execute a single review pass, skipping if the prompt looks dangerous."""
+    logger.info("Pass started: id=%s, label=%s, step=%s", review_pass["id"], review_pass["label"], step_label)
+    print_banner(f"{step_label} {review_pass['label']}", CYAN)
+
+    prompt = review_pass["prompt"] + COMMIT_MESSAGE_INSTRUCTIONS
+
+    if _looks_dangerous(prompt):
+        logger.warning("Skipping pass '%s' — dangerous keywords detected in prompt", review_pass["id"])
+        print(f"{YELLOW}Skipping '{review_pass['id']}' — dangerous keywords detected.{RESET}")
+        return
+
+    exit_code = run_claude(
+        prompt,
+        workdir,
+        skip_permissions=args.dangerously_skip_permissions,
+        dry_run=args.dry_run,
+        idle_timeout=args.idle_timeout,
+        verbose=getattr(args, "debug", False),
+    )
+    if exit_code != 0:
+        logger.warning("Pass '%s' exited with code %d", review_pass["id"], exit_code)
+        print(f"{YELLOW}Pass '{review_pass['id']}' exited with code {exit_code}. Continuing...{RESET}")
+
+
 def _run_review_suite(
     selected_passes: list[dict[str, str]],
     num_cycles: int,
@@ -881,62 +1049,28 @@ def _run_review_suite(
     total_steps = len(selected_passes) * num_cycles
     current_step = 0
     use_convergence = convergence_threshold > 0 and _is_git_repo(workdir)
-    prev_pct: float | None = None
+    prev_change_pct: float | None = None
 
     for cycle in range(1, num_cycles + 1):
+        logger.info("Cycle %d/%d started", cycle, num_cycles)
         if num_cycles > 1:
             print(f"\n{BOLD}{CYAN}===  Cycle {cycle}/{num_cycles}  ==={RESET}")
 
-        # Snapshot HEAD before this cycle so we can measure changes afterwards.
         base_sha = _git_head_sha(workdir) if use_convergence else None
 
         for review_pass in selected_passes:
             time.sleep(args.pause)
             current_step += 1
             cycle_label = f" (cycle {cycle}/{num_cycles})" if num_cycles > 1 else ""
-            banner(f"[{current_step}/{total_steps}] {review_pass['label']}{cycle_label}", CYAN)
+            step_label = f"[{current_step}/{total_steps}]{cycle_label}"
+            _run_single_pass(review_pass, workdir, args, step_label)
 
-            prompt = review_pass["prompt"] + COMMIT_MESSAGE_INSTRUCTIONS
-
-            if _looks_dangerous(prompt):
-                logger.warning("Skipping pass '%s' — dangerous keywords detected in prompt", review_pass["id"])
-                print(f"{YELLOW}Skipping '{review_pass['id']}' — dangerous keywords detected.{RESET}")
-                continue
-
-            exit_code = run_claude(
-                prompt,
-                workdir,
-                skip_permissions=args.dangerously_skip_permissions,
-                dry_run=args.dry_run,
-                idle_timeout=args.idle_timeout,
-                verbose=args.verbose,
-            )
-            if exit_code != 0:
-                logger.warning("Pass '%s' exited with code %d", review_pass["id"], exit_code)
-                print(f"{YELLOW}Pass '{review_pass['id']}' exited with code {exit_code}. Continuing...{RESET}")
-
-        # --- Post-cycle: commit & convergence check ---------------------------
         if use_convergence and base_sha and not args.dry_run:
-            _git_commit_cycle(workdir, cycle)
-            current_sha = _git_head_sha(workdir)
-
-            if current_sha == base_sha:
-                print(f"\n{GREEN}No changes in cycle {cycle} — converged.{RESET}")
+            converged, prev_change_pct = _check_cycle_convergence(
+                workdir, cycle, base_sha, convergence_threshold, prev_change_pct,
+            )
+            if converged:
                 break
-
-            pct = _get_change_percentage(workdir, base_sha)
-            print(f"\n{DIM}Cycle {cycle}: {pct:.2f}% of lines changed "
-                  f"(threshold: {convergence_threshold}%){RESET}")
-
-            if prev_pct is not None and pct > prev_pct:
-                print(f"{YELLOW}Warning: changes increased ({prev_pct:.2f}% -> {pct:.2f}%) — "
-                      f"possible oscillation.{RESET}")
-
-            if pct < convergence_threshold:
-                print(f"{GREEN}Converged at {pct:.2f}% (below {convergence_threshold}% threshold).{RESET}")
-                break
-
-            prev_pct = pct
 
 
 def _display_pre_run_warning(skip_permissions: bool) -> None:
@@ -977,41 +1111,76 @@ def _display_pre_run_warning(skip_permissions: bool) -> None:
         sys.exit(0)
 
 
-def main() -> None:
-    """CLI entry point: parse arguments and run the configured review suite."""
-    args = _build_argument_parser().parse_args()
-
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.WARNING,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
-
+def _resolve_working_directory(dir_arg: str) -> str:
+    """Resolve and validate the --dir argument, exiting on error."""
     try:
-        workdir = str(Path(args.dir).resolve())
+        workdir = str(Path(dir_arg).resolve())
     except OSError as exc:
-        _fatal(f"Cannot resolve directory '{args.dir}': {exc}")
+        _fatal(f"Cannot resolve directory '{dir_arg}': {exc}")
     if not Path(workdir).is_dir():
         _fatal(f"Directory not found: {workdir}")
+    return workdir
 
+
+def _validate_arguments(args: argparse.Namespace) -> None:
+    """Exit with an error if any CLI arguments have invalid values."""
     if args.idle_timeout < 1:
         _fatal("--idle-timeout must be at least 1 second")
     if args.pause < 0:
         _fatal("--pause cannot be negative")
+    if args.cycles < 1:
+        _fatal("--cycles must be at least 1")
+    if args.converged_at_percentage < 0:
+        _fatal("--converged-at-percentage cannot be negative")
 
+
+def _resolve_selected_passes(args: argparse.Namespace) -> list[dict[str, str]]:
+    """Determine which review passes to run based on CLI arguments."""
     if args.all_passes:
-        selected_ids = PASS_IDS
+        selected_ids = set(PASS_IDS)
     elif args.passes:
-        selected_ids = args.passes
+        selected_ids = set(args.passes)
     else:
-        selected_ids = TIERS[args.level or DEFAULT_TIER]
-    selected_passes = [p for p in REVIEW_PASSES if p["id"] in selected_ids]
-    num_cycles = max(1, args.cycles)
-    total_steps = len(selected_passes) * num_cycles
+        selected_ids = set(TIERS[args.level or DEFAULT_TIER])
+    return [p for p in REVIEW_PASSES if p["id"] in selected_ids]
 
-    convergence_threshold = max(0.0, args.converged_at_percentage)
+
+def main() -> None:
+    """CLI entry point: parse arguments and run the configured review suite."""
+    args = _build_argument_parser().parse_args()
+
+    if args.debug:
+        log_level = logging.DEBUG
+    elif args.verbose:
+        log_level = logging.INFO
+    else:
+        log_level = logging.WARNING
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    workdir = _resolve_working_directory(args.dir)
+    _validate_arguments(args)
+
+    selected_passes = _resolve_selected_passes(args)
+    if not selected_passes:
+        _fatal("No review passes selected. Check your --passes or --level arguments.")
+    num_cycles = args.cycles
+    total_steps = len(selected_passes) * num_cycles
+    convergence_threshold = args.converged_at_percentage
 
     _print_run_summary(workdir, selected_passes, num_cycles, total_steps, args.idle_timeout, args.dry_run, convergence_threshold)
+
+    logger.info(
+        "Suite started: workdir=%s, passes=[%s], cycles=%d, idle_timeout=%d, convergence=%.2f%%",
+        workdir,
+        ", ".join(p["id"] for p in selected_passes),
+        num_cycles,
+        args.idle_timeout,
+        convergence_threshold,
+    )
 
     if not args.dry_run:
         _display_pre_run_warning(args.dangerously_skip_permissions)
@@ -1023,7 +1192,17 @@ def main() -> None:
         elapsed = _format_duration(time.time() - suite_start_time)
         print(f"\n{YELLOW}Interrupted after {elapsed}. Partial results may have been applied.{RESET}")
         sys.exit(130)
-    banner(f"All done! ({_format_duration(time.time() - suite_start_time)} total)", GREEN)
+    except FileNotFoundError as exc:
+        logger.error("Required external tool not found: %s", exc)
+        _fatal(f"Required tool not found: {exc}. Ensure git and claude are installed.")
+    except Exception:
+        logger.exception("Unexpected error during review suite")
+        elapsed = _format_duration(time.time() - suite_start_time)
+        print(f"\n{RED}Unexpected error after {elapsed}. Partial results may have been applied.{RESET}")
+        raise
+    suite_elapsed = _format_duration(time.time() - suite_start_time)
+    logger.info("Suite completed: elapsed=%s", suite_elapsed)
+    print_banner(f"All done! ({suite_elapsed} total)", GREEN)
 
 
 if __name__ == "__main__":

@@ -27,7 +27,7 @@ uv run claudeloop
 # Use the thorough tier for deeper review
 uv run claudeloop --level thorough
 
-# Exhaustive review — all 15 passes, repeat twice
+# Exhaustive review — all 17 passes, repeat twice
 uv run claudeloop --level exhaustive --cycles 2
 
 # Pick specific passes manually (overrides tier)
@@ -52,9 +52,11 @@ Choose a review depth with `--level`:
 
 | Tier | Passes | Description |
 |------|--------|-------------|
-| **basic** (default) | 4 passes | Core code quality — readability, DRY, tests, docs |
-| **thorough** | 8 passes | Adds security, performance, error handling, type safety |
-| **exhaustive** | 15 passes | Everything — includes edge cases, complexity, deps, logging, concurrency, a11y, API design |
+| **basic** (default) | 6 passes | Core code quality — readability, DRY, tests, docs (plus test-fix/test-validate bookends) |
+| **thorough** | 10 passes | Adds security, performance, error handling, type safety |
+| **exhaustive** | 17 passes | Everything — includes edge cases, complexity, deps, logging, concurrency, a11y, API design |
+
+Every tier automatically includes the `test-fix` (first) and `test-validate` (last) bookend passes to ensure the test suite is green before and after the review.
 
 Use `--passes` to pick individual passes, or `--all-passes` as a shortcut for `--level exhaustive`.
 
@@ -62,6 +64,7 @@ Use `--passes` to pick individual passes, or `--all-passes` as a shortcut for `-
 
 | Pass | Tier | What it does |
 |------|------|-------------|
+| `test-fix` | bookend | Runs the existing test suite and fixes any failures in source code. Always runs first. |
 | `readability` | basic | Naming, function size, comments, formatting. No behaviour changes. |
 | `dry` | basic | Finds repeated logic, extracts helpers, consolidates constants. |
 | `tests` | basic | Targets >=90% coverage. Writes tests, runs them, fixes failures. |
@@ -77,6 +80,7 @@ Use `--passes` to pick individual passes, or `--all-passes` as a shortcut for `-
 | `concurrency` | exhaustive | Race conditions, missing locks, async/await correctness. |
 | `accessibility` | exhaustive | Semantic HTML, ARIA, keyboard nav, colour contrast (WCAG AA). |
 | `api-design` | exhaustive | Consistent naming, HTTP methods, error formats, pagination. |
+| `test-validate` | bookend | Re-runs the full test suite after all passes. Fixes any regressions. Always runs last. |
 
 ## Why Multi-Pass Works
 
@@ -89,21 +93,35 @@ A single "review everything" prompt overwhelms the model. Dimension-specific pas
 
 Each pass builds on the work of the previous ones.
 
+## Convergence Detection
+
+When running multiple cycles (`--cycles N`), `claudeloop` can stop early once the codebase stabilises. After each cycle it commits the changes and measures what percentage of total tracked lines were modified. If that percentage falls below the `--converged-at-percentage` threshold (default 0.1%), the loop exits. This requires the project directory to be a git repo. Set to 0 to disable.
+
+```bash
+# Run up to 5 cycles, but stop early if changes drop below 0.5%
+uv run claudeloop --cycles 5 --converged-at-percentage 0.5
+```
+
 ## Options
 
 ```
---dir, -d DIR          Project directory (default: .)
+--dir, -d DIR          Project directory (default: current directory)
 --level, -l TIER       Review depth: basic, thorough, exhaustive (default: basic)
 --passes PASS [...]    Manually select passes (overrides --level)
---all-passes           Run all 15 passes (same as --level exhaustive)
+--all-passes           Run all 17 passes (same as --level exhaustive)
 --cycles, -c N         Repeat the full suite N times (default: 1)
 --idle-timeout SECS    Kill after N seconds of silence (default: 120)
 --dry-run              Preview without running
---verbose, -v          Show raw streaming output
+--verbose, -v          Show operational events, timing, and memory info
+--debug                Show all details including raw subprocess output
 --pause SECS           Pause between passes (default: 2)
 --dangerously-skip-permissions
                        Pass --dangerously-skip-permissions to Claude Code
                        (bypasses all permission checks)
+--converged-at-percentage PCT
+                       Stop cycling early when less than PCT% of total lines
+                       changed in a cycle (default: 0.1). Requires a git repo.
+                       Set to 0 to disable convergence detection.
 ```
 
 ## How It Works
