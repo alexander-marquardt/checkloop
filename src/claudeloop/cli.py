@@ -86,6 +86,7 @@ def _get_current_rss_mb() -> float:
         logger.debug("ps-based RSS lookup failed: %s", exc)
     # Fallback: use resource (peak, not current — better than nothing)
     usage = resource.getrusage(resource.RUSAGE_SELF)
+    # macOS reports ru_maxrss in bytes; Linux reports in kilobytes.
     scale = 1024 * 1024 if sys.platform == "darwin" else 1024
     return usage.ru_maxrss / scale
 
@@ -227,10 +228,12 @@ def _parse_shortstat(text: str) -> int:
 def _count_file_lines(filepath: Path) -> int:
     """Count newlines in a text file, reading in chunks. Returns 0 for binary files."""
     with open(filepath, "rb") as file:
-        # Sniff the first 8 KB for null bytes to detect binary files
+        # Read a small header to check for null bytes (binary file indicator).
+        # If the file is text, count newlines in the header, then continue
+        # counting through the rest of the file in larger chunks.
         header = file.read(_READ_CHUNK_SIZE)
         if b"\0" in header:
-            return 0  # null byte detected — skip binary files
+            return 0
         total = header.count(b"\n")
         for chunk in iter(lambda: file.read(_DRAIN_CHUNK_SIZE), b""):
             total += chunk.count(b"\n")
@@ -246,10 +249,10 @@ def _count_tracked_lines(workdir: str) -> int:
     ls_result = _git_run(workdir, "ls-files", "-z", text=False)
     if ls_result.returncode != 0:
         return 1  # avoid division by zero
-    relative_paths = [f.decode("utf-8", errors="replace") for f in ls_result.stdout.split(b"\0") if f]
+    tracked_paths = [f.decode("utf-8", errors="replace") for f in ls_result.stdout.split(b"\0") if f]
     total = 0
     resolved_workdir = Path(workdir).resolve()
-    for relative_path in relative_paths:
+    for relative_path in tracked_paths:
         try:
             absolute_path = (resolved_workdir / relative_path).resolve()
             if not absolute_path.is_relative_to(resolved_workdir):
@@ -694,15 +697,17 @@ def _print_event(event: dict[str, Any], pass_start_time: float) -> None:
 
 
 def _process_jsonl_buffer(
-    line_buffer: bytearray,
+    output_buffer: bytearray,
     pass_start_time: float,
     verbose: bool,
 ) -> bytearray:
     """Process complete JSONL lines from the buffer, return the remainder."""
-    while b"\n" in line_buffer:
-        newline_pos = line_buffer.index(b"\n")
-        line = bytes(line_buffer[:newline_pos])
-        del line_buffer[:newline_pos + 1]
+    # Consume complete lines from the front of the buffer, leaving any
+    # trailing incomplete line for the next call.
+    while b"\n" in output_buffer:
+        newline_pos = output_buffer.index(b"\n")
+        line = bytes(output_buffer[:newline_pos])
+        del output_buffer[:newline_pos + 1]
         line_str = line.decode("utf-8", errors="replace").strip()
         if not line_str:
             continue
@@ -711,7 +716,7 @@ def _process_jsonl_buffer(
         except json.JSONDecodeError:
             if verbose:
                 print(f"{DIM}{line_str}{RESET}")
-    return line_buffer
+    return output_buffer
 
 
 def _build_claude_command(prompt: str, skip_permissions: bool) -> list[str]:
@@ -836,7 +841,7 @@ def _stream_process_output(
     stdout = process.stdout
     pass_start_time = time.time()
     last_output_time = time.time()
-    jsonl_buffer = bytearray()
+    output_buffer = bytearray()
 
     try:
         while True:
@@ -852,8 +857,8 @@ def _stream_process_output(
 
             if not ready:
                 if process.poll() is not None:
-                    jsonl_buffer = _drain_remaining_stdout(
-                        stdout, jsonl_buffer, pass_start_time, verbose,
+                    output_buffer = _drain_remaining_stdout(
+                        stdout, output_buffer, pass_start_time, verbose,
                     )
                     break
                 continue
@@ -863,11 +868,11 @@ def _stream_process_output(
                 break
 
             last_output_time = time.time()
-            jsonl_buffer.extend(chunk)
-            jsonl_buffer = _process_jsonl_buffer(jsonl_buffer, pass_start_time, verbose)
+            output_buffer.extend(chunk)
+            output_buffer = _process_jsonl_buffer(output_buffer, pass_start_time, verbose)
 
     finally:
-        _flush_and_close_stdout(stdout, jsonl_buffer, pass_start_time, verbose)
+        _flush_and_close_stdout(stdout, output_buffer, pass_start_time, verbose)
 
     return pass_start_time
 
@@ -940,6 +945,19 @@ def run_claude(
         print(f"  Prompt: {truncated}")
         return 0
 
+    return _execute_claude_process(cmd, workdir, idle_timeout, verbose)
+
+
+def _execute_claude_process(
+    cmd: list[str],
+    workdir: str,
+    idle_timeout: int,
+    verbose: bool,
+) -> int:
+    """Spawn the Claude subprocess, stream its output, and clean up.
+
+    Returns the subprocess exit code (0 on success, -1 if it never set one).
+    """
     process = _spawn_claude_process(cmd, workdir)
     pass_start_time = _stream_process_output(process, idle_timeout, verbose)
 
@@ -1183,12 +1201,12 @@ def _run_review_suite(
     On cycle 2+, passes that made no changes in the previous cycle are skipped.
     Bookend passes (test-fix, test-validate) always run on every cycle.
     """
-    step_number = 0
     # Perf: check once instead of spawning a git subprocess on every pass.
     is_git = _is_git_repo(workdir)
     convergence_enabled = convergence_threshold > 0 and is_git
     prev_change_pct: float | None = None
-    active_pass_ids: set[str] | None = None  # None = run all (cycle 1)
+    # Tracks which passes made changes last cycle; None means "run all" (first cycle).
+    previously_changed_ids: set[str] | None = None
 
     for cycle in range(1, num_cycles + 1):
         logger.info("Cycle %d/%d started", cycle, num_cycles)
@@ -1196,20 +1214,19 @@ def _run_review_suite(
             print(f"\n{BOLD}{CYAN}===  Cycle {cycle}/{num_cycles}  ==={RESET}")
 
         base_sha = _git_head_sha(workdir) if convergence_enabled else None
-        cycle_passes = _filter_active_passes(selected_passes, active_pass_ids)
-        cycle_active_ids: set[str] = set()
+        cycle_passes = _filter_active_passes(selected_passes, previously_changed_ids)
+        changed_this_cycle: set[str] = set()
 
         for i, review_pass in enumerate(cycle_passes, 1):
             time.sleep(args.pause)
-            step_number += 1
             cycle_suffix = f" (cycle {cycle}/{num_cycles})" if num_cycles > 1 else ""
             step_label = f"[{i}/{len(cycle_passes)}]{cycle_suffix}"
 
             made_changes = _run_single_pass(review_pass, workdir, args, step_label, is_git=is_git)
             if made_changes:
-                cycle_active_ids.add(review_pass["id"])
+                changed_this_cycle.add(review_pass["id"])
 
-        active_pass_ids = cycle_active_ids
+        previously_changed_ids = changed_this_cycle
 
         if convergence_enabled and base_sha and not args.dry_run:
             converged, prev_change_pct = _check_cycle_convergence(
@@ -1221,19 +1238,19 @@ def _run_review_suite(
 
 def _filter_active_passes(
     selected_passes: list[dict[str, str]],
-    active_pass_ids: set[str] | None,
+    previously_changed_ids: set[str] | None,
 ) -> list[dict[str, str]]:
     """Return passes to run this cycle, skipping those that were no-ops last cycle.
 
-    On the first cycle (*active_pass_ids* is None), all passes run.
+    On the first cycle (*previously_changed_ids* is None), all passes run.
     Bookend passes always run regardless of prior activity.
     """
-    if active_pass_ids is None:
+    if previously_changed_ids is None:
         return selected_passes
 
     cycle_passes = [
         p for p in selected_passes
-        if p["id"] in active_pass_ids or p["id"] in _BOOKEND_IDS
+        if p["id"] in previously_changed_ids or p["id"] in _BOOKEND_IDS
     ]
     skipped = len(selected_passes) - len(cycle_passes)
     if skipped > 0:
