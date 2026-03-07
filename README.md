@@ -182,6 +182,32 @@ uv run claudeloop --dir . --dangerously-skip-permissions
 
 The project has no runtime dependencies — only `pytest`, `pytest-cov`, and `mypy` in the dev group.
 
+## Troubleshooting
+
+| Problem | Solution |
+|---------|----------|
+| `claude` not found | Install Claude Code: `npm install -g @anthropic-ai/claude-code` |
+| Passes hang waiting for permission prompts | You must use `--dangerously-skip-permissions` — claudeloop cannot relay interactive prompts |
+| "CLAUDECODE" conflict when running inside a Claude session | claudeloop automatically strips this variable; no action needed |
+| Convergence detection not working | Ensure the project directory is a git repo (`git init` if needed) |
+| High memory usage over many passes | claudeloop kills orphaned child processes between passes; use `--verbose` to monitor RSS |
+| Idle timeout kills a pass too early | Increase with `--idle-timeout 300` (or higher) |
+
+## Contributing
+
+1. Fork the repo and create a feature branch.
+2. Install dev dependencies: `uv sync --dev`
+3. Make your changes in `src/claudeloop/cli.py`.
+4. Run the full check suite:
+   ```bash
+   uv run pytest --cov=claudeloop --cov-report=term-missing
+   uv run mypy src/claudeloop/
+   ```
+5. Ensure all tests pass and coverage stays above 90%.
+6. Open a pull request with a clear description of your changes.
+
+Commit messages should be concise (5–10 lines max), describe *what* changed and *why*, and avoid mentioning specific tools used to make the changes.
+
 ## License
 
 MIT

@@ -756,10 +756,12 @@ class TestRunReviewSuite:
             # Cycle 2 pass "readability": before, after
             "sha_r2_before", "sha_r2_after",
         ]
-        with mock.patch.object(cli, "run_claude", return_value=0):
-            with mock.patch.object(cli, "_is_git_repo", return_value=True):
-                with mock.patch.object(cli, "_git_head_sha", side_effect=sha_sequence):
-                    cli._run_review_suite(passes, 2, "/tmp", args)
+        with mock.patch.object(cli, "run_claude", return_value=0), \
+             mock.patch.object(cli, "_is_git_repo", return_value=True), \
+             mock.patch.object(cli, "_git_head_sha", side_effect=sha_sequence), \
+             mock.patch.object(cli, "_get_lines_changed", return_value=10), \
+             mock.patch.object(cli, "_get_total_tracked_lines", return_value=1000):
+            cli._run_review_suite(passes, 2, "/tmp", args)
         out = capsys.readouterr().out
         assert "Skipping 1 pass(es)" in out
 
@@ -779,10 +781,10 @@ class TestRunReviewSuite:
             # Cycle 2: test-fix (bookend, runs), test-validate (bookend, runs)
             "s4", "s4",  "s5", "s5",
         ]
-        with mock.patch.object(cli, "run_claude", return_value=0):
-            with mock.patch.object(cli, "_is_git_repo", return_value=True):
-                with mock.patch.object(cli, "_git_head_sha", side_effect=sha_sequence):
-                    cli._run_review_suite(passes, 2, "/tmp", args)
+        with mock.patch.object(cli, "run_claude", return_value=0), \
+             mock.patch.object(cli, "_is_git_repo", return_value=True), \
+             mock.patch.object(cli, "_git_head_sha", side_effect=sha_sequence):
+            cli._run_review_suite(passes, 2, "/tmp", args)
         out = capsys.readouterr().out
         assert "Skipping 1 pass(es)" in out
         # Verify cycle 2 shows bookend labels but not readability
@@ -805,12 +807,39 @@ class TestRunReviewSuite:
             # Cycle 2: both run again
             "c1", "c2",  "d1", "d2",
         ]
-        with mock.patch.object(cli, "run_claude", return_value=0):
-            with mock.patch.object(cli, "_is_git_repo", return_value=True):
-                with mock.patch.object(cli, "_git_head_sha", side_effect=sha_sequence):
-                    cli._run_review_suite(passes, 2, "/tmp", args)
+        with mock.patch.object(cli, "run_claude", return_value=0), \
+             mock.patch.object(cli, "_is_git_repo", return_value=True), \
+             mock.patch.object(cli, "_git_head_sha", side_effect=sha_sequence), \
+             mock.patch.object(cli, "_get_lines_changed", return_value=10), \
+             mock.patch.object(cli, "_get_total_tracked_lines", return_value=1000):
+            cli._run_review_suite(passes, 2, "/tmp", args)
         out = capsys.readouterr().out
         assert "Skipping" not in out
+
+    def test_pass_change_stats_printed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """After each pass that makes changes, lines changed and percentage are printed."""
+        passes = [{"id": "readability", "label": "Readability", "prompt": "review code"}]
+        args = _make_suite_args(dry_run=False)
+        with mock.patch.object(cli, "run_claude", return_value=0), \
+             mock.patch.object(cli, "_is_git_repo", return_value=True), \
+             mock.patch.object(cli, "_git_head_sha", side_effect=["sha1", "sha2"]), \
+             mock.patch.object(cli, "_get_lines_changed", return_value=42), \
+             mock.patch.object(cli, "_get_total_tracked_lines", return_value=5000):
+            cli._run_review_suite(passes, 1, "/tmp", args)
+        out = capsys.readouterr().out
+        assert "42 lines changed" in out
+        assert "0.84%" in out
+
+    def test_no_change_stats_printed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """After a pass with no changes, 'no changes' is printed."""
+        passes = [{"id": "dry", "label": "DRY", "prompt": "check dry"}]
+        args = _make_suite_args(dry_run=False)
+        with mock.patch.object(cli, "run_claude", return_value=0), \
+             mock.patch.object(cli, "_is_git_repo", return_value=True), \
+             mock.patch.object(cli, "_git_head_sha", side_effect=["same", "same"]):
+            cli._run_review_suite(passes, 1, "/tmp", args)
+        out = capsys.readouterr().out
+        assert "dry: no changes" in out
 
 
 # =============================================================================
@@ -1226,6 +1255,8 @@ class TestGetChangePercentage:
     """Tests for _get_change_percentage() convergence metric."""
 
     def test_calculates_percentage(self) -> None:
+        resolved = str(Path("/tmp").resolve())
+        cli._total_lines_cache.pop(resolved, None)
         with mock.patch("subprocess.run") as mock_run:
             mock_run.side_effect = [
                 # git diff --shortstat
@@ -1238,6 +1269,7 @@ class TestGetChangePercentage:
             with mock.patch("builtins.open", mock_open):
                 pct = cli._get_change_percentage("/tmp", "abc123")
                 assert 0 < pct < 100
+        cli._total_lines_cache.pop(resolved, None)
 
     def test_zero_when_no_changes(self) -> None:
         with mock.patch("subprocess.run") as mock_run:
@@ -1250,6 +1282,23 @@ class TestGetChangePercentage:
             mock_git.return_value = mock.Mock(returncode=1, stderr="error")
             result = cli._get_change_percentage("/tmp", "abc123")
             assert result == 0.0
+
+    def test_cache_hit_skips_line_count(self) -> None:
+        """Branch: _total_lines_cache already has the key, so _count_tracked_lines is not called."""
+        resolved = str(Path("/tmp").resolve())
+        cli._total_lines_cache[resolved] = 500
+        try:
+            with mock.patch("subprocess.run") as mock_run:
+                mock_run.return_value = mock.MagicMock(
+                    returncode=0,
+                    stdout=" 1 file changed, 10 insertions(+)",
+                )
+                with mock.patch.object(cli, "_count_tracked_lines") as mock_count:
+                    pct = cli._get_change_percentage("/tmp", "abc123")
+                    mock_count.assert_not_called()
+                    assert pct == (10 / 500) * 100
+        finally:
+            cli._total_lines_cache.pop(resolved, None)
 
 
 class TestConvergedAtPercentageArg:
@@ -1282,6 +1331,20 @@ class TestConvergenceInSuite:
                             cli._run_review_suite(passes, 3, "/tmp", args, convergence_threshold=0.1)
         out = capsys.readouterr().out
         assert "Converged" in out
+
+    def test_continues_when_not_converged(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Branch: convergence check returns False, loop continues to next cycle."""
+        passes = [{"id": "readability", "label": "Readability", "prompt": "review code"}]
+        args = _make_suite_args(dry_run=False)
+        with mock.patch.object(cli, "run_claude", return_value=0):
+            with mock.patch.object(cli, "_is_git_repo", return_value=True):
+                with mock.patch.object(cli, "_git_head_sha", return_value="sha1"):
+                    with mock.patch.object(cli, "_check_cycle_convergence",
+                                           return_value=(False, 5.0)):
+                        cli._run_review_suite(passes, 2, "/tmp", args, convergence_threshold=0.1)
+        out = capsys.readouterr().out
+        assert "Cycle 1/2" in out
+        assert "Cycle 2/2" in out
 
     def test_no_convergence_without_git(self, capsys: pytest.CaptureFixture[str]) -> None:
         passes = [{"id": "dry", "label": "DRY", "prompt": "check dry"}]
@@ -1392,6 +1455,16 @@ class TestLogMemoryUsage:
         assert "2 child" in out
         assert "Warning" in out
         assert "Killed 2" in out
+
+    def test_orphans_found_but_none_killed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Branch: child_pids is truthy but _kill_orphaned_children returns 0."""
+        with mock.patch.object(cli, "_get_current_rss_mb", return_value=50.0):
+            with mock.patch.object(cli, "_get_child_pids", return_value=[999]):
+                with mock.patch.object(cli, "_kill_orphaned_children", return_value=0):
+                    cli._log_memory_usage("test-label")
+        out = capsys.readouterr().out
+        assert "Warning" in out
+        assert "Killed" not in out
 
 
 class TestSpawnUsesNewSession:

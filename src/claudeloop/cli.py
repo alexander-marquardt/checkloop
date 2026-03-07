@@ -55,13 +55,14 @@ _PROCESS_WAIT_TIMEOUT = 5
 _PRE_RUN_WARNING_DELAY = 5
 _BASH_DISPLAY_LIMIT = 80
 
-COMMIT_MESSAGE_INSTRUCTIONS = (
+COMMIT_MESSAGE_INSTRUCTIONS: str = (
     "\n\nIf you make any git commits, follow these commit message rules:\n"
     "- Maximum 5-10 lines\n"
     "- Do not mention Claude, AI, or any AI tools\n"
     "- Provide only a high-level summary of what was cleaned up, fixed, or changed\n"
     "- Use clear, professional commit message style"
 )
+"""Instructions appended to every review prompt to enforce clean commit messages."""
 
 
 def _fatal(msg: str) -> NoReturn:
@@ -262,21 +263,37 @@ def _count_tracked_lines(workdir: str) -> int:
 _total_lines_cache: dict[str, int] = {}
 
 
-def _get_change_percentage(workdir: str, base_sha: str) -> float:
-    """Return the percentage of total tracked lines that changed since *base_sha*."""
-    result = _git_run(workdir, "diff", "--shortstat", base_sha, "HEAD")
+def _get_lines_changed(workdir: str, base_sha: str, target: str = "HEAD") -> int:
+    """Return total lines changed (insertions + deletions) between two refs.
+
+    If *target* is ``"HEAD"``, compares *base_sha* to ``HEAD``.  Pass a different
+    ref or SHA to compare arbitrary points.  To include uncommitted working-tree
+    changes, pass ``target=""`` (empty string triggers ``git diff <base>``).
+    """
+    diff_args = ["diff", "--shortstat", base_sha]
+    if target:
+        diff_args.append(target)
+    result = _git_run(workdir, *diff_args)
     if result.returncode != 0:
         logger.warning("git diff --shortstat failed (rc=%d): %s", result.returncode, result.stderr.strip())
-        return 0.0
-    lines_changed = _parse_shortstat(result.stdout)
-    if lines_changed == 0:
-        return 0.0
-    # Cache total line count per workdir — it barely changes between cycles and
-    # counting requires reading every tracked file, which is expensive on large repos.
+        return 0
+    return _parse_shortstat(result.stdout)
+
+
+def _get_total_tracked_lines(workdir: str) -> int:
+    """Return cached total line count for all tracked files in *workdir*."""
     cache_key = str(Path(workdir).resolve())
     if cache_key not in _total_lines_cache:
         _total_lines_cache[cache_key] = _count_tracked_lines(workdir)
-    return (lines_changed / _total_lines_cache[cache_key]) * 100
+    return _total_lines_cache[cache_key]
+
+
+def _get_change_percentage(workdir: str, base_sha: str) -> float:
+    """Return the percentage of total tracked lines that changed since *base_sha*."""
+    lines_changed = _get_lines_changed(workdir, base_sha)
+    if lines_changed == 0:
+        return 0.0
+    return (lines_changed / _get_total_tracked_lines(workdir)) * 100
 
 
 def print_banner(title: str, colour: str = CYAN) -> None:
@@ -304,6 +321,15 @@ def print_status(msg: str, colour: str = DIM) -> None:
 
 # --- Review passes ------------------------------------------------------------
 
+# Ordered list of all available review passes.
+#
+# Each entry is a dict with keys:
+#   id:     Short identifier used on the CLI (e.g. "readability", "dry").
+#   label:  Human-readable name shown in banners and summaries.
+#   prompt: The full review prompt sent to Claude Code for this pass.
+#
+# Ordering matters: bookend passes (test-fix, test-validate) are first and
+# last; the remaining passes are grouped by tier (basic -> thorough -> exhaustive).
 REVIEW_PASSES: list[dict[str, str]] = [
     # --- Bookend: run first ---
     {
@@ -509,9 +535,13 @@ REVIEW_PASSES: list[dict[str, str]] = [
     },
 ]
 
+# All valid pass IDs, derived from REVIEW_PASSES to stay in sync.
 PASS_IDS: list[str] = [p["id"] for p in REVIEW_PASSES]
 
 # --- Review tiers -------------------------------------------------------------
+# Tiers control which passes run at each review depth.  Each tier is a list of
+# pass IDs that includes the bookend passes (test-fix first, test-validate last)
+# plus a progressively larger set of review passes.
 
 _BOOKEND_FIRST_PASSES: list[str] = ["test-fix"]
 _BOOKEND_LAST_PASSES: list[str] = ["test-validate"]
@@ -520,10 +550,12 @@ _CORE_BASIC: list[str] = ["readability", "dry", "tests", "docs"]
 _CORE_THOROUGH: list[str] = ["security", "perf", "errors", "types"]
 _CORE_EXHAUSTIVE: list[str] = ["edge-cases", "complexity", "deps", "logging", "concurrency", "accessibility", "api-design"]
 
+# Public tier lists — used by --level and exposed for programmatic access.
 TIER_BASIC: list[str] = _BOOKEND_FIRST_PASSES + _CORE_BASIC + _BOOKEND_LAST_PASSES
 TIER_THOROUGH: list[str] = _BOOKEND_FIRST_PASSES + _CORE_BASIC + _CORE_THOROUGH + _BOOKEND_LAST_PASSES
 TIER_EXHAUSTIVE: list[str] = PASS_IDS  # all passes (already ordered correctly)
 
+# Maps tier name (used by --level) to the list of pass IDs for that tier.
 TIERS: dict[str, list[str]] = {
     "basic": TIER_BASIC,
     "thorough": TIER_THOROUGH,
@@ -532,6 +564,8 @@ TIERS: dict[str, list[str]] = {
 DEFAULT_TIER: str = "basic"
 
 # --- Dangerous-prompt guard ---------------------------------------------------
+# Safety net: reject review prompts that contain destructive keywords.
+# These are checked with word-boundary-aware regexes (see _compile_danger_patterns).
 
 _DANGEROUS_PROMPT_KEYWORDS: list[str] = [
     "rm -rf /",
@@ -1086,6 +1120,8 @@ def _run_single_pass(
     workdir: str,
     args: argparse.Namespace,
     step_label: str,
+    *,
+    is_git: bool = False,
 ) -> bool:
     """Execute a single review pass. Returns True if the pass made changes."""
     logger.info("Pass started: id=%s, label=%s, step=%s", review_pass["id"], review_pass["label"], step_label)
@@ -1099,7 +1135,6 @@ def _run_single_pass(
         return False
 
     # Snapshot git state to detect changes
-    is_git = _is_git_repo(workdir)
     sha_before = _git_head_sha(workdir) if is_git else None
 
     exit_code = run_claude(
@@ -1114,10 +1149,18 @@ def _run_single_pass(
         logger.warning("Pass '%s' exited with code %d", review_pass["id"], exit_code)
         print(f"{YELLOW}Pass '{review_pass['id']}' exited with code {exit_code}. Continuing...{RESET}")
 
-    # Check if anything changed
+    # Check if anything changed and report stats
     if sha_before is not None:
         sha_after = _git_head_sha(workdir)
         made_changes = sha_after != sha_before
+        if made_changes:
+            lines_changed = _get_lines_changed(workdir, sha_before, sha_after)
+            total_lines = _get_total_tracked_lines(workdir)
+            pct = (lines_changed / total_lines * 100) if total_lines > 0 else 0.0
+            print(f"{DIM}  {review_pass['id']}: {lines_changed} lines changed "
+                  f"({pct:.2f}% of codebase){RESET}")
+        else:
+            print(f"{DIM}  {review_pass['id']}: no changes{RESET}")
     else:
         made_changes = True  # assume changes if not a git repo
     logger.info("Pass '%s' made_changes=%s", review_pass["id"], made_changes)
@@ -1141,7 +1184,9 @@ def _run_review_suite(
     Bookend passes (test-fix, test-validate) always run on every cycle.
     """
     step_number = 0
-    convergence_enabled = convergence_threshold > 0 and _is_git_repo(workdir)
+    # Perf: check once instead of spawning a git subprocess on every pass.
+    is_git = _is_git_repo(workdir)
+    convergence_enabled = convergence_threshold > 0 and is_git
     prev_change_pct: float | None = None
     active_pass_ids: set[str] | None = None  # None = run all (cycle 1)
 
@@ -1160,7 +1205,7 @@ def _run_review_suite(
             cycle_suffix = f" (cycle {cycle}/{num_cycles})" if num_cycles > 1 else ""
             step_label = f"[{i}/{len(cycle_passes)}]{cycle_suffix}"
 
-            made_changes = _run_single_pass(review_pass, workdir, args, step_label)
+            made_changes = _run_single_pass(review_pass, workdir, args, step_label, is_git=is_git)
             if made_changes:
                 cycle_active_ids.add(review_pass["id"])
 
