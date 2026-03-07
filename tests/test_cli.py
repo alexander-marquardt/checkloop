@@ -68,6 +68,30 @@ def _make_main_mock_args(*, dry_run: bool = False, **overrides: Any) -> mock.Mag
 
 
 @contextlib.contextmanager
+def _patch_suite_git(
+    sha_sequence: list[str],
+    *,
+    run_claude_return: int = 0,
+    lines_changed: int | None = None,
+    total_tracked: int | None = None,
+) -> Iterator[None]:
+    """Mock common git/claude dependencies for _run_review_suite tests.
+
+    Patches run_claude, _is_git_repo, and _git_head_sha. Optionally patches
+    _count_lines_changed and _cached_total_tracked_lines when provided.
+    """
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(mock.patch.object(cli, "run_claude", return_value=run_claude_return))
+        stack.enter_context(mock.patch.object(cli, "_is_git_repo", return_value=True))
+        stack.enter_context(mock.patch.object(cli, "_git_head_sha", side_effect=sha_sequence))
+        if lines_changed is not None:
+            stack.enter_context(mock.patch.object(cli, "_count_lines_changed", return_value=lines_changed))
+        if total_tracked is not None:
+            stack.enter_context(mock.patch.object(cli, "_cached_total_tracked_lines", return_value=total_tracked))
+        yield
+
+
+@contextlib.contextmanager
 def _patch_main_pipeline(
     *,
     suite_side_effect: type[BaseException] | BaseException | None = None,
@@ -773,21 +797,12 @@ class TestRunReviewSuite:
             {"id": "dry", "label": "DRY", "prompt": "check dry"},
         ]
         args = _make_suite_args(dry_run=False)
-        # Cycle 1: readability changes (sha differs), dry doesn't (sha same)
-        # Cycle 2: only readability runs (dry skipped)
         sha_sequence = [
-            # Cycle 1 pass "readability": before, after (different = changed)
-            "sha_r_before", "sha_r_after",
-            # Cycle 1 pass "dry": before, after (same = no change)
-            "sha_d_before", "sha_d_before",
-            # Cycle 2 pass "readability": before, after
-            "sha_r2_before", "sha_r2_after",
+            "sha_r_before", "sha_r_after",    # Cycle 1 readability: changed
+            "sha_d_before", "sha_d_before",    # Cycle 1 dry: no change
+            "sha_r2_before", "sha_r2_after",   # Cycle 2 readability: runs
         ]
-        with mock.patch.object(cli, "run_claude", return_value=0), \
-             mock.patch.object(cli, "_is_git_repo", return_value=True), \
-             mock.patch.object(cli, "_git_head_sha", side_effect=sha_sequence), \
-             mock.patch.object(cli, "_count_lines_changed", return_value=10), \
-             mock.patch.object(cli, "_cached_total_tracked_lines", return_value=1000):
+        with _patch_suite_git(sha_sequence, lines_changed=10, total_tracked=1000):
             cli._run_review_suite(passes, 2, "/tmp", args)
         out = capsys.readouterr().out
         assert "Skipping 1 pass(es)" in out
@@ -800,25 +815,16 @@ class TestRunReviewSuite:
             {"id": "test-validate", "label": "Test Validate", "prompt": "validate tests"},
         ]
         args = _make_suite_args(dry_run=False)
-        # Cycle 1: none of them make changes (all sha same)
-        # Cycle 2: bookends still run, readability skipped
         sha_sequence = [
-            # Cycle 1: test-fix (no change), readability (no change), test-validate (no change)
-            "s1", "s1",  "s2", "s2",  "s3", "s3",
-            # Cycle 2: test-fix (bookend, runs), test-validate (bookend, runs)
-            "s4", "s4",  "s5", "s5",
+            "s1", "s1",  "s2", "s2",  "s3", "s3",  # Cycle 1: all no-change
+            "s4", "s4",  "s5", "s5",                 # Cycle 2: bookends only
         ]
-        with mock.patch.object(cli, "run_claude", return_value=0), \
-             mock.patch.object(cli, "_is_git_repo", return_value=True), \
-             mock.patch.object(cli, "_git_head_sha", side_effect=sha_sequence):
+        with _patch_suite_git(sha_sequence):
             cli._run_review_suite(passes, 2, "/tmp", args)
         out = capsys.readouterr().out
         assert "Skipping 1 pass(es)" in out
-        # Verify cycle 2 shows bookend labels but not readability
-        # Both cycles show "Test Fix" and "Test Validate"
         assert out.count("Test Fix") == 2
         assert out.count("Test Validate") == 2
-        # Readability only shows once (cycle 1)
         assert out.count("Readability") == 1
 
     def test_all_passes_active_no_skip(self, capsys: pytest.CaptureFixture[str]) -> None:
@@ -829,16 +835,10 @@ class TestRunReviewSuite:
         ]
         args = _make_suite_args(dry_run=False)
         sha_sequence = [
-            # Cycle 1: both change
-            "a1", "a2",  "b1", "b2",
-            # Cycle 2: both run again
-            "c1", "c2",  "d1", "d2",
+            "a1", "a2",  "b1", "b2",  # Cycle 1: both change
+            "c1", "c2",  "d1", "d2",  # Cycle 2: both run again
         ]
-        with mock.patch.object(cli, "run_claude", return_value=0), \
-             mock.patch.object(cli, "_is_git_repo", return_value=True), \
-             mock.patch.object(cli, "_git_head_sha", side_effect=sha_sequence), \
-             mock.patch.object(cli, "_count_lines_changed", return_value=10), \
-             mock.patch.object(cli, "_cached_total_tracked_lines", return_value=1000):
+        with _patch_suite_git(sha_sequence, lines_changed=10, total_tracked=1000):
             cli._run_review_suite(passes, 2, "/tmp", args)
         out = capsys.readouterr().out
         assert "Skipping" not in out
@@ -847,11 +847,7 @@ class TestRunReviewSuite:
         """After each pass that makes changes, lines changed and percentage are printed."""
         passes = [{"id": "readability", "label": "Readability", "prompt": "review code"}]
         args = _make_suite_args(dry_run=False)
-        with mock.patch.object(cli, "run_claude", return_value=0), \
-             mock.patch.object(cli, "_is_git_repo", return_value=True), \
-             mock.patch.object(cli, "_git_head_sha", side_effect=["sha1", "sha2"]), \
-             mock.patch.object(cli, "_count_lines_changed", return_value=42), \
-             mock.patch.object(cli, "_cached_total_tracked_lines", return_value=5000):
+        with _patch_suite_git(["sha1", "sha2"], lines_changed=42, total_tracked=5000):
             cli._run_review_suite(passes, 1, "/tmp", args)
         out = capsys.readouterr().out
         assert "42 lines changed" in out
@@ -861,9 +857,7 @@ class TestRunReviewSuite:
         """After a pass with no changes, 'no changes' is printed."""
         passes = [{"id": "dry", "label": "DRY", "prompt": "check dry"}]
         args = _make_suite_args(dry_run=False)
-        with mock.patch.object(cli, "run_claude", return_value=0), \
-             mock.patch.object(cli, "_is_git_repo", return_value=True), \
-             mock.patch.object(cli, "_git_head_sha", side_effect=["same", "same"]):
+        with _patch_suite_git(["same", "same"]):
             cli._run_review_suite(passes, 1, "/tmp", args)
         out = capsys.readouterr().out
         assert "dry: no changes" in out
@@ -1278,37 +1272,38 @@ class TestGitCommitCycle:
             assert cli._git_commit_cycle("/tmp", 1) is False
 
 
-class TestComputeChangePercentage:
-    """Tests for _compute_change_percentage() convergence metric."""
+class TestComputeChangeStats:
+    """Tests for _compute_change_stats() convergence metric."""
 
-    def test_calculates_percentage(self) -> None:
+    def test_calculates_lines_and_percentage(self) -> None:
         resolved = str(Path("/tmp").resolve())
         cli._total_lines_cache.pop(resolved, None)
         with mock.patch("subprocess.run") as mock_run:
             mock_run.side_effect = [
-                # git diff --shortstat
                 mock.MagicMock(returncode=0, stdout=" 2 files changed, 10 insertions(+), 5 deletions(-)"),
-                # git ls-files -z
                 mock.MagicMock(returncode=0, stdout=b"file1.py\0file2.py\0"),
             ]
             file_content = b"line\n" * 1000
             mock_open = mock.mock_open(read_data=file_content)
             with mock.patch("builtins.open", mock_open):
-                pct = cli._compute_change_percentage("/tmp", "abc123")
+                lines, pct = cli._compute_change_stats("/tmp", "abc123")
+                assert lines == 15
                 assert 0 < pct < 100
         cli._total_lines_cache.pop(resolved, None)
 
     def test_zero_when_no_changes(self) -> None:
         with mock.patch("subprocess.run") as mock_run:
             mock_run.return_value = mock.MagicMock(returncode=0, stdout="")
-            pct = cli._compute_change_percentage("/tmp", "abc123")
+            lines, pct = cli._compute_change_stats("/tmp", "abc123")
+            assert lines == 0
             assert pct == 0.0
 
     def test_failed_git_diff_returns_zero(self) -> None:
         with mock.patch.object(cli, "_git_run") as mock_git:
             mock_git.return_value = mock.Mock(returncode=1, stderr="error")
-            result = cli._compute_change_percentage("/tmp", "abc123")
-            assert result == 0.0
+            lines, pct = cli._compute_change_stats("/tmp", "abc123")
+            assert lines == 0
+            assert pct == 0.0
 
     def test_cache_hit_skips_line_count(self) -> None:
         """Branch: _total_lines_cache already has the key, so _count_tracked_lines is not called."""
@@ -1321,8 +1316,9 @@ class TestComputeChangePercentage:
                     stdout=" 1 file changed, 10 insertions(+)",
                 )
                 with mock.patch.object(cli, "_count_tracked_lines") as mock_count:
-                    pct = cli._compute_change_percentage("/tmp", "abc123")
+                    lines, pct = cli._compute_change_stats("/tmp", "abc123")
                     mock_count.assert_not_called()
+                    assert lines == 10
                     assert pct == (10 / 500) * 100
         finally:
             cli._total_lines_cache.pop(resolved, None)
@@ -1350,12 +1346,10 @@ class TestConvergenceInSuite:
     def test_stops_early_when_converged(self, capsys: pytest.CaptureFixture[str]) -> None:
         passes = [{"id": "readability", "label": "Readability", "prompt": "review code"}]
         args = _make_suite_args(dry_run=False)
-        with mock.patch.object(cli, "run_claude", return_value=0):
-            with mock.patch.object(cli, "_is_git_repo", return_value=True):
-                with mock.patch.object(cli, "_git_head_sha", side_effect=["sha1", "sha2", "sha2", "sha3"]):
-                    with mock.patch.object(cli, "_git_commit_cycle", return_value=True):
-                        with mock.patch.object(cli, "_compute_change_percentage", return_value=0.05):
-                            cli._run_review_suite(passes, 3, "/tmp", args, convergence_threshold=0.1)
+        with _patch_suite_git(["sha1", "sha2", "sha2", "sha3"]), \
+             mock.patch.object(cli, "_git_commit_cycle", return_value=True), \
+             mock.patch.object(cli, "_compute_change_stats", return_value=(1, 0.05)):
+            cli._run_review_suite(passes, 3, "/tmp", args, convergence_threshold=0.1)
         out = capsys.readouterr().out
         assert "Converged" in out
 
@@ -1363,12 +1357,9 @@ class TestConvergenceInSuite:
         """Branch: convergence check returns False, loop continues to next cycle."""
         passes = [{"id": "readability", "label": "Readability", "prompt": "review code"}]
         args = _make_suite_args(dry_run=False)
-        with mock.patch.object(cli, "run_claude", return_value=0):
-            with mock.patch.object(cli, "_is_git_repo", return_value=True):
-                with mock.patch.object(cli, "_git_head_sha", return_value="sha1"):
-                    with mock.patch.object(cli, "_check_cycle_convergence",
-                                           return_value=(False, 5.0)):
-                        cli._run_review_suite(passes, 2, "/tmp", args, convergence_threshold=0.1)
+        with _patch_suite_git(["sha1"] * 10), \
+             mock.patch.object(cli, "_check_cycle_convergence", return_value=(False, 5.0)):
+            cli._run_review_suite(passes, 2, "/tmp", args, convergence_threshold=0.1)
         out = capsys.readouterr().out
         assert "Cycle 1/2" in out
         assert "Cycle 2/2" in out
@@ -1747,26 +1738,26 @@ class TestCheckCycleConvergence:
 
     def test_oscillation_warning(self, capsys: pytest.CaptureFixture[str]) -> None:
         """When changes increase, print oscillation warning."""
-        with mock.patch.object(cli, "_git_commit_cycle"):
-            with mock.patch.object(cli, "_git_head_sha", return_value="def456"):
-                with mock.patch.object(cli, "_compute_change_percentage", return_value=5.0):
-                    should_stop, pct = cli._check_cycle_convergence(
-                        "/tmp", cycle=2, base_sha="abc123",
-                        convergence_threshold=0.1, prev_change_pct=2.0,
-                    )
+        with mock.patch.object(cli, "_git_commit_cycle"), \
+             mock.patch.object(cli, "_git_head_sha", return_value="def456"), \
+             mock.patch.object(cli, "_compute_change_stats", return_value=(50, 5.0)):
+            should_stop, pct = cli._check_cycle_convergence(
+                "/tmp", cycle=2, base_sha="abc123",
+                convergence_threshold=0.1, prev_change_pct=2.0,
+            )
         assert should_stop is False
         assert pct == 5.0
         assert "oscillation" in capsys.readouterr().out.lower()
 
     def test_not_converged(self, capsys: pytest.CaptureFixture[str]) -> None:
         """When changes are above threshold, return False."""
-        with mock.patch.object(cli, "_git_commit_cycle"):
-            with mock.patch.object(cli, "_git_head_sha", return_value="def456"):
-                with mock.patch.object(cli, "_compute_change_percentage", return_value=1.5):
-                    should_stop, pct = cli._check_cycle_convergence(
-                        "/tmp", cycle=1, base_sha="abc123",
-                        convergence_threshold=0.1, prev_change_pct=None,
-                    )
+        with mock.patch.object(cli, "_git_commit_cycle"), \
+             mock.patch.object(cli, "_git_head_sha", return_value="def456"), \
+             mock.patch.object(cli, "_compute_change_stats", return_value=(15, 1.5)):
+            should_stop, pct = cli._check_cycle_convergence(
+                "/tmp", cycle=1, base_sha="abc123",
+                convergence_threshold=0.1, prev_change_pct=None,
+            )
         assert should_stop is False
         assert pct == 1.5
 

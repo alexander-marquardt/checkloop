@@ -305,11 +305,6 @@ def _compute_change_stats(workdir: str, base_sha: str) -> tuple[int, float]:
     return lines_changed, (lines_changed / _cached_total_tracked_lines(workdir)) * 100
 
 
-def _compute_change_percentage(workdir: str, base_sha: str) -> float:
-    """Return the percentage of total tracked lines that changed since *base_sha*."""
-    return _compute_change_stats(workdir, base_sha)[1]
-
-
 def print_banner(title: str, colour: str = CYAN) -> None:
     """Print a prominent section header with horizontal rules.
 
@@ -1126,7 +1121,7 @@ def _check_cycle_convergence(
         print_status(f"\nNo changes in cycle {cycle} — converged.", GREEN)
         return True, prev_change_pct
 
-    change_pct = _compute_change_percentage(workdir, base_sha)
+    _, change_pct = _compute_change_stats(workdir, base_sha)
     print_status(f"\nCycle {cycle}: {change_pct:.2f}% of lines changed "
                  f"(threshold: {convergence_threshold}%)")
 
