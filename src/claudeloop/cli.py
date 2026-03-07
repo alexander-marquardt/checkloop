@@ -85,10 +85,14 @@ def _measure_current_rss_mb() -> float:
     except (OSError, ValueError) as exc:
         logger.debug("ps-based RSS lookup failed: %s", exc)
     # Fallback: use resource (peak, not current — better than nothing)
-    usage = resource.getrusage(resource.RUSAGE_SELF)
-    # macOS reports ru_maxrss in bytes; Linux reports in kilobytes.
-    scale = 1024 * 1024 if sys.platform == "darwin" else 1024
-    return usage.ru_maxrss / scale
+    try:
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        # macOS reports ru_maxrss in bytes; Linux reports in kilobytes.
+        scale = 1024 * 1024 if sys.platform == "darwin" else 1024
+        return usage.ru_maxrss / scale
+    except OSError as exc:
+        logger.warning("resource.getrusage() failed: %s", exc)
+        return 0.0
 
 
 def _find_child_pids() -> list[int]:
@@ -190,7 +194,10 @@ def _git_run(
 
 def _is_git_repo(workdir: str) -> bool:
     """Return True if workdir is inside a git repository."""
-    return _git_run(workdir, "rev-parse", "--is-inside-work-tree").returncode == 0
+    result = _git_run(workdir, "rev-parse", "--is-inside-work-tree").returncode == 0
+    if not result:
+        logger.info("Not a git repo: %s", workdir)
+    return result
 
 
 def _git_head_sha(workdir: str) -> str | None:
@@ -227,6 +234,8 @@ def _parse_shortstat(text: str) -> int:
     match = re.search(r"(\d+) deletion", text)
     if match:
         deletions = int(match.group(1))
+    if insertions == 0 and deletions == 0 and text.strip():
+        logger.debug("No insertions/deletions parsed from shortstat: %r", text)
     return insertions + deletions
 
 
@@ -253,6 +262,7 @@ def _count_tracked_lines(workdir: str) -> int:
     """
     ls_result = _git_run(workdir, "ls-files", "-z", text=False)
     if ls_result.returncode != 0:
+        logger.warning("git ls-files failed (rc=%d) — cannot count tracked lines", ls_result.returncode)
         return 1  # avoid division by zero
     tracked_paths = [f.decode("utf-8", errors="replace") for f in ls_result.stdout.split(b"\0") if f]
     total = 0
@@ -295,6 +305,43 @@ def _cached_total_tracked_lines(workdir: str) -> int:
     if cache_key not in _total_lines_cache:
         _total_lines_cache[cache_key] = _count_tracked_lines(workdir)
     return _total_lines_cache[cache_key]
+
+
+def _detect_default_branch(workdir: str) -> str:
+    """Return the name of the default branch (main or master), falling back to 'main'."""
+    for branch in ("main", "master"):
+        result = _git_run(workdir, "rev-parse", "--verify", f"refs/heads/{branch}")
+        if result.returncode == 0:
+            return branch
+    return "main"
+
+
+def _get_changed_files(workdir: str, base_ref: str) -> list[str]:
+    """Return list of files changed between *base_ref* and HEAD.
+
+    Uses ``git merge-base`` to find the common ancestor, then ``git diff --name-only``
+    to list changed files. Returns an empty list if the diff fails.
+    """
+    merge_base = _git_run(workdir, "merge-base", base_ref, "HEAD")
+    if merge_base.returncode != 0:
+        logger.warning("git merge-base failed for ref '%s' (rc=%d)", base_ref, merge_base.returncode)
+        return []
+    base_sha = merge_base.stdout.strip()
+    result = _git_run(workdir, "diff", "--name-only", base_sha, "HEAD")
+    if result.returncode != 0:
+        logger.warning("git diff --name-only failed (rc=%d)", result.returncode)
+        return []
+    return [f for f in result.stdout.strip().split("\n") if f]
+
+
+def _build_changed_files_prefix(changed_files: list[str]) -> str:
+    """Build a prompt prefix that restricts review to the given files."""
+    file_list = "\n".join(f"  - {f}" for f in changed_files)
+    return (
+        f"IMPORTANT: Only review the following {len(changed_files)} file(s) that have changed. "
+        "Do NOT review or modify any other files.\n"
+        f"Changed files:\n{file_list}\n\n"
+    )
 
 
 def _compute_change_stats(workdir: str, base_sha: str) -> tuple[int, float]:
@@ -788,6 +835,8 @@ def _spawn_claude_process(
             "Error: `claude` not found. Is Claude Code installed?\n"
             "  Install: npm install -g @anthropic-ai/claude-code"
         )
+    except OSError as exc:
+        _fatal(f"Failed to launch claude subprocess: {exc}")
 
 
 def _read_stdout_chunk(stdout: IO[bytes]) -> bytes:
@@ -986,13 +1035,19 @@ def _execute_claude_process(
     Returns the subprocess exit code (0 on success, -1 if it never set one).
     """
     process = _spawn_claude_process(cmd, workdir)
-    pass_start_time = _stream_process_output(process, idle_timeout, verbose)
-
     try:
-        process.wait(timeout=idle_timeout)
-    except subprocess.TimeoutExpired:
-        logger.warning("process.wait() timed out after %ds — killing group", idle_timeout)
+        pass_start_time = _stream_process_output(process, idle_timeout, verbose)
+
+        try:
+            process.wait(timeout=idle_timeout)
+        except subprocess.TimeoutExpired:
+            logger.warning("process.wait() timed out after %ds — killing group", idle_timeout)
+            _kill_process_group(process)
+    except Exception:
+        # Ensure process cleanup even if streaming raises unexpectedly
+        logger.error("Unexpected error during subprocess streaming — killing process group")
         _kill_process_group(process)
+        raise
 
     # Safety net: ensure the entire process group is dead even on normal exit.
     # Claude may have spawned child processes (language servers, etc.) that
@@ -1096,6 +1151,14 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dangerously-skip-permissions", action="store_true",
         help="Pass --dangerously-skip-permissions to Claude Code (bypasses all permission checks)",
+    )
+    parser.add_argument(
+        "--changed-only", nargs="?", const="auto", default=None, metavar="REF",
+        help=(
+            "Only review files that changed compared to a base ref. "
+            "With no argument, auto-detects main/master. "
+            "Pass a branch or SHA to compare against (e.g. --changed-only develop)."
+        ),
     )
     parser.add_argument(
         "--converged-at-percentage", type=float, default=DEFAULT_CONVERGENCE_THRESHOLD,
@@ -1221,7 +1284,8 @@ def _run_single_pass(
     logger.info("Pass started: id=%s, label=%s, step=%s", review_pass["id"], review_pass["label"], step_label)
     print_banner(f"{step_label} {review_pass['label']}", CYAN)
 
-    prompt = review_pass["prompt"] + COMMIT_MESSAGE_INSTRUCTIONS
+    changed_prefix = getattr(args, "changed_files_prefix", "")
+    prompt = changed_prefix + review_pass["prompt"] + COMMIT_MESSAGE_INSTRUCTIONS
 
     if _looks_dangerous(prompt):
         logger.warning("Skipping pass '%s' — dangerous keywords detected in prompt", review_pass["id"])
@@ -1500,6 +1564,18 @@ def main() -> None:
 
     workdir = _resolve_working_directory(args.dir)
     _validate_arguments(args)
+
+    # Resolve --changed-only into a prompt prefix (empty string if not used)
+    args.changed_files_prefix = ""
+    if args.changed_only is not None:
+        if not _is_git_repo(workdir):
+            _fatal("--changed-only requires a git repository")
+        base_ref = args.changed_only if args.changed_only != "auto" else _detect_default_branch(workdir)
+        changed_files = _get_changed_files(workdir, base_ref)
+        if not changed_files:
+            _fatal(f"No changed files found compared to '{base_ref}'")
+        args.changed_files_prefix = _build_changed_files_prefix(changed_files)
+        print(f"  Reviewing {len(changed_files)} changed file(s) (vs {base_ref})")
 
     selected_passes = _resolve_selected_passes(args)
     if not selected_passes:

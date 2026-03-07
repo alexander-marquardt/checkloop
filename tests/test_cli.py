@@ -60,6 +60,7 @@ def _make_main_mock_args(*, dry_run: bool = False, **overrides: Any) -> mock.Mag
         "passes": ["readability"],
         "level": None,
         "dry_run": dry_run,
+        "changed_only": None,
     }
     defaults.update(overrides)
     for key, value in defaults.items():
@@ -1533,6 +1534,44 @@ class TestMeasureCurrentRssMbExceptions:
         with mock.patch("subprocess.run", side_effect=ValueError("bad")):
             rss = cli._measure_current_rss_mb()
             assert rss > 0
+
+    def test_getrusage_oserror_returns_zero(self) -> None:
+        with mock.patch("subprocess.run", side_effect=OSError("nope")):
+            with mock.patch("resource.getrusage", side_effect=OSError("no resource")):
+                rss = cli._measure_current_rss_mb()
+                assert rss == 0.0
+
+
+# =============================================================================
+# _spawn_claude_process — OSError path
+# =============================================================================
+
+class TestSpawnClaudeProcessOSError:
+    """Test that _spawn_claude_process handles OSError (e.g. PermissionError)."""
+
+    def test_oserror_exits(self) -> None:
+        with mock.patch("subprocess.Popen", side_effect=PermissionError("not executable")):
+            with pytest.raises(SystemExit) as exc_info:
+                cli._spawn_claude_process(["claude"], "/tmp")
+            assert exc_info.value.code == 1
+
+
+# =============================================================================
+# _execute_claude_process — streaming error cleanup
+# =============================================================================
+
+class TestExecuteClaudeProcessCleanup:
+    """Test that _execute_claude_process kills the process on streaming errors."""
+
+    def test_stream_error_kills_process(self) -> None:
+        mock_proc = mock.MagicMock()
+        mock_proc.pid = 12345
+        with mock.patch.object(cli, "_spawn_claude_process", return_value=mock_proc):
+            with mock.patch.object(cli, "_stream_process_output", side_effect=RuntimeError("boom")):
+                with mock.patch.object(cli, "_kill_process_group") as kill_mock:
+                    with pytest.raises(RuntimeError, match="boom"):
+                        cli._execute_claude_process(["claude"], "/tmp", 120, False)
+                    kill_mock.assert_called_with(mock_proc)
 
 
 # =============================================================================
