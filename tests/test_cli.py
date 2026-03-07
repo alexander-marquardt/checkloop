@@ -894,9 +894,9 @@ class TestConstants:
             assert "prompt" in p
 
     def test_file_path_tools_set(self) -> None:
-        assert "read" in cli._FILE_PATH_TOOLS
-        assert "edit" in cli._FILE_PATH_TOOLS
-        assert "write" in cli._FILE_PATH_TOOLS
+        assert "read" in cli._TOOLS_WITH_FILE_PATH
+        assert "edit" in cli._TOOLS_WITH_FILE_PATH
+        assert "write" in cli._TOOLS_WITH_FILE_PATH
 
 
 # =============================================================================

@@ -220,6 +220,7 @@ def _parse_shortstat(text: str) -> int:
 def _count_file_lines(filepath: Path) -> int:
     """Count newlines in a text file, reading in chunks. Returns 0 for binary files."""
     with open(filepath, "rb") as file:
+        # Sniff the first 8 KB for null bytes to detect binary files
         header = file.read(8192)
         if b"\0" in header:
             return 0  # null byte detected — skip binary files
@@ -252,7 +253,7 @@ def _count_tracked_lines(workdir: str) -> int:
     return max(total, 1)  # minimum 1 to avoid division by zero
 
 
-_cached_total_lines: dict[str, int] = {}
+_total_lines_cache: dict[str, int] = {}
 
 
 def _get_change_percentage(workdir: str, base_sha: str) -> float:
@@ -267,9 +268,9 @@ def _get_change_percentage(workdir: str, base_sha: str) -> float:
     # Cache total line count per workdir — it barely changes between cycles and
     # counting requires reading every tracked file, which is expensive on large repos.
     cache_key = str(Path(workdir).resolve())
-    if cache_key not in _cached_total_lines:
-        _cached_total_lines[cache_key] = _count_tracked_lines(workdir)
-    return (lines_changed / _cached_total_lines[cache_key]) * 100
+    if cache_key not in _total_lines_cache:
+        _total_lines_cache[cache_key] = _count_tracked_lines(workdir)
+    return (lines_changed / _total_lines_cache[cache_key]) * 100
 
 
 def print_banner(title: str, colour: str = CYAN) -> None:
@@ -506,15 +507,15 @@ PASS_IDS: list[str] = [p["id"] for p in REVIEW_PASSES]
 
 # --- Review tiers -------------------------------------------------------------
 
-_BOOKEND_START: list[str] = ["test-fix"]
-_BOOKEND_END: list[str] = ["test-validate"]
-_BOOKEND_IDS: set[str] = {*_BOOKEND_START, *_BOOKEND_END}
+_BOOKEND_FIRST_PASSES: list[str] = ["test-fix"]
+_BOOKEND_LAST_PASSES: list[str] = ["test-validate"]
+_BOOKEND_IDS: set[str] = {*_BOOKEND_FIRST_PASSES, *_BOOKEND_LAST_PASSES}
 _CORE_BASIC: list[str] = ["readability", "dry", "tests", "docs"]
 _CORE_THOROUGH: list[str] = ["security", "perf", "errors", "types"]
 _CORE_EXHAUSTIVE: list[str] = ["edge-cases", "complexity", "deps", "logging", "concurrency", "accessibility", "api-design"]
 
-TIER_BASIC: list[str] = _BOOKEND_START + _CORE_BASIC + _BOOKEND_END
-TIER_THOROUGH: list[str] = _BOOKEND_START + _CORE_BASIC + _CORE_THOROUGH + _BOOKEND_END
+TIER_BASIC: list[str] = _BOOKEND_FIRST_PASSES + _CORE_BASIC + _BOOKEND_LAST_PASSES
+TIER_THOROUGH: list[str] = _BOOKEND_FIRST_PASSES + _CORE_BASIC + _CORE_THOROUGH + _BOOKEND_LAST_PASSES
 TIER_EXHAUSTIVE: list[str] = PASS_IDS  # all passes (already ordered correctly)
 
 TIERS: dict[str, list[str]] = {
@@ -526,7 +527,7 @@ DEFAULT_TIER: str = "basic"
 
 # --- Dangerous-prompt guard ---------------------------------------------------
 
-_DANGER_KEYWORDS: list[str] = [
+_DANGEROUS_PROMPT_KEYWORDS: list[str] = [
     "rm -rf /",
     "format",
     "wipe",
@@ -549,7 +550,7 @@ def _compile_danger_patterns() -> list[re.Pattern[str]]:
     "reformat" won't match "format" but "/etc/passwd" still matches.
     """
     patterns: list[re.Pattern[str]] = []
-    for keyword in _DANGER_KEYWORDS:
+    for keyword in _DANGEROUS_PROMPT_KEYWORDS:
         escaped = re.escape(keyword)
         leading_boundary = r"\b" if keyword[0].isalnum() else ""
         trailing_boundary = r"\b" if keyword[-1].isalnum() else ""
@@ -558,7 +559,7 @@ def _compile_danger_patterns() -> list[re.Pattern[str]]:
 
 
 # Perf: compile once at import time instead of rebuilding on every call.
-_DANGER_PATTERNS: list[re.Pattern[str]] = _compile_danger_patterns()
+_DANGEROUS_PROMPT_PATTERNS: list[re.Pattern[str]] = _compile_danger_patterns()
 
 
 def _looks_dangerous(text: str) -> bool:
@@ -568,7 +569,7 @@ def _looks_dangerous(text: str) -> bool:
     "reformat" does not match "format", while keywords containing special
     characters like "rm -rf /" or "/etc/passwd" are still detected.
     """
-    return any(pattern.search(text) for pattern in _DANGER_PATTERNS)
+    return any(pattern.search(text) for pattern in _DANGEROUS_PROMPT_PATTERNS)
 
 
 # --- Claude runner ------------------------------------------------------------
@@ -582,13 +583,13 @@ def _format_duration(total_seconds: float) -> str:
     return f"{hours}h{minutes:02d}m{seconds:02d}s"
 
 
-_FILE_PATH_TOOLS: set[str] = {"read", "read_file", "edit", "edit_file", "write", "write_file"}
+_TOOLS_WITH_FILE_PATH: set[str] = {"read", "read_file", "edit", "edit_file", "write", "write_file"}
 
 
 def _summarise_tool_use(tool_name: str, tool_input: dict[str, Any]) -> str:
     """Return a short human-readable summary for a tool-use event."""
     normalised_name = tool_name.lower()
-    if normalised_name in _FILE_PATH_TOOLS and "file_path" in tool_input:
+    if normalised_name in _TOOLS_WITH_FILE_PATH and "file_path" in tool_input:
         return f" {tool_input['file_path']}"
     if normalised_name == "bash" and "command" in tool_input:
         command = tool_input["command"]
@@ -634,7 +635,7 @@ def _print_result_event(event: dict[str, Any], elapsed_prefix: str) -> None:
         print(result_text)
 
 
-_EVENT_PRINTERS: dict[str, Any] = {
+_EVENT_TYPE_HANDLERS: dict[str, Any] = {
     "assistant": _print_assistant_event,
     "tool_use": _print_tool_use_event,
     "system": _print_system_event,
@@ -645,7 +646,7 @@ _EVENT_PRINTERS: dict[str, Any] = {
 def _print_event(event: dict[str, Any], pass_start_time: float) -> None:
     """Parse a stream-json event and dispatch to the appropriate printer."""
     event_type = event.get("type", "")
-    printer = _EVENT_PRINTERS.get(event_type)
+    printer = _EVENT_TYPE_HANDLERS.get(event_type)
     if printer is None:
         return
     elapsed_prefix = f"{DIM}[{_format_duration(time.time() - pass_start_time)}]{RESET} "
@@ -772,6 +773,7 @@ def _flush_and_close_stdout(
     verbose: bool,
 ) -> None:
     """Flush any remaining partial line and close the stdout pipe."""
+    # Append a newline to force any trailing incomplete JSONL line through the parser
     output_buffer.extend(b"\n")
     _process_jsonl_buffer(output_buffer, pass_start_time, verbose)
     try:
@@ -794,7 +796,7 @@ def _stream_process_output(
     stdout = process.stdout
     pass_start_time = time.time()
     last_output_time = time.time()
-    output_buffer = bytearray()
+    jsonl_buffer = bytearray()
 
     try:
         while True:
@@ -802,6 +804,7 @@ def _stream_process_output(
                 break
 
             try:
+                # Poll stdout with a 1-second timeout so we can check idle/exit between reads
                 ready, _, _ = select.select([stdout], [], [], 1.0)
             except (OSError, ValueError) as exc:
                 logger.debug("select() failed (fd may be closed): %s", exc)
@@ -809,8 +812,8 @@ def _stream_process_output(
 
             if not ready:
                 if process.poll() is not None:
-                    output_buffer = _drain_remaining_stdout(
-                        stdout, output_buffer, pass_start_time, verbose,
+                    jsonl_buffer = _drain_remaining_stdout(
+                        stdout, jsonl_buffer, pass_start_time, verbose,
                     )
                     break
                 continue
@@ -820,11 +823,11 @@ def _stream_process_output(
                 break
 
             last_output_time = time.time()
-            output_buffer.extend(chunk)
-            output_buffer = _process_jsonl_buffer(output_buffer, pass_start_time, verbose)
+            jsonl_buffer.extend(chunk)
+            jsonl_buffer = _process_jsonl_buffer(jsonl_buffer, pass_start_time, verbose)
 
     finally:
-        _flush_and_close_stdout(stdout, output_buffer, pass_start_time, verbose)
+        _flush_and_close_stdout(stdout, jsonl_buffer, pass_start_time, verbose)
 
     return pass_start_time
 
@@ -911,6 +914,11 @@ def run_claude(
     # survive after the main process exits.
     _kill_process_group(process)
 
+    return _report_pass_exit_status(process, pass_start_time)
+
+
+def _report_pass_exit_status(process: subprocess.Popen[bytes], pass_start_time: float) -> int:
+    """Log and display the exit status of a completed pass. Returns the exit code."""
     elapsed = _format_duration(time.time() - pass_start_time)
     exit_code = process.returncode if process.returncode is not None else -1
     if process.returncode is None:
@@ -1127,11 +1135,9 @@ def _run_review_suite(
     Bookend passes (test-fix, test-validate) always run on every cycle.
     """
     step_number = 0
-    # Only track convergence if a threshold is set and we're in a git repo
     convergence_enabled = convergence_threshold > 0 and _is_git_repo(workdir)
     prev_change_pct: float | None = None
-    # Track which passes made changes — all passes are active for cycle 1
-    active_pass_ids: set[str] | None = None  # None means "run all"
+    active_pass_ids: set[str] | None = None  # None = run all (cycle 1)
 
     for cycle in range(1, num_cycles + 1):
         logger.info("Cycle %d/%d started", cycle, num_cycles)
@@ -1139,32 +1145,19 @@ def _run_review_suite(
             print(f"\n{BOLD}{CYAN}===  Cycle {cycle}/{num_cycles}  ==={RESET}")
 
         base_sha = _git_head_sha(workdir) if convergence_enabled else None
-
-        # Determine which passes to run this cycle
-        cycle_passes = selected_passes
-        if active_pass_ids is not None:
-            cycle_passes = [
-                p for p in selected_passes
-                if p["id"] in active_pass_ids or p["id"] in _BOOKEND_IDS
-            ]
-            skipped = len(selected_passes) - len(cycle_passes)
-            if skipped > 0:
-                print(f"{DIM}Skipping {skipped} pass(es) that made no changes last cycle.{RESET}")
-
-        total_steps_this_cycle = len(cycle_passes)
+        cycle_passes = _filter_active_passes(selected_passes, active_pass_ids)
         cycle_active_ids: set[str] = set()
 
         for i, review_pass in enumerate(cycle_passes, 1):
             time.sleep(args.pause)
             step_number += 1
             cycle_suffix = f" (cycle {cycle}/{num_cycles})" if num_cycles > 1 else ""
-            step_label = f"[{i}/{total_steps_this_cycle}]{cycle_suffix}"
+            step_label = f"[{i}/{len(cycle_passes)}]{cycle_suffix}"
 
             made_changes = _run_single_pass(review_pass, workdir, args, step_label)
             if made_changes:
                 cycle_active_ids.add(review_pass["id"])
 
-        # Update active passes for next cycle (bookends excluded from tracking)
         active_pass_ids = cycle_active_ids
 
         if convergence_enabled and base_sha and not args.dry_run:
@@ -1173,6 +1166,28 @@ def _run_review_suite(
             )
             if converged:
                 break
+
+
+def _filter_active_passes(
+    selected_passes: list[dict[str, str]],
+    active_pass_ids: set[str] | None,
+) -> list[dict[str, str]]:
+    """Return passes to run this cycle, skipping those that were no-ops last cycle.
+
+    On the first cycle (*active_pass_ids* is None), all passes run.
+    Bookend passes always run regardless of prior activity.
+    """
+    if active_pass_ids is None:
+        return selected_passes
+
+    cycle_passes = [
+        p for p in selected_passes
+        if p["id"] in active_pass_ids or p["id"] in _BOOKEND_IDS
+    ]
+    skipped = len(selected_passes) - len(cycle_passes)
+    if skipped > 0:
+        print(f"{DIM}Skipping {skipped} pass(es) that made no changes last cycle.{RESET}")
+    return cycle_passes
 
 
 def _display_pre_run_warning(skip_permissions: bool) -> None:
