@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+.venv/
+.idea/
+.mypy_cache/
+.ruff_cache/
+*.so
+
+# Draft content (not for repo)
+blog-post.md
+linkedin-post.md
+show-hn.md
