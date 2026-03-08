@@ -9,12 +9,10 @@ import time
 from pathlib import Path
 from typing import Literal, overload
 
+from checkloop.process import _DRAIN_CHUNK_SIZE, _READ_CHUNK_SIZE
 from checkloop.terminal import _print_status
 
 logger = logging.getLogger(__name__)
-
-_READ_CHUNK_SIZE = 8192  # bytes per read for binary detection / header
-_DRAIN_CHUNK_SIZE = 65536  # bytes per read for bulk file scanning
 
 
 # --- Low-level git wrappers --------------------------------------------------
