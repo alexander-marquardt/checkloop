@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 # I/O chunk sizes for file-based line counting (independent of process streaming).
 _BINARY_CHECK_SIZE = 8192  # bytes to read when checking for null bytes (binary detection)
 _LINE_COUNT_CHUNK_SIZE = 65536  # bytes per chunk when counting newlines
+_GIT_CMD_TIMEOUT = 120  # seconds before a git subprocess is killed to prevent indefinite hangs
 
 
 # --- Low-level git wrappers --------------------------------------------------
@@ -56,7 +57,11 @@ def _git_run(
             capture_output=True,
             text=text,
             check=check,
+            timeout=_GIT_CMD_TIMEOUT,
         )
+    except subprocess.TimeoutExpired:
+        logger.error("git %s timed out after %ds (cwd=%s)", args[0] if args else "", _GIT_CMD_TIMEOUT, workdir)
+        raise OSError(f"git {args[0] if args else ''} timed out after {_GIT_CMD_TIMEOUT}s")
     except FileNotFoundError:
         logger.error("git binary not found — is git installed?")
         raise

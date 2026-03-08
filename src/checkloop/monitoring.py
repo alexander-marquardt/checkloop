@@ -20,6 +20,7 @@ from checkloop.terminal import DIM, YELLOW, print_status
 logger = logging.getLogger(__name__)
 
 _KB_PER_MB = 1024  # ps reports RSS in kilobytes
+_CMD_TIMEOUT = 10  # seconds before ps/pgrep subprocesses are killed
 
 
 # --- Shared subprocess helpers ------------------------------------------------
@@ -27,7 +28,10 @@ _KB_PER_MB = 1024  # ps reports RSS in kilobytes
 def _run_cmd_quiet(cmd: list[str]) -> subprocess.CompletedProcess[str] | None:
     """Run a command with captured output, returning None on any launch error."""
     try:
-        return subprocess.run(cmd, capture_output=True, text=True)
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=_CMD_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        logger.warning("%s timed out after %ds", cmd[0], _CMD_TIMEOUT)
+        return None
     except FileNotFoundError:
         logger.debug("%s binary not found", cmd[0])
         return None
