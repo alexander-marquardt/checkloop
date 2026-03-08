@@ -47,7 +47,7 @@ BLUE   = "\033[94m"
 
 
 RULE_WIDTH = 72  # character width for banner horizontal rules
-DEFAULT_IDLE_TIMEOUT = 120  # seconds before killing a silent subprocess
+DEFAULT_IDLE_TIMEOUT = 300  # seconds before killing a silent subprocess
 DEFAULT_PAUSE_SECONDS = 2  # seconds between consecutive checks
 DEFAULT_CONVERGENCE_THRESHOLD = 0.1  # percent of total lines changed
 

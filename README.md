@@ -116,7 +116,7 @@ uv run checkloop --cycles 5 --converged-at-percentage 0.5
 --checks CHECK [...]   Manually select checks (overrides --level)
 --all-checks           Run all 17 checks (same as --level exhaustive)
 --cycles, -c N         Repeat the full suite N times (default: 1)
---idle-timeout SECS    Kill after N seconds of silence (default: 120)
+--idle-timeout SECS    Kill after N seconds of silence (default: 300)
 --dry-run              Preview without running
 --verbose, -v          Show operational events, timing, and memory info
 --debug                Show all details including raw subprocess output
@@ -141,7 +141,7 @@ uv run checkloop --cycles 5 --converged-at-percentage 0.5
 2. **Pre-run warning** — Displays a 5-second countdown so the user can abort. Warns if `--dangerously-skip-permissions` is (or isn't) set.
 3. **Check execution** — For each check, builds a focused prompt (with commit-message rules appended) and invokes `claude -p <prompt> --output-format stream-json --verbose` as a subprocess.
 4. **Real-time streaming** — Streams JSONL output from the subprocess, displaying tool-use events (file reads, edits, shell commands) and assistant messages with elapsed-time prefixes.
-5. **Idle timeout** — If Claude produces no output for N seconds (default 120), the process group is killed and the next check begins.
+5. **Idle timeout** — If Claude produces no output for N seconds (default 300), the process group is killed and the next check begins.
 6. **Per-check change detection** — After each check, compares the git HEAD before/after to report how many lines changed. Checks that produced no changes are skipped on subsequent cycles.
 7. **Convergence detection** — After each full cycle, commits all changes and measures what percentage of total tracked lines were modified. If below the threshold, the loop exits early.
 8. **Process cleanup** — Each Claude subprocess runs in its own process group (`setsid`). On completion or timeout, the entire group is killed (SIGTERM, then SIGKILL) to prevent orphaned child processes from leaking memory.
@@ -214,7 +214,7 @@ The project has no runtime dependencies — only `pytest`, `pytest-cov`, and `my
 | "CLAUDECODE" conflict when running inside a Claude session | checkloop automatically strips this variable; no action needed |
 | Convergence detection not working | Ensure the project directory is a git repo (`git init` if needed) |
 | High memory usage over many checks | checkloop kills orphaned child processes between checks; use `--verbose` to monitor RSS |
-| Idle timeout kills a check too early | Increase with `--idle-timeout 300` (or higher) |
+| Idle timeout kills a check too early | Increase with `--idle-timeout 600` (or higher) |
 
 ## Contributing
 

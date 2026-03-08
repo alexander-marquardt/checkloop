@@ -11,7 +11,7 @@ Initial release.
 - **Multi-cycle support** — repeat the full suite with `--cycles N` for compounding improvements
 - **Convergence detection** — automatically stop cycling when changes fall below a threshold (`--converged-at-percentage`, default 0.1%), using git diff stats
 - **Live progress streaming** — real-time display of tool-use events and assistant messages via Claude's `stream-json` output
-- **Idle-based timeout** — no hard time limit; processes are killed only after N seconds of silence (`--idle-timeout`, default 120s)
+- **Idle-based timeout** — no hard time limit; processes are killed only after N seconds of silence (`--idle-timeout`, default 300s)
 - **Process group management** — spawns Claude in a dedicated process group; cleans up orphaned child processes after each pass
 - **Memory monitoring** — logs RSS and child process count after each pass
 - **Dangerous-prompt guard** — skips passes whose prompts contain destructive keywords (rm -rf, drop database, etc.)
