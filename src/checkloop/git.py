@@ -290,7 +290,12 @@ def build_changed_files_prefix(changed_files: list[str]) -> str:
 
 
 def compute_change_stats(workdir: str, base_sha: str) -> tuple[int, float]:
-    """Return (lines_changed, change_percentage) since *base_sha*."""
+    """Return ``(lines_changed, change_percentage)`` since *base_sha*.
+
+    *change_percentage* is calculated relative to the total number of
+    tracked lines in the repository, clamped to a minimum of 1 to avoid
+    division by zero.
+    """
     lines_changed = _count_lines_changed(workdir, base_sha)
     if lines_changed == 0:
         return 0, 0.0

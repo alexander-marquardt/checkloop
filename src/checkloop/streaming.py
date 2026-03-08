@@ -127,6 +127,17 @@ def process_jsonl_buffer(
     Parses each complete line as JSON and dispatches to the appropriate
     event printer.  Incomplete trailing data is left in the buffer for
     the next call.
+
+    Args:
+        output_buffer: Mutable byte buffer containing raw subprocess output.
+            Complete lines are consumed; any trailing incomplete line remains.
+        check_start_time: Epoch timestamp when the check started, used to
+            compute elapsed-time prefixes for display.
+        debug: If True, prints non-JSON lines to the terminal (useful for
+            diagnosing Claude Code subprocess issues).
+
+    Returns:
+        The same *output_buffer* object with consumed lines removed.
     """
     # Find the last complete line boundary. Everything before it can be parsed;
     # everything after stays in the buffer for the next call.

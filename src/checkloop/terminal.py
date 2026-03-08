@@ -123,7 +123,18 @@ def print_run_summary_table(
     banner_title: str = "Run Summary",
     banner_colour: str = CYAN,
 ) -> None:
-    """Print a summary table showing per-check outcomes."""
+    """Print a summary table showing per-check outcomes.
+
+    Each row is colour-coded: green for checks that made changes, yellow for
+    non-zero exit codes, red for killed checks, and dim for no-op checks.
+
+    Args:
+        results: Ordered list of per-check summary rows to display.
+        total_elapsed: Human-readable total elapsed time string for the footer.
+        stats: Pre-computed aggregate statistics, or None to compute on the fly.
+        banner_title: Title for the section banner above the table.
+        banner_colour: ANSI colour code for the banner.
+    """
     if not results:
         return
 
@@ -222,7 +233,13 @@ def print_overall_summary_table(
     results: list[SummaryRow],
     total_elapsed: str,
 ) -> None:
-    """Print a cross-cycle overview table in BLUE showing per-cycle aggregates."""
+    """Print a cross-cycle overview table showing per-cycle aggregates.
+
+    Groups results by cycle number and displays one row per cycle with
+    totals for checks, successes, failures, kills, lines changed, and
+    duration.  The lines column is colour-coded green when decreasing
+    (converging) and yellow when increasing (diverging).
+    """
     cycle_summaries = compute_cycle_summaries(results)
     if not cycle_summaries:
         return

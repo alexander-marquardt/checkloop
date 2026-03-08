@@ -109,7 +109,15 @@ def find_session_pids(session_id: int) -> list[int]:
 # --- Orphan and straggler cleanup --------------------------------------------
 
 def kill_pids(pids: list[int], sig: signal.Signals = signal.SIGKILL) -> int:
-    """Send a signal to each PID, ignoring already-dead processes. Returns count killed."""
+    """Send a signal to each PID, ignoring already-dead processes.
+
+    Args:
+        pids: Process IDs to signal.
+        sig: Signal to send (defaults to SIGKILL for immediate termination).
+
+    Returns:
+        Number of processes successfully signalled.
+    """
     killed = 0
     for pid in pids:
         try:
@@ -147,6 +155,10 @@ def log_memory_usage(label: str) -> None:
 
     This is a diagnostic/cleanup helper and must never crash the main check
     loop — all errors are caught and logged so the suite can continue.
+
+    Args:
+        label: A short identifier for the log context (e.g. ``"after check"``),
+            included in log messages to distinguish different measurement points.
     """
     try:
         rss_mb = _measure_current_rss_mb()

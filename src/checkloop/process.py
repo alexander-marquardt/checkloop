@@ -402,6 +402,20 @@ def run_claude(
     *check_timeout* wall-clock seconds, or if its child process tree exceeds
     *max_memory_mb* of RSS.
 
+    Args:
+        prompt: The review prompt to send to Claude Code.
+        workdir: Absolute path to the project directory to run the check in.
+        skip_permissions: If True, passes ``--dangerously-skip-permissions``
+            to Claude Code, bypassing all interactive permission prompts.
+        dry_run: If True, prints what would run without launching a subprocess.
+        debug: If True, prints raw non-JSON subprocess output lines.
+        idle_timeout: Seconds of silence (no stdout output) before killing
+            the subprocess.
+        check_timeout: Hard wall-clock limit per check in seconds.
+            0 disables the hard timeout.
+        max_memory_mb: Maximum RSS (in MB) for the child process tree before
+            killing. 0 disables memory monitoring.
+
     Returns:
         A ``CheckResult`` with the exit code and, if the process was killed,
         the reason (``KILL_REASON_MEMORY``, ``KILL_REASON_TIMEOUT``, or
