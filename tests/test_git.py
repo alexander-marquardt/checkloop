@@ -131,6 +131,43 @@ class TestGitCommitAll:
             assert git._git_commit_all("/tmp", "test commit") is False
 
 
+class TestGitSquashSince:
+    """Tests for _git_squash_since() squash functionality."""
+
+    def test_squash_creates_commit(self) -> None:
+        """Happy path: commits exist after base_sha, squash succeeds."""
+        with mock.patch.object(git, "_git_commit_all", return_value=True):
+            with mock.patch.object(
+                git, "_git_head_sha", side_effect=["new_sha_abc", "squashed_sha"]
+            ):
+                with mock.patch.object(git, "_git_run"):
+                    result = git._git_squash_since("/tmp", "base_sha_123", "squash msg")
+        assert result is True
+
+    def test_squash_no_commits_since_base(self) -> None:
+        """No new commits since base — returns False without squashing."""
+        with mock.patch.object(git, "_git_commit_all", return_value=False):
+            with mock.patch.object(git, "_git_head_sha", return_value="base_sha_123"):
+                result = git._git_squash_since("/tmp", "base_sha_123", "squash msg")
+        assert result is False
+
+    def test_squash_called_process_error(self) -> None:
+        """CalledProcessError during squash returns False."""
+        with mock.patch.object(
+            git,
+            "_git_commit_all",
+            side_effect=subprocess.CalledProcessError(1, "git"),
+        ):
+            result = git._git_squash_since("/tmp", "base_sha", "msg")
+        assert result is False
+
+    def test_squash_oserror(self) -> None:
+        """OSError during squash returns False."""
+        with mock.patch.object(git, "_git_commit_all", side_effect=OSError("fail")):
+            result = git._git_squash_since("/tmp", "base_sha", "msg")
+        assert result is False
+
+
 class TestParseShortstat:
     """Tests for _parse_shortstat() diff output parsing."""
 
