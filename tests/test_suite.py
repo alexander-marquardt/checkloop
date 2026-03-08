@@ -534,3 +534,29 @@ class TestCheckOutcomeToSummaryDict:
         )
         row = outcome.to_summary_dict()
         assert row["duration"] == "0m00s"  # format_duration clamps negative to 0
+
+
+# =============================================================================
+# _print_summary — multi-cycle branch
+# =============================================================================
+
+class TestPrintSummaryMultiCycle:
+    """Tests for _print_summary when outcomes span multiple cycles."""
+
+    def test_multi_cycle_calls_overall_summary(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """When outcomes span 2+ cycles, print_overall_summary_table is called."""
+        outcomes = [
+            suite.CheckOutcome(
+                check_id="a", label="A", cycle=1, exit_code=0, kill_reason=None,
+                made_changes=True, lines_changed=10, change_pct=1.0, duration_seconds=5.0,
+            ),
+            suite.CheckOutcome(
+                check_id="a", label="A", cycle=2, exit_code=0, kill_reason=None,
+                made_changes=False, lines_changed=0, change_pct=0.0, duration_seconds=3.0,
+            ),
+        ]
+        with mock.patch.object(suite, "print_overall_summary_table") as mock_overall:
+            suite._print_summary(outcomes, "0m08s")
+            mock_overall.assert_called_once()
+            summary_dicts = mock_overall.call_args[0][0]
+            assert len(summary_dicts) == 2

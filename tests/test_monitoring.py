@@ -340,3 +340,13 @@ class TestMonitoringEdgeCases:
         """If all PIDs are already dead, killed count should be 0."""
         with mock.patch("os.kill", side_effect=OSError("No such process")):
             assert monitoring.kill_pids([1, 2, 3]) == 0
+
+
+class TestRunCmdQuietFileNotFound:
+    """Tests for _run_cmd_quiet FileNotFoundError branch."""
+
+    def test_file_not_found_returns_none(self) -> None:
+        """When the binary does not exist, _run_cmd_quiet returns None."""
+        with mock.patch("subprocess.run", side_effect=FileNotFoundError("no such file")):
+            result = monitoring._run_cmd_quiet(["nonexistent_binary", "--version"])
+        assert result is None

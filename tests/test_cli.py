@@ -210,6 +210,26 @@ class TestSignalHandler:
             handler(signal_mod.SIGTERM, None)  # type: ignore[operator]
         assert exc_info.value.code == 128 + signal_mod.SIGTERM
 
+    def test_signal_registration_oserror_is_caught(self) -> None:
+        """When signal.signal raises OSError, main() logs a warning and continues."""
+        import signal as signal_mod
+
+        original_signal = signal_mod.signal
+
+        def failing_signal(signum: int, handler: object) -> object:
+            raise OSError("Operation not permitted")
+
+        mock_args = make_mock_cli_args(dry_run=True)
+        with mock.patch.object(cli, "_build_argument_parser") as mock_parser:
+            mock_parser.return_value.parse_args.return_value = mock_args
+            with mock.patch.object(cli, "_resolve_working_directory", return_value="/tmp"), \
+                 mock.patch.object(cli, "_validate_arguments"), \
+                 mock.patch.object(cli, "_display_pre_run_warning"), \
+                 mock.patch.object(cli, "run_suite_with_error_handling"), \
+                 mock.patch("signal.signal", side_effect=failing_signal):
+                # Should not raise — the OSError is caught
+                cli.main()
+
 
 class TestMainGuard:
     """Test the if __name__ == '__main__' block."""
