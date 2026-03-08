@@ -1271,7 +1271,7 @@ class TestGitHeadSha:
 
 
 class TestGitCommitCycle:
-    """Tests for _git_commit_cycle() post-cycle commit."""
+    """Tests for _git_commit_all() post-cycle commit."""
 
     def test_commits_when_changes_exist(self) -> None:
         with mock.patch("subprocess.run") as mock_run:
@@ -1283,7 +1283,7 @@ class TestGitCommitCycle:
                 mock.MagicMock(returncode=0),  # git commit
                 mock.MagicMock(returncode=0, stdout="abc123\n"),  # git rev-parse HEAD
             ]
-            assert cli._git_commit_cycle("/tmp", 1) is True
+            assert cli._git_commit_all("/tmp", "test commit") is True
 
     def test_no_commit_when_clean(self) -> None:
         with mock.patch("subprocess.run") as mock_run:
@@ -1291,11 +1291,11 @@ class TestGitCommitCycle:
                 mock.MagicMock(returncode=0),  # git add
                 mock.MagicMock(returncode=0),  # git diff --cached --quiet (no changes)
             ]
-            assert cli._git_commit_cycle("/tmp", 1) is False
+            assert cli._git_commit_all("/tmp", "test commit") is False
 
     def test_returns_false_on_error(self) -> None:
         with mock.patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, "git")):
-            assert cli._git_commit_cycle("/tmp", 1) is False
+            assert cli._git_commit_all("/tmp", "test commit") is False
 
 
 class TestComputeChangeStats:
@@ -1440,7 +1440,7 @@ class TestConvergenceInSuite:
         passes = [{"id": "readability", "label": "Readability", "prompt": "review code"}]
         args = _make_suite_args(dry_run=False)
         with _patch_suite_git(["sha1", "sha2", "sha2", "sha3"]), \
-             mock.patch.object(cli, "_git_commit_cycle", return_value=True), \
+             mock.patch.object(cli, "_git_commit_all", return_value=True), \
              mock.patch.object(cli, "_compute_change_stats", return_value=(1, 0.05)):
             cli._run_check_suite(passes, 3, "/tmp", args, convergence_threshold=0.1)
         out = capsys.readouterr().out
@@ -1857,7 +1857,7 @@ class TestCheckCycleConvergence:
 
     def test_no_changes_converged(self, capsys: pytest.CaptureFixture[str]) -> None:
         """When SHA hasn't changed, report convergence."""
-        with mock.patch.object(cli, "_git_commit_cycle"):
+        with mock.patch.object(cli, "_git_commit_all"):
             with mock.patch.object(cli, "_git_head_sha", return_value="abc123"):
                 should_stop, pct = cli._check_cycle_convergence(
                     "/tmp", cycle=1, base_sha="abc123",
@@ -1869,7 +1869,7 @@ class TestCheckCycleConvergence:
 
     def test_oscillation_warning(self, capsys: pytest.CaptureFixture[str]) -> None:
         """When changes increase, print oscillation warning."""
-        with mock.patch.object(cli, "_git_commit_cycle"), \
+        with mock.patch.object(cli, "_git_commit_all"), \
              mock.patch.object(cli, "_git_head_sha", return_value="def456"), \
              mock.patch.object(cli, "_compute_change_stats", return_value=(50, 5.0)):
             should_stop, pct = cli._check_cycle_convergence(
@@ -1882,7 +1882,7 @@ class TestCheckCycleConvergence:
 
     def test_not_converged(self, capsys: pytest.CaptureFixture[str]) -> None:
         """When changes are above threshold, return False."""
-        with mock.patch.object(cli, "_git_commit_cycle"), \
+        with mock.patch.object(cli, "_git_commit_all"), \
              mock.patch.object(cli, "_git_head_sha", return_value="def456"), \
              mock.patch.object(cli, "_compute_change_stats", return_value=(15, 1.5)):
             should_stop, pct = cli._check_cycle_convergence(
@@ -2446,7 +2446,7 @@ class TestCheckCycleConvergenceEdgeCases:
     """Edge case tests for _check_cycle_convergence()."""
 
     def test_no_changes_converges(self) -> None:
-        with mock.patch.object(cli, "_git_commit_cycle"):
+        with mock.patch.object(cli, "_git_commit_all"):
             with mock.patch.object(cli, "_git_head_sha", return_value="same_sha"):
                 converged, pct = cli._check_cycle_convergence(
                     "/tmp", 1, "same_sha", 0.1, None,
@@ -2455,7 +2455,7 @@ class TestCheckCycleConvergenceEdgeCases:
         assert pct is None  # unchanged from prev
 
     def test_changes_below_threshold_converges(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch.object(cli, "_git_commit_cycle"):
+        with mock.patch.object(cli, "_git_commit_all"):
             with mock.patch.object(cli, "_git_head_sha", return_value="new_sha"):
                 with mock.patch.object(cli, "_compute_change_stats", return_value=(5, 0.05)):
                     converged, pct = cli._check_cycle_convergence(
@@ -2465,7 +2465,7 @@ class TestCheckCycleConvergenceEdgeCases:
         assert pct == 0.05
 
     def test_increasing_changes_warns(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch.object(cli, "_git_commit_cycle"):
+        with mock.patch.object(cli, "_git_commit_all"):
             with mock.patch.object(cli, "_git_head_sha", return_value="new_sha"):
                 with mock.patch.object(cli, "_compute_change_stats", return_value=(100, 5.0)):
                     converged, pct = cli._check_cycle_convergence(
@@ -2931,21 +2931,21 @@ class TestFormatDurationBoundary:
 
 
 # =============================================================================
-# Edge cases: _git_commit_cycle with various failure modes
+# Edge cases: _git_commit_all with various failure modes
 # =============================================================================
 
 class TestGitCommitCycleEdgeCases:
-    """Edge case tests for _git_commit_cycle()."""
+    """Edge case tests for _git_commit_all()."""
 
     def test_git_add_failure(self) -> None:
         """CalledProcessError from git add should return False."""
         with mock.patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, "git add")):
-            assert cli._git_commit_cycle("/tmp", 1) is False
+            assert cli._git_commit_all("/tmp", "test commit") is False
 
     def test_oserror_during_commit(self) -> None:
         """OSError during any git operation should return False."""
         with mock.patch("subprocess.run", side_effect=OSError("disk full")):
-            assert cli._git_commit_cycle("/tmp", 1) is False
+            assert cli._git_commit_all("/tmp", "test commit") is False
 
 
 # =============================================================================
