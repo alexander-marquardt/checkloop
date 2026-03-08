@@ -24,8 +24,9 @@ class TestStreamProcessOutput:
         mock_proc.stderr = io.BytesIO(b"")
         mock_proc.poll.return_value = 0
         with mock.patch("select.select", return_value=([mock_proc.stdout], [], [])):
-            start = process._stream_process_output(mock_proc, idle_timeout=120, debug=False)
+            start, kill_reason = process._stream_process_output(mock_proc, idle_timeout=120, debug=False)
         assert isinstance(start, float)
+        assert kill_reason is None
         out = capsys.readouterr().out
         assert "done" in out
 
@@ -109,8 +110,9 @@ class TestStreamProcessOutput:
         mock_proc = mock.MagicMock()
         mock_proc.stdout = None
         mock_proc.pid = 12345
-        result = process._stream_process_output(mock_proc, idle_timeout=120, debug=False)
-        assert isinstance(result, float)
+        start, kill_reason = process._stream_process_output(mock_proc, idle_timeout=120, debug=False)
+        assert isinstance(start, float)
+        assert kill_reason is None
 
     def test_output_buffer_truncated_on_overflow(self) -> None:
         """Buffer is cleared when it exceeds _MAX_BUFFER_SIZE during streaming."""
@@ -126,7 +128,7 @@ class TestStreamProcessOutput:
             ([mock_stdout], [], []),
             ([mock_stdout], [], []),
         ]):
-            with mock.patch.object(process, "_process_jsonl_buffer", side_effect=lambda buf, *a: buf):
+            with mock.patch.object(process, "process_jsonl_buffer", side_effect=lambda buf, *a: buf):
                 process._stream_process_output(mock_proc, idle_timeout=120, debug=False)
 
 
@@ -221,7 +223,7 @@ class TestDrainBufferOverflow:
         # Return a large chunk that exceeds _MAX_BUFFER_SIZE, then EOF.
         big_chunk = b"x" * (process._MAX_BUFFER_SIZE + 1)
         with mock.patch("os.read", side_effect=[big_chunk, b""]):
-            with mock.patch.object(process, "_process_jsonl_buffer", side_effect=lambda buf, *a: buf):
+            with mock.patch.object(process, "process_jsonl_buffer", side_effect=lambda buf, *a: buf):
                 result = process._drain_remaining_stdout(
                     mock_stdout, bytearray(), time.time(), debug=False,
                 )

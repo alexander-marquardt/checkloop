@@ -28,18 +28,25 @@ uv pip install -e .
 
 1. Fork the repo and create a branch from `main`.
 2. Make your changes. Keep them focused — one PR per feature or fix.
-3. Test your changes: run `checkloop --dry-run` at minimum.
-4. Submit a PR with a clear description of what changed and why.
+3. Run the test suite and type checker:
+   ```bash
+   uv run python -m pytest tests/ -x -q
+   uv run mypy src/checkloop/
+   ```
+4. Test your changes end-to-end: run `checkloop --dry-run` at minimum.
+5. Submit a PR with a clear description of what changed and why.
 
 ## Code Style
 
 - Follow the existing patterns in the codebase.
 - Use type hints for function signatures.
-- Keep it simple — this is a single-module CLI tool, not a framework.
+- Keep it simple — this is a CLI tool, not a framework.
 
 ## Adding Checks
 
-New checks are welcome! Add them to the `CHECKS` list in `src/checkloop/cli.py`. Each check needs:
+New checks are welcome! Add them to the `CHECKS` list in `src/checkloop/checks.py`. Each check needs:
 - `id`: short lowercase key (used in `--checks` flag)
 - `label`: human-readable name for the banner
 - `prompt`: the instruction sent to Claude
+
+Then add the check ID to the appropriate tier list (`_CORE_BASIC`, `_CORE_THOROUGH`, or `_CORE_EXHAUSTIVE`) in the same file.

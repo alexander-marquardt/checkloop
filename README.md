@@ -76,7 +76,7 @@ Use `--checks` to pick individual checks, or `--all-checks` as a shortcut for `-
 | `tests` | basic | Targets >=90% coverage. Writes tests, runs them, fixes failures. |
 | `docs` | basic | README, docstrings, config documentation. |
 | `security` | thorough | Injection, hardcoded secrets, input validation, unsafe dependencies. |
-| `perf` | thorough | N+1 queries, blocking I/O, unnecessary allocations. |
+| `perf` | thorough | N+1 queries, O(N²) algorithms, blocking I/O, unnecessary allocations. |
 | `errors` | thorough | try/except coverage, meaningful error messages, logging. |
 | `types` | thorough | Type annotations, replace `Any`/untyped code, run type checker. |
 | `edge-cases` | exhaustive | Off-by-one, null/empty inputs, overflow, Unicode edge cases. |
@@ -99,13 +99,30 @@ A single "review everything" prompt overwhelms the model. Dimension-specific che
 
 Each check builds on the work of the previous ones.
 
+## Checkpoint & Resume
+
+If `checkloop` is interrupted (Ctrl+C, crash, terminal close), it saves a checkpoint after each completed check. On the next run with the same check selection, it detects the incomplete run and offers to resume:
+
+```
+Previous incomplete run detected:
+  Started     : 2026-03-08T14:30:00+00:00
+  Progress    : cycle 1/2, check 3/6 completed
+  Next check  : tests
+
+  Resume from checkpoint? [y/N] (defaulting to N in 10s):
+```
+
+If you don't respond within 10 seconds, it starts fresh. Use `--no-resume` to skip the prompt entirely.
+
+The checkpoint file (`.checkloop-checkpoint.json`) is saved in the target project directory and is automatically cleaned up when the suite completes successfully.
+
 ## Convergence Detection
 
-When running multiple cycles (`--cycles N`), `checkloop` can stop early once the codebase stabilises. After each cycle it commits the changes and measures what percentage of total tracked lines were modified. If that percentage falls below the `--converged-at-percentage` threshold (default 0.1%), the loop exits. This requires the project directory to be a git repo. Set to 0 to disable.
+When running multiple cycles (`--cycles N`), `checkloop` can stop early once the codebase stabilises. After each cycle it commits the changes and measures what percentage of total tracked lines were modified. If that percentage falls below the `--convergence-threshold` threshold (default 0.1%), the loop exits. This requires the project directory to be a git repo. Set to 0 to disable.
 
 ```bash
 # Run up to 5 cycles, but stop early if changes drop below 0.5%
-uv run checkloop --cycles 5 --converged-at-percentage 0.5
+uv run checkloop --cycles 5 --convergence-threshold 0.5
 ```
 
 ## Options
@@ -117,7 +134,12 @@ uv run checkloop --cycles 5 --converged-at-percentage 0.5
 --all-checks           Run all 17 checks (same as --level exhaustive)
 --cycles, -c N         Repeat the full suite N times (default: 1)
 --idle-timeout SECS    Kill after N seconds of silence (default: 300)
+--check-timeout SECS   Hard wall-clock limit per check (default: 0 = no limit).
+                       Unlike --idle-timeout, kills even actively-running checks.
+--max-memory-mb MB     Kill a check if its child process tree exceeds this RSS
+                       (default: 8192). Set to 0 to disable.
 --dry-run              Preview without running
+--no-resume            Ignore any existing checkpoint and start fresh
 --verbose, -v          Show operational events, timing, and memory info
 --debug                Show all details including raw subprocess output
 --pause SECS           Pause between checks (default: 2)
@@ -127,7 +149,7 @@ uv run checkloop --cycles 5 --converged-at-percentage 0.5
 --dangerously-skip-permissions
                        Pass --dangerously-skip-permissions to Claude Code
                        (bypasses all permission checks)
---converged-at-percentage PCT
+--convergence-threshold PCT
                        Stop cycling early when less than PCT% of total lines
                        changed in a cycle (default: 0.1). Requires a git repo.
                        Set to 0 to disable convergence detection.
@@ -142,9 +164,11 @@ uv run checkloop --cycles 5 --converged-at-percentage 0.5
 3. **Check execution** — For each check, builds a focused prompt (with commit-message rules appended) and invokes `claude -p <prompt> --output-format stream-json --verbose` as a subprocess.
 4. **Real-time streaming** — Streams JSONL output from the subprocess, displaying tool-use events (file reads, edits, shell commands) and assistant messages with elapsed-time prefixes.
 5. **Idle timeout** — If Claude produces no output for N seconds (default 300), the process group is killed and the next check begins.
-6. **Per-check change detection** — After each check, compares the git HEAD before/after to report how many lines changed. Checks that produced no changes are skipped on subsequent cycles.
-7. **Convergence detection** — After each full cycle, commits all changes and measures what percentage of total tracked lines were modified. If below the threshold, the loop exits early.
-8. **Process cleanup** — Each Claude subprocess runs in its own process group (`setsid`). On completion or timeout, the entire group is killed (SIGTERM, then SIGKILL) to prevent orphaned child processes from leaking memory.
+6. **Hard timeout & memory limit** — Optional hard wall-clock timeout (`--check-timeout`) kills checks regardless of output. Memory monitoring (`--max-memory-mb`, default 8192) samples child tree RSS every 10 seconds and kills the process group if it exceeds the limit.
+7. **Checkpointing** — After each check, saves progress to `.checkloop-checkpoint.json`. If interrupted, the next run offers to resume from where it left off.
+8. **Per-check change detection** — After each check, compares the git HEAD before/after to report how many lines changed. All checks run every cycle so that cascading improvements are never missed.
+9. **Convergence detection** — After each full cycle, measures what percentage of total tracked lines were modified. If below the threshold, the loop exits early. Per-check commits are preserved individually for easier debugging.
+10. **Process cleanup** — Each Claude subprocess runs in its own process group (`setsid`). On completion or timeout, the entire group is killed (SIGTERM, then SIGKILL) to prevent orphaned child processes from leaking memory. An atexit handler sweeps all tracked sessions on program exit.
 
 Each check operates on the code left by the previous check, so improvements compound: a readability check renames variables, then the DRY check can spot the newly-visible duplication, and so on.
 
@@ -156,7 +180,7 @@ Each check operates on the code left by the previous check, so improvements comp
 | `run_claude()` | Public API to run a single Claude Code check |
 | `_run_check_suite()` | Orchestrates all checks across all cycles |
 | `_stream_process_output()` | Streams and parses JSONL from the Claude subprocess |
-| `_check_cycle_convergence()` | Commits changes and checks if the loop should stop |
+| `_check_cycle_convergence()` | Checks if the loop should stop based on change percentage |
 | `_kill_process_group()` | Terminates a subprocess and all its children |
 
 ## Environment Variables
@@ -179,6 +203,7 @@ No other environment variables or config files are required. All configuration i
 ```
 src/checkloop/
 ├── __init__.py     # Public API exports (main, run_claude, CHECKS, TIERS, etc.)
+├── checkpoint.py   # Checkpoint save/load/clear for resume-after-interrupt
 ├── checks.py       # Check definitions, tier configuration, dangerous-prompt guard
 ├── cli.py          # CLI argument parsing, validation, and entry point
 ├── git.py          # Git operations: commits, diffs, line counting, branch detection
@@ -217,8 +242,10 @@ The project has no runtime dependencies — only `pytest` and `mypy` in the dev 
 | Checks hang waiting for permission prompts | You must use `--dangerously-skip-permissions` — checkloop cannot relay interactive prompts |
 | "CLAUDECODE" conflict when running inside a Claude session | checkloop automatically strips this variable; no action needed |
 | Convergence detection not working | Ensure the project directory is a git repo (`git init` if needed) |
-| High memory usage over many checks | checkloop kills orphaned child processes between checks; use `--verbose` to monitor RSS |
+| High memory usage over many checks | checkloop kills orphaned child processes between checks and enforces an 8GB RSS limit by default. Adjust with `--max-memory-mb` or use `--verbose` to monitor RSS |
 | Idle timeout kills a check too early | Increase with `--idle-timeout 600` (or higher) |
+| A check runs too long | Use `--check-timeout 3600` for a hard 1-hour wall-clock limit per check |
+| Want to start fresh after an interrupted run | Use `--no-resume` to skip the checkpoint prompt |
 
 ## Contributing
 
@@ -233,7 +260,7 @@ The project has no runtime dependencies — only `pytest` and `mypy` in the dev 
 5. Ensure all tests pass.
 6. Open a pull request with a clear description of your changes.
 
-Commit messages should be concise (5–10 lines max), describe *what* changed and *why*, and avoid mentioning specific tools used to make the changes.
+Commit messages should be 2–3 sentences, describe *what* changed and *why*, and avoid mentioning specific tools used to make the changes.
 
 ## License
 

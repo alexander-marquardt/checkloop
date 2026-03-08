@@ -22,91 +22,103 @@ class TestConstants:
             assert "prompt" in check
 
 
+class TestPerfCheckPrompt:
+    """Tests for the perf check prompt content."""
+
+    def test_mentions_n_plus_1_queries(self) -> None:
+        perf_check = next(c for c in checks.CHECKS if c["id"] == "perf")
+        assert "N+1 queries" in perf_check["prompt"]
+
+    def test_mentions_quadratic_algorithms(self) -> None:
+        perf_check = next(c for c in checks.CHECKS if c["id"] == "perf")
+        assert "O(N²)" in perf_check["prompt"]
+
+
 class TestLooksDangerous:
-    """Tests for the _looks_dangerous() prompt safety guard."""
+    """Tests for the looks_dangerous() prompt safety guard."""
 
     def test_safe_prompt(self) -> None:
-        assert checks._looks_dangerous("Review all code for quality") is False
+        assert checks.looks_dangerous("Review all code for quality") is False
 
     def test_rm_rf_root(self) -> None:
-        assert checks._looks_dangerous("rm -rf /") is True
+        assert checks.looks_dangerous("rm -rf /") is True
 
     def test_case_insensitive(self) -> None:
-        assert checks._looks_dangerous("DROP DATABASE users") is True
+        assert checks.looks_dangerous("DROP DATABASE users") is True
 
     def test_drop_table(self) -> None:
-        assert checks._looks_dangerous("drop table foo") is True
+        assert checks.looks_dangerous("drop table foo") is True
 
     def test_sudo_rm(self) -> None:
-        assert checks._looks_dangerous("sudo rm something") is True
+        assert checks.looks_dangerous("sudo rm something") is True
 
     def test_fork_bomb(self) -> None:
-        assert checks._looks_dangerous(":(){:|:&};:") is True
+        assert checks.looks_dangerous(":(){:|:&};:") is True
 
     def test_dd_dev_zero(self) -> None:
-        assert checks._looks_dangerous("dd if=/dev/zero of=/dev/sda") is True
+        assert checks.looks_dangerous("dd if=/dev/zero of=/dev/sda") is True
 
     def test_chmod_777_root(self) -> None:
-        assert checks._looks_dangerous("chmod 777 /") is True
+        assert checks.looks_dangerous("chmod 777 /") is True
 
     def test_delete_all_files(self) -> None:
-        assert checks._looks_dangerous("delete all files now") is True
-        assert checks._looks_dangerous("delete all records") is False
+        assert checks.looks_dangerous("delete all files now") is True
+        assert checks.looks_dangerous("delete all records") is False
 
     def test_truncate_table(self) -> None:
-        assert checks._looks_dangerous("truncate table users") is True
-        assert checks._looks_dangerous("truncate the string") is False
+        assert checks.looks_dangerous("truncate table users") is True
+        assert checks.looks_dangerous("truncate the string") is False
 
     def test_format_keyword(self) -> None:
-        assert checks._looks_dangerous("format c: drive") is True
-        assert checks._looks_dangerous("format /dev/sda") is True
+        assert checks.looks_dangerous("format c: drive") is True
+        assert checks.looks_dangerous("format /dev/sda") is True
 
     def test_wipe(self) -> None:
-        assert checks._looks_dangerous("wipe disk now") is True
-        assert checks._looks_dangerous("wipe drive") is True
-        assert checks._looks_dangerous("wipe partition") is True
-        assert checks._looks_dangerous("wipe the cache") is False
+        assert checks.looks_dangerous("wipe disk now") is True
+        assert checks.looks_dangerous("wipe drive") is True
+        assert checks.looks_dangerous("wipe partition") is True
+        assert checks.looks_dangerous("wipe the cache") is False
 
     def test_etc_passwd(self) -> None:
-        assert checks._looks_dangerous("cat /etc/passwd") is True
+        assert checks.looks_dangerous("cat /etc/passwd") is True
 
     def test_embedded_safe_word(self) -> None:
-        assert checks._looks_dangerous("run mkfs on disk") is True
-        assert checks._looks_dangerous("format the code") is False
+        assert checks.looks_dangerous("run mkfs on disk") is True
+        assert checks.looks_dangerous("format the code") is False
 
     def test_format_dev(self) -> None:
-        assert checks._looks_dangerous("format /dev/sda") is True
+        assert checks.looks_dangerous("format /dev/sda") is True
 
     def test_dd_of_dev(self) -> None:
-        assert checks._looks_dangerous("dd of=/dev/sda bs=1M") is True
+        assert checks.looks_dangerous("dd of=/dev/sda bs=1M") is True
 
     def test_empty_string(self) -> None:
-        assert checks._looks_dangerous("") is False
+        assert checks.looks_dangerous("") is False
 
     def test_whitespace_only(self) -> None:
-        assert checks._looks_dangerous("   \t\n  ") is False
+        assert checks.looks_dangerous("   \t\n  ") is False
 
     def test_unicode_prompt(self) -> None:
-        assert checks._looks_dangerous("レビューコード 🔍") is False
+        assert checks.looks_dangerous("レビューコード 🔍") is False
 
 
 class TestLooksDangerousEdgeCases:
-    """Additional edge case tests for _looks_dangerous()."""
+    """Additional edge case tests for looks_dangerous()."""
 
     def test_very_long_safe_string(self) -> None:
-        assert checks._looks_dangerous("a" * 100_000) is False
+        assert checks.looks_dangerous("a" * 100_000) is False
 
     def test_null_character_in_string(self) -> None:
-        assert checks._looks_dangerous("safe\x00text") is False
+        assert checks.looks_dangerous("safe\x00text") is False
 
     def test_newlines_around_keyword(self) -> None:
-        assert checks._looks_dangerous("something\nrm -rf /\nsomething") is True
+        assert checks.looks_dangerous("something\nrm -rf /\nsomething") is True
 
     def test_tabs_around_keyword(self) -> None:
-        assert checks._looks_dangerous("\t\tdd if=/dev/zero\t\t") is True
+        assert checks.looks_dangerous("\t\tdd if=/dev/zero\t\t") is True
 
     def test_mixed_case_drop_database(self) -> None:
-        assert checks._looks_dangerous("DrOp DaTaBaSe users") is True
+        assert checks.looks_dangerous("DrOp DaTaBaSe users") is True
 
 
 class TestCompileDangerPatternsEdgeCases:

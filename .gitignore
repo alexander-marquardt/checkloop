@@ -12,6 +12,10 @@ build/
 *.so
 .coverage
 
+# Checkloop local state (contains absolute paths, should not be committed)
+.checkloop-checkpoint.json
+.checkloop-run.log
+
 # Secrets / environment files
 .env
 .env.*

@@ -19,9 +19,13 @@ from __future__ import annotations
 import argparse
 import atexit
 import logging
+import os
 import signal
 import sys
+import time
+import uuid
 from pathlib import Path
+from typing import NamedTuple
 
 from checkloop.checks import (
     CHECK_IDS,
@@ -34,27 +38,26 @@ from checkloop.checks import (
     TIERS,
 )
 from checkloop.git import (
-    _detect_default_branch,
-    _get_changed_files,
-    _build_changed_files_prefix,
-    _is_git_repo,
+    detect_default_branch,
+    get_changed_files,
+    build_changed_files_prefix,
+    is_git_repo,
 )
-from checkloop.monitoring import _cleanup_all_sessions
+from checkloop.checkpoint import CheckpointData, clear_checkpoint, load_checkpoint, prompt_resume
+from checkloop.monitoring import cleanup_all_sessions
 from checkloop.process import (
     DEFAULT_CHECK_TIMEOUT,
     DEFAULT_IDLE_TIMEOUT,
     DEFAULT_MAX_MEMORY_MB,
     DEFAULT_PAUSE_SECONDS,
 )
-from checkloop.suite import (
-    _display_pre_run_warning,
-    _run_suite_with_error_handling,
-)
-from checkloop.terminal import BOLD, RESET, YELLOW, _fatal, _print_status
+from checkloop.suite import run_suite_with_error_handling
+from checkloop.terminal import BOLD, RED, RESET, RULE_WIDTH, YELLOW, fatal, print_status
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CONVERGENCE_THRESHOLD = 0.1  # percent of total lines changed
+DEFAULT_CONVERGENCE_THRESHOLD = 0.1
+"""Percent of total lines changed below which cycles stop early (default for ``--convergence-threshold``)."""
 
 
 # --- Argument parsing ---------------------------------------------------------
@@ -139,13 +142,17 @@ def _build_argument_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--converged-at-percentage", type=float, default=DEFAULT_CONVERGENCE_THRESHOLD,
+        "--convergence-threshold", type=float, default=DEFAULT_CONVERGENCE_THRESHOLD,
         metavar="PCT",
         help=(
             f"Stop cycling early when less than PCT%% of total lines changed "
             f"in a cycle (default: {DEFAULT_CONVERGENCE_THRESHOLD}). "
             "Requires a git repo. Set to 0 to disable convergence detection."
         ),
+    )
+    parser.add_argument(
+        "--no-resume", action="store_true",
+        help="Ignore any existing checkpoint and start fresh (no resume prompt).",
     )
     parser.add_argument(
         "--max-memory-mb", type=int, default=DEFAULT_MAX_MEMORY_MB, metavar="MB",
@@ -193,7 +200,7 @@ def _print_run_summary(
     if convergence_threshold > 0:
         print(f"  Convergence  : stop when < {convergence_threshold}% of lines change")
     if dry_run:
-        _print_status("  DRY RUN", YELLOW)
+        print_status("  DRY RUN", YELLOW)
 
 
 # --- Validation and resolution ------------------------------------------------
@@ -203,43 +210,43 @@ def _resolve_working_directory(dir_arg: str) -> str:
     try:
         workdir = str(Path(dir_arg).resolve())
     except OSError as exc:
-        _fatal(f"Cannot resolve directory '{dir_arg}': {exc}")
+        fatal(f"Cannot resolve directory '{dir_arg}': {exc}")
     if not Path(workdir).is_dir():
-        _fatal(f"Directory not found: {workdir}")
+        fatal(f"Directory not found: {workdir}")
     return workdir
 
 
 def _validate_arguments(args: argparse.Namespace) -> None:
     """Exit with an error if any CLI arguments have invalid values."""
     if args.idle_timeout < 1:
-        _fatal("--idle-timeout must be at least 1 second")
+        fatal("--idle-timeout must be at least 1 second")
     if args.pause < 0:
-        _fatal("--pause cannot be negative")
+        fatal("--pause cannot be negative")
     if args.cycles < 1:
-        _fatal("--cycles must be at least 1")
-    if args.converged_at_percentage < 0:
-        _fatal("--converged-at-percentage cannot be negative")
-    if args.converged_at_percentage > 100:
-        _fatal("--converged-at-percentage cannot exceed 100")
+        fatal("--cycles must be at least 1")
+    if args.convergence_threshold < 0:
+        fatal("--convergence-threshold cannot be negative")
+    if args.convergence_threshold > 100:
+        fatal("--convergence-threshold cannot exceed 100")
     if args.max_memory_mb < 0:
-        _fatal("--max-memory-mb cannot be negative")
+        fatal("--max-memory-mb cannot be negative")
     if args.check_timeout < 0:
-        _fatal("--check-timeout cannot be negative")
+        fatal("--check-timeout cannot be negative")
 
 
 def _resolve_changed_files_prefix(args: argparse.Namespace, workdir: str) -> str:
     """Resolve --changed-only into a prompt prefix, or return empty string."""
     if args.changed_only is None:
         return ""
-    if not _is_git_repo(workdir):
-        _fatal("--changed-only requires a git repository")
-    base_ref = args.changed_only if args.changed_only != "auto" else _detect_default_branch(workdir)
+    if not is_git_repo(workdir):
+        fatal("--changed-only requires a git repository")
+    base_ref = args.changed_only if args.changed_only != "auto" else detect_default_branch(workdir)
     logger.info("--changed-only: comparing against base ref '%s'", base_ref)
-    changed_files = _get_changed_files(workdir, base_ref)
+    changed_files = get_changed_files(workdir, base_ref)
     if not changed_files:
-        _fatal(f"No changed files found compared to '{base_ref}'")
+        fatal(f"No changed files found compared to '{base_ref}'")
     print(f"  Reviewing {len(changed_files)} changed file(s) (vs {base_ref})")
-    return _build_changed_files_prefix(changed_files)
+    return build_changed_files_prefix(changed_files)
 
 
 def _resolve_selected_checks(args: argparse.Namespace) -> list[CheckDef]:
@@ -255,6 +262,60 @@ def _resolve_selected_checks(args: argparse.Namespace) -> list[CheckDef]:
     return selected
 
 
+def _try_resume_from_checkpoint(
+    workdir: str,
+    selected_checks: list[CheckDef],
+) -> CheckpointData | None:
+    """Check for a checkpoint and prompt the user to resume.
+
+    Returns the checkpoint data if the user chooses to resume, or None to
+    start fresh.  If the checkpoint's check selection doesn't match the
+    current run, it is discarded automatically.
+    """
+    checkpoint = load_checkpoint(workdir)
+    if checkpoint is None:
+        return None
+
+    # Guard against a checkpoint from a different project directory being
+    # loaded (e.g. if the file was copied or the directory was renamed).
+    saved_workdir = checkpoint.get("workdir", "")
+    try:
+        resolved_saved = str(Path(saved_workdir).resolve()) if saved_workdir else ""
+    except OSError as exc:
+        logger.warning("Cannot resolve saved checkpoint workdir '%s': %s", saved_workdir, exc)
+        print_status("Checkpoint has invalid workdir — starting fresh.", YELLOW)
+        clear_checkpoint(workdir)
+        return None
+    resolved_current = str(Path(workdir).resolve())
+    if resolved_saved != resolved_current:
+        print_status("Checkpoint found but workdir differs — starting fresh.", YELLOW)
+        logger.warning("Checkpoint workdir mismatch: saved=%s, current=%s", resolved_saved, resolved_current)
+        clear_checkpoint(workdir)
+        return None
+
+    saved_ids = checkpoint.get("check_ids", [])
+    current_ids = [c["id"] for c in selected_checks]
+    if saved_ids != current_ids:
+        print_status("Checkpoint found but check selection differs — starting fresh.", YELLOW)
+        clear_checkpoint(workdir)
+        return None
+
+    if prompt_resume(workdir):
+        return checkpoint
+
+    clear_checkpoint(workdir)
+    return None
+
+
+_LOG_DATEFMT = "%H:%M:%S"
+
+# Generated once per process; included in every log line so entries from a
+# single invocation can be correlated across modules and in the log file.
+_RUN_ID: str = uuid.uuid4().hex[:8]
+
+_LOG_FORMAT = f"%(asctime)s [%(levelname)s] [run={_RUN_ID}] %(name)s: %(message)s"
+
+
 def _configure_logging(args: argparse.Namespace) -> None:
     """Set up logging based on --verbose / --debug flags."""
     if args.debug:
@@ -265,9 +326,101 @@ def _configure_logging(args: argparse.Namespace) -> None:
         log_level = logging.WARNING
     logging.basicConfig(
         level=log_level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
+        format=_LOG_FORMAT,
+        datefmt=_LOG_DATEFMT,
     )
+
+
+def _add_file_log_handler(workdir: str) -> None:
+    """Add a DEBUG-level file handler that captures everything to a log file.
+
+    The log file is written to ``<workdir>/.checkloop-run.log`` and is
+    overwritten on each run so it always reflects the most recent session.
+    Permissions are restricted to owner-only (0600) because the log may
+    contain prompt text, file paths, and other potentially sensitive data.
+    """
+    log_path = Path(workdir) / ".checkloop-run.log"
+    try:
+        # Create/truncate with restricted permissions (owner read/write only)
+        # before handing off to FileHandler. The log captures DEBUG-level
+        # content including prompts and file paths that should not be
+        # world-readable on shared systems.
+        fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.close(fd)
+        file_handler = logging.FileHandler(str(log_path), mode="a", encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Could not create log file %s: %s", log_path, exc)
+        return
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATEFMT))
+    logging.getLogger().addHandler(file_handler)
+    logger.info("Log file: %s", log_path)
+
+
+# --- Pre-run warning ----------------------------------------------------------
+
+_WARNING_COUNTDOWN_SECONDS = 5  # countdown seconds before starting review
+
+
+class _PermissionWarning(NamedTuple):
+    """Components of the pre-run permission warning message."""
+
+    colour: str
+    heading: str
+    body_lines: list[str]
+    countdown_message: str
+
+
+def _build_permission_warning(skip_permissions: bool) -> _PermissionWarning:
+    """Build the warning message components based on permission mode."""
+    if skip_permissions:
+        return _PermissionWarning(
+            colour=RED,
+            heading="WARNING: --dangerously-skip-permissions is ENABLED",
+            body_lines=[
+                "Claude Code will execute ALL actions without asking for approval.",
+                "This includes writing files, running shell commands, and deleting code.",
+                "Make sure you have committed or backed up your work before proceeding.",
+            ],
+            countdown_message=f"Starting in {_WARNING_COUNTDOWN_SECONDS} seconds (Ctrl+C to abort)...",
+        )
+    return _PermissionWarning(
+        colour=YELLOW,
+        heading="WARNING: Running without --dangerously-skip-permissions",
+        body_lines=[
+            "Claude Code requires interactive permission prompts to write files,",
+            "but checkloop cannot relay those prompts (stdin is disconnected).",
+            "Checks that modify code will likely FAIL or HANG.",
+            "",
+            "Re-run with:",
+            f"  {BOLD}checkloop --dangerously-skip-permissions ...{RESET}{YELLOW}",
+        ],
+        countdown_message=f"Continuing anyway in {_WARNING_COUNTDOWN_SECONDS} seconds (Ctrl+C to abort)...",
+    )
+
+
+def _display_pre_run_warning(skip_permissions: bool) -> None:
+    """Show a warning about permissions and count down before starting.
+
+    With ``--dangerously-skip-permissions``, warns that all actions will run
+    without approval.  Without it, warns that checks will likely hang because
+    checkloop cannot relay interactive permission prompts.  Either way, the
+    user has 5 seconds to Ctrl+C before the suite begins.
+    """
+    warning = _build_permission_warning(skip_permissions)
+
+    print(f"\n{warning.colour}{BOLD}{'=' * RULE_WIDTH}")
+    print(f"  {warning.heading}")
+    print(f"{'=' * RULE_WIDTH}{RESET}")
+    for line in warning.body_lines:
+        print(f"{warning.colour}  {line}{RESET}")
+    print(f"\n{warning.colour}  {warning.countdown_message}{RESET}")
+
+    try:
+        time.sleep(_WARNING_COUNTDOWN_SECONDS)
+    except KeyboardInterrupt:
+        print_status("\nAborted.")
+        sys.exit(0)
 
 
 # --- Entry point --------------------------------------------------------------
@@ -281,24 +434,33 @@ def main() -> None:
     """
     # Ensure subprocess trees are cleaned up on any exit path: normal exit,
     # sys.exit(), Ctrl+C, SIGTERM, or terminal close (SIGHUP).
-    atexit.register(_cleanup_all_sessions)
+    atexit.register(cleanup_all_sessions)
     for sig in (signal.SIGTERM, signal.SIGHUP):
-        signal.signal(sig, lambda signum, frame: sys.exit(128 + signum))
+        def _signal_handler(signum: int, frame: object) -> None:
+            logger.info("Received signal %d — exiting", signum)
+            sys.exit(128 + signum)
+        try:
+            signal.signal(sig, _signal_handler)
+        except OSError as exc:
+            logger.warning("Could not register handler for %s: %s", sig.name, exc)
 
     args = _build_argument_parser().parse_args()
     _configure_logging(args)
+    logger.info("checkloop started (run_id=%s)", _RUN_ID)
+    logger.debug("argv: %s", sys.argv)
 
     workdir = _resolve_working_directory(args.dir)
+    _add_file_log_handler(workdir)
     _validate_arguments(args)
 
     args.changed_files_prefix = _resolve_changed_files_prefix(args, workdir)
 
     selected_checks = _resolve_selected_checks(args)
     if not selected_checks:
-        _fatal("No checks selected. Check your --checks or --level arguments.")
+        fatal("No checks selected. Check your --checks or --level arguments.")
     num_cycles = args.cycles
     total_steps = len(selected_checks) * num_cycles
-    convergence_threshold = args.converged_at_percentage
+    convergence_threshold = args.convergence_threshold
 
     _print_run_summary(
         workdir, selected_checks, num_cycles, total_steps,
@@ -315,10 +477,29 @@ def main() -> None:
         convergence_threshold,
     )
 
+    logger.debug(
+        "Resolved config: workdir=%s, checks=[%s], cycles=%d, idle_timeout=%d, "
+        "check_timeout=%d, max_memory_mb=%d, convergence=%.2f%%, dry_run=%s, "
+        "skip_permissions=%s, changed_only=%s",
+        workdir,
+        ", ".join(check["id"] for check in selected_checks),
+        num_cycles, args.idle_timeout, args.check_timeout, args.max_memory_mb,
+        convergence_threshold, args.dry_run, args.dangerously_skip_permissions,
+        args.changed_only,
+    )
+
     if not args.dry_run:
         _display_pre_run_warning(args.dangerously_skip_permissions)
 
-    _run_suite_with_error_handling(selected_checks, num_cycles, workdir, args, convergence_threshold)
+    # Check for a previous incomplete run and offer to resume.
+    resume_from = None
+    if not args.dry_run and not args.no_resume:
+        resume_from = _try_resume_from_checkpoint(workdir, selected_checks)
+
+    run_suite_with_error_handling(
+        selected_checks, num_cycles, workdir, args,
+        convergence_threshold, resume_from=resume_from,
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover

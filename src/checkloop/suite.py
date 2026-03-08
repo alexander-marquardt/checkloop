@@ -1,4 +1,12 @@
-"""Check suite orchestration: running checks, convergence detection, and pre-run warnings."""
+"""Check suite orchestration: running checks, convergence detection, and error handling.
+
+Coordinates the full lifecycle of a checkloop run: iterating through cycles,
+executing individual checks, tracking which checks produced changes, detecting
+convergence.  All checks run every cycle so that cascading improvements are
+never missed.  Per-check commits are preserved individually for easier
+debugging.  Supports resuming from a saved
+checkpoint.
+"""
 
 from __future__ import annotations
 
@@ -6,42 +14,118 @@ import argparse
 import logging
 import sys
 import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
+from checkloop.checkpoint import (
+    CheckpointData,
+    build_checkpoint,
+    clear_checkpoint,
+    save_checkpoint,
+)
 from checkloop.checks import (
     COMMIT_MESSAGE_INSTRUCTIONS,
     CheckDef,
     FULL_CODEBASE_SCOPE,
-    _BOOKEND_IDS,
-    _looks_dangerous,
+    looks_dangerous,
 )
 from checkloop.git import (
-    _compute_change_stats,
-    _git_commit_all,
-    _git_head_sha,
-    _git_squash_since,
-    _is_git_repo,
+    compute_change_stats,
+    git_commit_all,
+    git_head_sha,
+    is_git_repo,
 )
-from checkloop.process import run_claude
+from checkloop.process import KILL_REASON_MEMORY, CheckResult, run_claude
 from checkloop.terminal import (
     BOLD,
     CYAN,
     GREEN,
     RED,
     RESET,
-    RULE_WIDTH,
+    SummaryRow,
     YELLOW,
-    _fatal,
-    _format_duration,
-    _print_banner,
-    _print_status,
+    compute_summary_stats,
+    fatal,
+    format_duration,
+    print_banner,
+    print_run_summary_table,
+    print_status,
 )
 
 logger = logging.getLogger(__name__)
 
-_PRE_RUN_WARNING_DELAY = 5  # countdown seconds before starting review
+
+# --- Per-check outcome tracking -----------------------------------------------
+
+@dataclass
+class CheckOutcome:
+    """Result of a single check execution, used for the post-run summary.
+
+    Attributes:
+        check_id: Short identifier of the check (e.g. ``"readability"``).
+        label: Human-readable check name shown in banners.
+        cycle: Which cycle this check ran in (1-based).
+        exit_code: Subprocess exit code (0 = success).
+        kill_reason: One of the ``KILL_REASON_*`` constants if killed, else None.
+        made_changes: Whether the check modified any tracked files.
+        lines_changed: Total insertions + deletions, or None if unavailable.
+        change_pct: Percentage of total tracked lines changed, or None.
+        duration_seconds: Wall-clock time the check took.
+    """
+
+    check_id: str
+    label: str
+    cycle: int
+    exit_code: int
+    kill_reason: str | None
+    made_changes: bool
+    lines_changed: int | None
+    change_pct: float | None
+    duration_seconds: float
+
+    def to_summary_dict(self) -> SummaryRow:
+        """Convert to a SummaryRow for print_run_summary_table."""
+        return SummaryRow(
+            check_id=self.check_id,
+            label=self.label,
+            cycle=self.cycle,
+            exit_code=self.exit_code,
+            kill_reason=self.kill_reason,
+            made_changes=self.made_changes,
+            lines_changed=self.lines_changed,
+            change_pct=self.change_pct,
+            duration=format_duration(self.duration_seconds),
+        )
 
 
 # --- Single check execution ---------------------------------------------------
+
+_MEMORY_FIX_PROMPT = (
+    "The previous check was killed because its child processes consumed too much memory "
+    "({rss_limit}MB limit exceeded). Before doing anything else, investigate and fix the "
+    "root cause of excessive memory usage in this project's test suite or build process. "
+    "Common causes include:\n"
+    "- pytest with --cov in pyproject.toml addopts (forces coverage on every run)\n"
+    "- Missing test timeouts (add pytest-timeout with a reasonable default)\n"
+    "- Tests that load very large datasets into memory\n"
+    "- Infinite loops or unbounded recursion in tests\n"
+    "Fix the root cause so that running the test suite stays within normal memory bounds."
+)
+
+
+def _build_check_prompt(check: CheckDef, args: argparse.Namespace) -> str:
+    """Assemble the full prompt for a check from its definition and CLI args.
+
+    Prepends the scope prefix (--changed-only file list or the default
+    "review ALL code" instruction) and appends commit-message rules.
+    """
+    scope_prefix = getattr(args, "changed_files_prefix", "") or FULL_CODEBASE_SCOPE
+    prompt = scope_prefix + check["prompt"] + COMMIT_MESSAGE_INSTRUCTIONS
+    scope_mode = "changed-only" if getattr(args, "changed_files_prefix", "") else "full-codebase"
+    logger.debug("Built prompt for check '%s': scope=%s, length=%d chars", check["id"], scope_mode, len(prompt))
+    return prompt
+
 
 def _run_single_check(
     check: CheckDef,
@@ -50,96 +134,130 @@ def _run_single_check(
     step_label: str,
     *,
     is_git: bool = False,
-) -> bool:
+    cycle: int = 1,
+) -> CheckOutcome:
     """Execute a single check.
 
-    Builds the prompt (with commit-message instructions appended), checks
-    for dangerous keywords, snapshots the git state, invokes Claude Code,
-    and reports what changed.
+    Builds the prompt, checks for dangerous keywords, snapshots the git
+    state, invokes Claude Code, and reports what changed.
 
-    Returns True if the check made changes (or if change detection is unavailable).
+    If the check is killed for exceeding the memory limit, a follow-up
+    "memory fix" check is run once to diagnose and fix the root cause
+    before the suite continues.
+
+    Returns a ``CheckOutcome`` with full details for the post-run summary.
     """
+    check_start = time.time()
     logger.info("Check started: id=%s, label=%s, step=%s", check["id"], check["label"], step_label)
-    _print_banner(f"{step_label} {check['label']}", CYAN)
+    print_banner(f"{step_label} {check['label']}", CYAN)
 
-    # Scope prefix: either the --changed-only file list, or the default
-    # "review ALL code" instruction for full-codebase checks.
-    scope_prefix = getattr(args, "changed_files_prefix", "") or FULL_CODEBASE_SCOPE
-    prompt = scope_prefix + check["prompt"] + COMMIT_MESSAGE_INSTRUCTIONS
+    prompt = _build_check_prompt(check, args)
 
-    if _looks_dangerous(prompt):
+    if looks_dangerous(prompt):
         logger.warning("Skipping check '%s' — dangerous keywords detected in prompt", check["id"])
-        _print_status(f"Skipping '{check['id']}' — dangerous keywords detected.", YELLOW)
-        return False
+        print_status(f"Skipping '{check['id']}' — dangerous keywords detected.", YELLOW)
+        return CheckOutcome(
+            check_id=check["id"], label=check["label"], cycle=cycle,
+            exit_code=-1, kill_reason="dangerous_prompt", made_changes=False,
+            lines_changed=None, change_pct=None,
+            duration_seconds=time.time() - check_start,
+        )
 
-    # Snapshot git state to detect changes
-    sha_before = _git_head_sha(workdir) if is_git else None
+    sha_before = git_head_sha(workdir) if is_git else None
 
-    exit_code = run_claude(
+    result = _invoke_claude(prompt, workdir, args)
+
+    if result.kill_reason == KILL_REASON_MEMORY:
+        _run_memory_fix(workdir, args, is_git)
+
+    if result.exit_code != 0:
+        logger.warning("Check '%s' exited with code %d (kill_reason=%s)",
+                       check["id"], result.exit_code, result.kill_reason)
+        print_status(f"Check '{check['id']}' exited with code {result.exit_code}. Continuing...", YELLOW)
+
+    if is_git:
+        committed = git_commit_all(
+            workdir,
+            f"checkloop: commit uncommitted changes left by '{check['id']}' check",
+        )
+        if not committed:
+            logger.debug("No uncommitted changes left after check '%s'", check["id"])
+    made_changes, lines_changed, change_pct = _report_check_changes(workdir, check["id"], sha_before)
+    logger.info("Check '%s' made_changes=%s", check["id"], made_changes)
+    return CheckOutcome(
+        check_id=check["id"], label=check["label"], cycle=cycle,
+        exit_code=result.exit_code, kill_reason=result.kill_reason,
+        made_changes=made_changes, lines_changed=lines_changed, change_pct=change_pct,
+        duration_seconds=time.time() - check_start,
+    )
+
+
+def _invoke_claude(
+    prompt: str,
+    workdir: str,
+    args: argparse.Namespace,
+) -> CheckResult:
+    """Call run_claude with the standard set of arguments from args."""
+    return run_claude(
         prompt,
         workdir,
         skip_permissions=args.dangerously_skip_permissions,
         dry_run=args.dry_run,
         idle_timeout=args.idle_timeout,
-        debug=getattr(args, "debug", False),
-        check_timeout=getattr(args, "check_timeout", 0),
-        max_memory_mb=getattr(args, "max_memory_mb", 0),
+        debug=args.debug,
+        check_timeout=args.check_timeout,
+        max_memory_mb=args.max_memory_mb,
     )
-    if exit_code != 0:
-        logger.warning("Check '%s' exited with code %d", check["id"], exit_code)
-        _print_status(f"Check '{check['id']}' exited with code {exit_code}. Continuing...", YELLOW)
+
+
+def _run_memory_fix(
+    workdir: str,
+    args: argparse.Namespace,
+    is_git: bool,
+) -> None:
+    """Run a one-shot follow-up check to diagnose and fix excessive memory usage.
+
+    This is triggered automatically when a check is killed for exceeding the
+    memory limit.  The follow-up prompt instructs Claude to investigate common
+    causes (--cov in addopts, missing test timeouts, etc.) and fix them.
+    """
+    logger.info("Running memory-fix follow-up after OOM kill (limit=%dMB)", args.max_memory_mb)
+    print_banner("Memory fix — investigating excessive memory usage", YELLOW)
+    fix_prompt = _MEMORY_FIX_PROMPT.format(rss_limit=args.max_memory_mb) + COMMIT_MESSAGE_INSTRUCTIONS
+
+    fix_result = _invoke_claude(fix_prompt, workdir, args)
+    if fix_result.exit_code != 0:
+        logger.warning("Memory-fix check exited with code %d", fix_result.exit_code)
+        print_status("Memory-fix check did not complete cleanly. Continuing...", YELLOW)
+    else:
+        print_status("Memory-fix check completed.", GREEN)
 
     if is_git:
-        committed = _git_commit_all(workdir, check["label"])
-        if not committed:
-            logger.debug("No changes to commit after check '%s'", check["id"])
-    made_changes = _report_check_changes(workdir, check["id"], sha_before)
-    logger.info("Check '%s' made_changes=%s", check["id"], made_changes)
-    return made_changes
+        committed = git_commit_all(workdir, "checkloop: commit uncommitted changes left by memory-fix check")
+        if committed:
+            print_status("  Committed memory-fix changes.", GREEN)
 
 
-def _report_check_changes(workdir: str, pass_id: str, sha_before: str | None) -> bool:
-    """Compare git state before/after a check, print stats, and return whether changes were made."""
-    if sha_before is None:
-        return True  # assume changes if not a git repo
-    sha_after = _git_head_sha(workdir)
-    if sha_after is None:
-        logger.warning("Could not read HEAD SHA after check '%s' — assuming changes were made", pass_id)
-        return True
-    if sha_after == sha_before:
-        _print_status(f"  {pass_id}: no changes")
-        return False
-    lines_changed, pct = _compute_change_stats(workdir, sha_before)
-    _print_status(f"  {pass_id}: {lines_changed} lines changed ({pct:.2f}% of codebase)")
-    return True
+def _report_check_changes(
+    workdir: str, check_id: str, sha_before: str | None,
+) -> tuple[bool, int | None, float | None]:
+    """Compare git state before/after a check and print stats.
 
-
-# --- Active check filtering ---------------------------------------------------
-
-def _filter_active_checks(
-    selected_checks: list[CheckDef],
-    previously_changed_ids: set[str] | None,
-) -> list[CheckDef]:
-    """Return checks to run this cycle, skipping those that were no-ops last cycle.
-
-    On the first cycle (*previously_changed_ids* is None), all checks run.
-    Bookend checks always run regardless of prior activity.
+    Returns ``(made_changes, lines_changed, change_pct)``.
     """
-    if previously_changed_ids is None:
-        return selected_checks
-
-    active_checks = [
-        check for check in selected_checks
-        if check["id"] in previously_changed_ids or check["id"] in _BOOKEND_IDS
-    ]
-    skipped_ids = [
-        check["id"] for check in selected_checks
-        if check["id"] not in previously_changed_ids and check["id"] not in _BOOKEND_IDS
-    ]
-    if skipped_ids:
-        logger.info("Skipping %d no-op check(s) from last cycle: %s", len(skipped_ids), skipped_ids)
-        _print_status(f"Skipping {len(skipped_ids)} check(s) that made no changes last cycle.")
-    return active_checks
+    if sha_before is None:
+        logger.info("Change detection unavailable for check '%s' (not a git repo or HEAD unreadable)", check_id)
+        return True, None, None
+    sha_after = git_head_sha(workdir)
+    if sha_after is None:
+        logger.warning("Could not read HEAD SHA after check '%s' — assuming changes were made", check_id)
+        return True, None, None
+    if sha_after == sha_before:
+        print_status(f"  {check_id}: no changes")
+        return False, 0, 0.0
+    lines_changed, pct = compute_change_stats(workdir, sha_before)
+    print_status(f"  {check_id}: {lines_changed} lines changed ({pct:.2f}% of codebase)")
+    return True, lines_changed, pct
 
 
 # --- Convergence detection ----------------------------------------------------
@@ -151,12 +269,12 @@ def _check_cycle_convergence(
     convergence_threshold: float,
     prev_change_pct: float | None,
 ) -> tuple[bool, float | None]:
-    """Commit changes and check whether the check loop has converged.
+    """Check whether the check loop has converged.
 
     Returns a ``(should_stop, change_pct)`` tuple.  *should_stop* is True when
     the loop should exit (either no changes or below threshold).
     """
-    current_sha = _git_head_sha(workdir)
+    current_sha = git_head_sha(workdir)
 
     if current_sha is None:
         logger.warning("Cycle %d: could not read HEAD SHA — skipping convergence check", cycle)
@@ -164,21 +282,21 @@ def _check_cycle_convergence(
 
     if current_sha == base_sha:
         logger.info("Cycle %d: no changes detected — converged", cycle)
-        _print_status(f"\nNo changes in cycle {cycle} — converged.", GREEN)
+        print_status(f"\nNo changes in cycle {cycle} — converged.", GREEN)
         return True, prev_change_pct
 
-    lines_changed, change_pct = _compute_change_stats(workdir, base_sha)
-    _print_status(f"\nCycle {cycle}: {change_pct:.2f}% of lines changed "
+    lines_changed, change_pct = compute_change_stats(workdir, base_sha)
+    print_status(f"\nCycle {cycle}: {change_pct:.2f}% of lines changed "
                  f"(threshold: {convergence_threshold}%)")
 
     if prev_change_pct is not None and change_pct > prev_change_pct:
-        _print_status(f"Warning: changes increased ({prev_change_pct:.2f}% -> {change_pct:.2f}%) — "
+        print_status(f"Warning: changes increased ({prev_change_pct:.2f}% -> {change_pct:.2f}%) — "
                      f"possible oscillation.", YELLOW)
 
     if change_pct < convergence_threshold:
         logger.info("Cycle %d: converged at %.2f%% (%d lines, threshold: %.2f%%)",
                      cycle, change_pct, lines_changed, convergence_threshold)
-        _print_status(f"Converged at {change_pct:.2f}% (below {convergence_threshold}% threshold).", GREEN)
+        print_status(f"Converged at {change_pct:.2f}% (below {convergence_threshold}% threshold).", GREEN)
         return True, change_pct
 
     logger.info("Cycle %d: %.2f%% lines changed (%d lines, threshold: %.2f%%), continuing",
@@ -186,7 +304,84 @@ def _check_cycle_convergence(
     return False, change_pct
 
 
+# --- Suite state --------------------------------------------------------------
+
+@dataclass
+class _SuiteState:
+    """Mutable state carried across cycles in ``_run_check_suite``.
+
+    Attributes:
+        start_cycle: Cycle number to begin from (1-based; >1 when resuming).
+        start_check_index: 0-based index of the first check to run in the
+            starting cycle (>0 when resuming mid-cycle).
+        resume_active_check_ids: Check IDs from the checkpoint's active list,
+            or None when not resuming.
+        resume_changed: Check IDs already marked as changed from the checkpoint.
+        prev_change_pct: Percentage of lines changed in the prior cycle,
+            used for oscillation detection.
+        previously_changed_ids: Check IDs that produced changes in the prior
+            cycle, or None if this is the first cycle.
+        started_at: ISO 8601 timestamp when the suite was originally started.
+    """
+
+    start_cycle: int = 1
+    start_check_index: int = 0
+    resume_active_check_ids: list[str] | None = None
+    resume_changed: set[str] = field(default_factory=set)
+    prev_change_pct: float | None = None
+    previously_changed_ids: set[str] | None = None
+    started_at: str = ""
+
+
+def _build_suite_state(resume_from: CheckpointData | None) -> _SuiteState:
+    """Initialize suite state from a checkpoint or from scratch."""
+    state = _SuiteState(started_at=datetime.now(timezone.utc).isoformat())
+    if resume_from is None:
+        return state
+    state.start_cycle = resume_from["current_cycle"]
+    state.start_check_index = resume_from["current_check_index"]
+    state.resume_active_check_ids = resume_from["active_check_ids"]
+    state.resume_changed = set(resume_from["changed_this_cycle"])
+    state.prev_change_pct = resume_from.get("prev_change_pct")
+    raw_prev = resume_from.get("previously_changed_ids")
+    state.previously_changed_ids = set(raw_prev) if raw_prev is not None else None
+    state.started_at = resume_from.get("started_at", state.started_at)
+    print_status(f"Resuming from cycle {state.start_cycle}, "
+                 f"check {state.start_check_index + 1}...", CYAN)
+    return state
+
+
 # --- Suite orchestration ------------------------------------------------------
+
+def _resolve_cycle_checks(
+    selected_checks: list[CheckDef],
+    state: _SuiteState,
+) -> tuple[list[CheckDef], int, set[str] | None]:
+    """Determine which checks to run this cycle and where to start.
+
+    On a resume, consumes the saved checkpoint state (active check list,
+    start index, already-changed IDs) for the first cycle, then clears
+    it so subsequent cycles start fresh.
+
+    Returns ``(active_checks, start_index, initial_changed)``.
+    """
+    if state.resume_active_check_ids is not None:
+        active_checks = [
+            c for c in selected_checks if c["id"] in state.resume_active_check_ids
+        ]
+        # Preserve the checkpoint's ordering.
+        id_order = {cid: idx for idx, cid in enumerate(state.resume_active_check_ids)}
+        active_checks.sort(key=lambda c: id_order.get(c["id"], 999))
+        start_index = state.start_check_index
+        initial_changed: set[str] | None = state.resume_changed
+        # Consume resume state so subsequent cycles don't re-enter this branch.
+        state.resume_active_check_ids = None
+        state.start_check_index = 0
+        state.resume_changed = set()
+        return active_checks, start_index, initial_changed
+
+    return list(selected_checks), 0, None
+
 
 def _run_single_cycle(
     active_checks: list[CheckDef],
@@ -196,35 +391,40 @@ def _run_single_cycle(
     num_cycles: int,
     *,
     is_git: bool,
-) -> set[str]:
-    """Execute all checks for one cycle, returning IDs of checks that made changes."""
-    changed_this_cycle: set[str] = set()
-    for i, check in enumerate(active_checks, 1):
-        # Only pause between checks, not before the first one in each cycle.
-        if i > 1:
+    start_index: int = 0,
+    initial_changed: set[str] | None = None,
+    on_check_complete: Callable[[int, set[str]], None] | None = None,
+) -> tuple[set[str], list[CheckOutcome]]:
+    """Execute all checks for one cycle.
+
+    Returns ``(changed_ids, outcomes)`` — the set of check IDs that made
+    changes and a list of ``CheckOutcome`` objects for the summary table.
+
+    When *start_index* > 0, checks before that index are skipped (resume mode).
+    *initial_changed* seeds the changed set with IDs from already-completed
+    checks (from a checkpoint).
+    """
+    changed_this_cycle: set[str] = set(initial_changed or ())
+    outcomes: list[CheckOutcome] = []
+    for i, check in enumerate(active_checks):
+        if i < start_index:
+            continue
+        # Only pause between checks, not before the first one we actually run.
+        if i > start_index:
             time.sleep(args.pause)
+        display_idx = i + 1  # 1-based for display
         cycle_suffix = f" (cycle {cycle}/{num_cycles})" if num_cycles > 1 else ""
-        step_label = f"[{i}/{len(active_checks)}]{cycle_suffix}"
+        step_label = f"[{display_idx}/{len(active_checks)}]{cycle_suffix}"
 
-        made_changes = _run_single_check(check, workdir, args, step_label, is_git=is_git)
-        if made_changes:
+        outcome = _run_single_check(check, workdir, args, step_label, is_git=is_git, cycle=cycle)
+        outcomes.append(outcome)
+        if outcome.made_changes:
             changed_this_cycle.add(check["id"])
-    return changed_this_cycle
 
+        if on_check_complete is not None:
+            on_check_complete(i + 1, changed_this_cycle)
 
-def _squash_cycle_commits(
-    active_checks: list[CheckDef],
-    changed_ids: set[str],
-    workdir: str,
-    base_sha: str,
-) -> None:
-    """Squash all commits from a cycle into one with a descriptive message."""
-    changed_labels = [
-        check["label"] for check in active_checks
-        if check["id"] in changed_ids
-    ]
-    squash_summary = "; ".join(changed_labels)
-    _git_squash_since(workdir, base_sha, squash_summary)
+    return changed_this_cycle, outcomes
 
 
 def _run_check_suite(
@@ -233,135 +433,153 @@ def _run_check_suite(
     workdir: str,
     args: argparse.Namespace,
     convergence_threshold: float = 0.0,
-) -> None:
+    *,
+    resume_from: CheckpointData | None = None,
+) -> list[CheckOutcome]:
     """Execute all checks across all cycles.
+
+    Every check runs on every cycle — no checks are skipped, because earlier
+    checks create work for later ones (cascading improvements).
 
     When *convergence_threshold* > 0 and the project is a git repo, a commit
     is created after each cycle and the percentage of lines changed is compared
     to the threshold.  If changes fall below the threshold the loop stops early.
 
-    On cycle 2+, checks that made no changes in the previous cycle are skipped.
-    Bookend checks (test-fix, test-validate) always run on every cycle.
-    """
-    is_git = _is_git_repo(workdir)
-    convergence_enabled = convergence_threshold > 0 and is_git
-    prev_change_pct: float | None = None
-    # Tracks which checks made changes last cycle; None means "run all" (first cycle).
-    previously_changed_ids: set[str] | None = None
+    When *resume_from* is provided, the suite picks up from the saved checkpoint
+    instead of starting from the beginning.
 
-    for cycle in range(1, num_cycles + 1):
+    Returns a list of ``CheckOutcome`` objects for the post-run summary.
+    """
+    is_git = is_git_repo(workdir)
+    convergence_enabled = convergence_threshold > 0 and is_git
+    check_ids = [c["id"] for c in selected_checks]
+    state = _build_suite_state(resume_from)
+    all_outcomes: list[CheckOutcome] = []
+
+    def _save_after_check(check_index: int, changed: set[str]) -> None:
+        """Checkpoint callback — invoked after each check completes."""
+        try:
+            data = build_checkpoint(
+                workdir=workdir,
+                check_ids=check_ids,
+                num_cycles=num_cycles,
+                convergence_threshold=convergence_threshold,
+                current_cycle=cycle,
+                current_check_index=check_index,
+                active_check_ids=[c["id"] for c in active_checks],
+                changed_this_cycle=changed,
+                previously_changed_ids=state.previously_changed_ids,
+                prev_change_pct=state.prev_change_pct,
+                started_at=state.started_at,
+            )
+            save_checkpoint(workdir, data)
+        except Exception as exc:
+            logger.warning("Failed to save checkpoint after check %d: %s", check_index, exc, exc_info=True)
+
+    for cycle in range(state.start_cycle, num_cycles + 1):
         logger.info("Cycle %d/%d started", cycle, num_cycles)
         if num_cycles > 1:
             print(f"\n{BOLD}{CYAN}===  Cycle {cycle}/{num_cycles}  ==={RESET}")
 
-        base_sha = _git_head_sha(workdir) if is_git else None
-        active_checks = _filter_active_checks(selected_checks, previously_changed_ids)
+        base_sha = git_head_sha(workdir) if is_git else None
 
-        changed_this_cycle = _run_single_cycle(
-            active_checks, workdir, args, cycle, num_cycles, is_git=is_git,
+        active_checks, cycle_start_index, cycle_initial_changed = _resolve_cycle_checks(
+            selected_checks, state,
         )
-        previously_changed_ids = changed_this_cycle
 
-        should_squash = is_git and base_sha and changed_this_cycle and not args.dry_run
-        if should_squash:
-            _squash_cycle_commits(active_checks, changed_this_cycle, workdir, base_sha)
+        changed_this_cycle, cycle_outcomes = _run_single_cycle(
+            active_checks, workdir, args, cycle, num_cycles,
+            is_git=is_git,
+            start_index=cycle_start_index,
+            initial_changed=cycle_initial_changed,
+            on_check_complete=_save_after_check,
+        )
+        all_outcomes.extend(cycle_outcomes)
+        logger.info("Cycle %d/%d completed: %d/%d checks made changes (%s)",
+                     cycle, num_cycles, len(changed_this_cycle), len(active_checks),
+                     ", ".join(sorted(changed_this_cycle)) or "none")
+        state.previously_changed_ids = changed_this_cycle
 
-        should_check_convergence = convergence_enabled and base_sha and not args.dry_run
-        if should_check_convergence:
-            converged, prev_change_pct = _check_cycle_convergence(
-                workdir, cycle, base_sha, convergence_threshold, prev_change_pct,
+        if convergence_enabled and base_sha is not None and not args.dry_run:
+            converged, state.prev_change_pct = _check_cycle_convergence(
+                workdir, cycle, base_sha, convergence_threshold, state.prev_change_pct,
             )
             if converged:
                 break
 
+    # Suite completed successfully — remove the checkpoint file.
+    clear_checkpoint(workdir)
+    return all_outcomes
 
-# --- Pre-run warning ----------------------------------------------------------
 
-def _build_permission_warning(skip_permissions: bool) -> tuple[str, str, list[str], str]:
-    """Build the warning message components based on permission mode.
+# --- Post-run summary ---------------------------------------------------------
 
-    Returns a (colour, heading, body_lines, countdown) tuple.
-    """
-    if skip_permissions:
-        return (
-            RED,
-            "WARNING: --dangerously-skip-permissions is ENABLED",
-            [
-                "Claude Code will execute ALL actions without asking for approval.",
-                "This includes writing files, running shell commands, and deleting code.",
-                "Make sure you have committed or backed up your work before proceeding.",
-            ],
-            f"Starting in {_PRE_RUN_WARNING_DELAY} seconds (Ctrl+C to abort)...",
-        )
-    return (
-        YELLOW,
-        "WARNING: Running without --dangerously-skip-permissions",
-        [
-            "Claude Code requires interactive permission prompts to write files,",
-            "but checkloop cannot relay those prompts (stdin is disconnected).",
-            "Checks that modify code will likely FAIL or HANG.",
-            "",
-            "Re-run with:",
-            f"  {BOLD}checkloop --dangerously-skip-permissions ...{RESET}{YELLOW}",
-        ],
-        f"Continuing anyway in {_PRE_RUN_WARNING_DELAY} seconds (Ctrl+C to abort)...",
+def _print_summary(outcomes: list[CheckOutcome], total_elapsed: str) -> None:
+    """Print and log the post-run summary table if there are any outcomes to show."""
+    if not outcomes:
+        return
+    summary_dicts = [o.to_summary_dict() for o in outcomes]
+    stats = compute_summary_stats(summary_dicts)
+    logger.info(
+        "Suite summary: checks=%d, succeeded=%d, failed=%d, killed=%d, "
+        "lines_changed=%d, checks_with_changes=%d, elapsed=%s",
+        len(outcomes), stats.succeeded, stats.failed, stats.killed,
+        stats.total_lines, stats.with_changes, total_elapsed,
     )
-
-
-def _display_pre_run_warning(skip_permissions: bool) -> None:
-    """Show a warning about permissions and count down before starting.
-
-    With ``--dangerously-skip-permissions``, warns that all actions will run
-    without approval.  Without it, warns that checks will likely hang because
-    checkloop cannot relay interactive permission prompts.  Either way, the
-    user has 5 seconds to Ctrl+C before the suite begins.
-    """
-    warning_colour, heading, body_lines, countdown = _build_permission_warning(skip_permissions)
-
-    print(f"\n{warning_colour}{BOLD}{'=' * RULE_WIDTH}")
-    print(f"  {heading}")
-    print(f"{'=' * RULE_WIDTH}{RESET}")
-    for line in body_lines:
-        print(f"{warning_colour}  {line}{RESET}")
-    print(f"\n{warning_colour}  {countdown}{RESET}")
-
-    try:
-        time.sleep(_PRE_RUN_WARNING_DELAY)
-    except KeyboardInterrupt:
-        _print_status("\nAborted.")
-        sys.exit(0)
+    for o in outcomes:
+        logger.info(
+            "  Check outcome: id=%s, cycle=%d, exit_code=%d, kill_reason=%s, "
+            "made_changes=%s, lines_changed=%s, duration=%.1fs",
+            o.check_id, o.cycle, o.exit_code, o.kill_reason,
+            o.made_changes, o.lines_changed, o.duration_seconds,
+        )
+    print_run_summary_table(summary_dicts, total_elapsed, stats=stats)
 
 
 # --- Error-handling wrapper ---------------------------------------------------
 
-def _run_suite_with_error_handling(
+def run_suite_with_error_handling(
     selected_checks: list[CheckDef],
     num_cycles: int,
     workdir: str,
     args: argparse.Namespace,
     convergence_threshold: float,
+    *,
+    resume_from: CheckpointData | None = None,
 ) -> None:
     """Run the check suite, handling interrupts and unexpected errors.
 
     Wraps ``_run_check_suite`` with KeyboardInterrupt handling (exits 130),
     missing-tool detection, and a catch-all that logs the traceback before
     re-raising.  Prints a final timing banner on success.
+
+    The checkpoint file is intentionally NOT cleared on error — this is what
+    allows resume on the next run.
     """
     suite_start_time = time.time()
+    all_outcomes: list[CheckOutcome] = []
     try:
-        _run_check_suite(selected_checks, num_cycles, workdir, args, convergence_threshold)
+        all_outcomes = _run_check_suite(
+            selected_checks, num_cycles, workdir, args,
+            convergence_threshold, resume_from=resume_from,
+        )
     except KeyboardInterrupt:
-        elapsed = _format_duration(time.time() - suite_start_time)
-        _print_status(f"\nInterrupted after {elapsed}. Partial results may have been applied.", YELLOW)
+        elapsed = format_duration(time.time() - suite_start_time)
+        logger.warning("Suite interrupted by user after %s", elapsed)
+        print_status(f"\nInterrupted after {elapsed}. Partial results may have been applied.", YELLOW)
+        _print_summary(all_outcomes, elapsed)
         sys.exit(130)
     except FileNotFoundError as exc:
         logger.error("Required external tool not found: %s", exc, exc_info=True)
-        _fatal(f"Required tool not found: {exc}. Ensure git and claude are installed.")
+        fatal(f"Required tool not found: {exc}. Ensure git and claude are installed.")
     except Exception:
         logger.exception("Unexpected error during check suite")
-        elapsed = _format_duration(time.time() - suite_start_time)
-        _print_status(f"\nUnexpected error after {elapsed}. Partial results may have been applied.", RED)
+        elapsed = format_duration(time.time() - suite_start_time)
+        print_status(f"\nUnexpected error after {elapsed}. Partial results may have been applied.", RED)
+        _print_summary(all_outcomes, elapsed)
         raise
-    suite_elapsed = _format_duration(time.time() - suite_start_time)
-    logger.info("Suite completed: elapsed=%s", suite_elapsed)
-    _print_banner(f"All done! ({suite_elapsed} total)", GREEN)
+    suite_elapsed = format_duration(time.time() - suite_start_time)
+    logger.info("Suite completed: elapsed=%s, checks=%d, cycles=%d",
+                suite_elapsed, len(selected_checks), num_cycles)
+    _print_summary(all_outcomes, suite_elapsed)
+    print_banner(f"All done! ({suite_elapsed} total)", GREEN)

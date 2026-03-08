@@ -1,4 +1,4 @@
-"""Tests for checkloop.git — core git operations: run, repo detection, commit, squash, diff stats."""
+"""Tests for checkloop.git — core git operations: run, repo detection, commit, diff stats."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from unittest import mock
 import pytest
 
 from checkloop import git
+from helpers import make_git_result
 
 
 class TestGitRun:
@@ -29,127 +30,77 @@ class TestGitRun:
 
 
 class TestIsGitRepo:
-    """Tests for _is_git_repo() detection."""
+    """Tests for is_git_repo() detection."""
 
     def test_true_when_git_succeeds(self) -> None:
-        with mock.patch("subprocess.run") as mock_run:
-            mock_run.return_value = mock.MagicMock(returncode=0)
-            assert git._is_git_repo("/tmp") is True
+        with mock.patch("subprocess.run", return_value=make_git_result()):
+            assert git.is_git_repo("/tmp") is True
 
     def test_false_when_git_fails(self) -> None:
-        with mock.patch("subprocess.run") as mock_run:
-            mock_run.return_value = mock.MagicMock(returncode=128)
-            assert git._is_git_repo("/tmp") is False
+        with mock.patch("subprocess.run", return_value=make_git_result(returncode=128)):
+            assert git.is_git_repo("/tmp") is False
 
     def test_oserror_returns_false(self) -> None:
         with mock.patch("subprocess.run", side_effect=OSError("no git")):
-            assert git._is_git_repo("/tmp") is False
+            assert git.is_git_repo("/tmp") is False
 
 
 class TestGitHeadSha:
-    """Tests for _git_head_sha() SHA retrieval."""
+    """Tests for git_head_sha() SHA retrieval."""
 
     def test_returns_sha(self) -> None:
-        with mock.patch("subprocess.run") as mock_run:
-            mock_run.return_value = mock.MagicMock(returncode=0, stdout="abc123\n")
-            assert git._git_head_sha("/tmp") == "abc123"
+        with mock.patch("subprocess.run", return_value=make_git_result(stdout="abc123\n")):
+            assert git.git_head_sha("/tmp") == "abc123"
 
     def test_returns_none_on_failure(self) -> None:
-        with mock.patch("subprocess.run") as mock_run:
-            mock_run.return_value = mock.MagicMock(returncode=128, stdout="")
-            assert git._git_head_sha("/tmp") is None
+        with mock.patch("subprocess.run", return_value=make_git_result(returncode=128)):
+            assert git.git_head_sha("/tmp") is None
 
     def test_empty_stdout_returns_none(self) -> None:
-        with mock.patch("subprocess.run") as mock_run:
-            mock_run.return_value = mock.MagicMock(returncode=0, stdout="")
-            assert git._git_head_sha("/tmp") is None
+        with mock.patch("subprocess.run", return_value=make_git_result()):
+            assert git.git_head_sha("/tmp") is None
 
     def test_whitespace_only_stdout_returns_none(self) -> None:
-        with mock.patch("subprocess.run") as mock_run:
-            mock_run.return_value = mock.MagicMock(returncode=0, stdout="   \n  ")
-            assert git._git_head_sha("/tmp") is None
+        with mock.patch("subprocess.run", return_value=make_git_result(stdout="   \n  ")):
+            assert git.git_head_sha("/tmp") is None
 
     def test_oserror_returns_none(self) -> None:
         with mock.patch("subprocess.run", side_effect=OSError("no git")):
-            assert git._git_head_sha("/tmp") is None
+            assert git.git_head_sha("/tmp") is None
 
 
 class TestGitCommitAll:
-    """Tests for _git_commit_all() post-cycle commit."""
+    """Tests for git_commit_all() post-cycle commit."""
 
     def test_commits_when_changes_exist(self) -> None:
         with mock.patch("subprocess.run") as mock_run:
             mock_run.side_effect = [
-                mock.MagicMock(returncode=0),  # git add
-                mock.MagicMock(returncode=1),  # git diff --cached --quiet (changes exist)
-                mock.MagicMock(returncode=0),  # git commit
-                mock.MagicMock(returncode=0, stdout="abc123\n"),  # git rev-parse HEAD
+                make_git_result(),                       # git add
+                make_git_result(returncode=1),           # git diff --cached --quiet (changes exist)
+                make_git_result(),                       # git commit
+                make_git_result(stdout="abc123\n"),       # git rev-parse HEAD
             ]
-            assert git._git_commit_all("/tmp", "test commit") is True
+            assert git.git_commit_all("/tmp", "test commit") is True
 
     def test_no_commit_when_clean(self) -> None:
         with mock.patch("subprocess.run") as mock_run:
             mock_run.side_effect = [
-                mock.MagicMock(returncode=0),  # git add
-                mock.MagicMock(returncode=0),  # git diff --cached --quiet (no changes)
+                make_git_result(),  # git add
+                make_git_result(),  # git diff --cached --quiet (no changes)
             ]
-            assert git._git_commit_all("/tmp", "test commit") is False
+            assert git.git_commit_all("/tmp", "test commit") is False
 
     def test_returns_false_on_error(self) -> None:
         with mock.patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, "git")):
-            assert git._git_commit_all("/tmp", "test commit") is False
+            assert git.git_commit_all("/tmp", "test commit") is False
 
     def test_git_add_failure(self) -> None:
         with mock.patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, "git add")):
-            assert git._git_commit_all("/tmp", "test commit") is False
+            assert git.git_commit_all("/tmp", "test commit") is False
 
     def test_oserror_during_commit(self) -> None:
         with mock.patch("subprocess.run", side_effect=OSError("disk full")):
-            assert git._git_commit_all("/tmp", "test commit") is False
-
-
-class TestGitSquashSince:
-    """Tests for _git_squash_since() squash functionality."""
-
-    def test_squash_creates_commit(self) -> None:
-        """Happy path: commits exist after base_sha, squash succeeds."""
-        with mock.patch.object(git, "_git_commit_all", return_value=True):
-            with mock.patch.object(
-                git, "_git_head_sha", side_effect=["new_sha_abc", "squashed_sha"]
-            ):
-                with mock.patch.object(git, "_git_run"):
-                    result = git._git_squash_since("/tmp", "base_sha_123", "squash msg")
-        assert result is True
-
-    def test_squash_no_commits_since_base(self) -> None:
-        """No new commits since base — returns False without squashing."""
-        with mock.patch.object(git, "_git_commit_all", return_value=False):
-            with mock.patch.object(git, "_git_head_sha", return_value="base_sha_123"):
-                result = git._git_squash_since("/tmp", "base_sha_123", "squash msg")
-        assert result is False
-
-    def test_squash_called_process_error(self) -> None:
-        """CalledProcessError during squash returns False."""
-        with mock.patch.object(
-            git,
-            "_git_commit_all",
-            side_effect=subprocess.CalledProcessError(1, "git"),
-        ):
-            result = git._git_squash_since("/tmp", "base_sha", "msg")
-        assert result is False
-
-    def test_squash_oserror(self) -> None:
-        """OSError during squash returns False."""
-        with mock.patch.object(git, "_git_commit_all", side_effect=OSError("fail")):
-            result = git._git_squash_since("/tmp", "base_sha", "msg")
-        assert result is False
-
-    def test_squash_returns_false_when_head_sha_is_none(self) -> None:
-        """If _git_head_sha returns None after wip commit, squash bails out."""
-        with mock.patch.object(git, "_git_commit_all", return_value=True):
-            with mock.patch.object(git, "_git_head_sha", return_value=None):
-                result = git._git_squash_since("/tmp", "base_sha_123", "squash msg")
-        assert result is False
+            assert git.git_commit_all("/tmp", "test commit") is False
 
 
 class TestParseShortstat:
@@ -200,10 +151,9 @@ class TestCountLinesChanged:
         assert result == 0
 
     def test_valid_sha_with_empty_target(self) -> None:
-        with mock.patch.object(git, "_git_run") as mock_git:
-            mock_git.return_value = mock.MagicMock(
-                returncode=0, stdout=" 1 file changed, 3 insertions(+)"
-            )
+        with mock.patch.object(git, "_git_run", return_value=make_git_result(
+            stdout=" 1 file changed, 3 insertions(+)"
+        )) as mock_git:
             result = git._count_lines_changed("/tmp", "abc123", target="")
         assert result == 3
         call_args = mock_git.call_args[0]
@@ -211,10 +161,9 @@ class TestCountLinesChanged:
         assert "" not in call_args[2:]
 
     def test_git_diff_nonzero_returncode(self) -> None:
-        with mock.patch.object(git, "_git_run") as mock_git:
-            mock_git.return_value = mock.MagicMock(
-                returncode=128, stdout="", stderr="fatal: bad revision"
-            )
+        with mock.patch.object(git, "_git_run", return_value=make_git_result(
+            returncode=128, stderr="fatal: bad revision"
+        )):
             result = git._count_lines_changed("/tmp", "badref")
         assert result == 0
 
@@ -222,3 +171,30 @@ class TestCountLinesChanged:
         with mock.patch.object(git, "_git_run", side_effect=OSError("no git")):
             result = git._count_lines_changed("/tmp", "abc123")
         assert result == 0
+
+    def test_none_base_sha_returns_zero(self) -> None:
+        """None is falsy, so _count_lines_changed should return 0."""
+        result = git._count_lines_changed("/tmp", None)  # type: ignore[arg-type]
+        assert result == 0
+
+    def test_whitespace_only_base_sha_proceeds(self) -> None:
+        """Whitespace-only SHA is truthy, so git is called (and likely fails)."""
+        with mock.patch.object(git, "_git_run", return_value=make_git_result(
+            returncode=128, stderr="fatal: bad revision"
+        )):
+            result = git._count_lines_changed("/tmp", "   ")
+        assert result == 0
+
+
+class TestParseShortstatEdgeCases:
+    """Additional edge case tests for _parse_shortstat()."""
+
+    def test_multiple_insertion_matches_uses_first(self) -> None:
+        """If text somehow has multiple insertion matches, first is used."""
+        text = " 1 file changed, 5 insertions(+), 10 insertions(+)"
+        assert git._parse_shortstat(text) == 5
+
+    def test_very_large_insertion_count(self) -> None:
+        """Ensure parsing handles very large numbers without overflow."""
+        text = f" 1 file changed, {2**31} insertions(+)"
+        assert git._parse_shortstat(text) == 2**31

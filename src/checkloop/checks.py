@@ -7,7 +7,13 @@ from typing import TypedDict
 
 
 class CheckDef(TypedDict):
-    """A single check definition with its identifier, display label, and prompt."""
+    """A single check definition with its identifier, display label, and prompt.
+
+    Attributes:
+        id: Short identifier used on the CLI (e.g. ``"readability"``, ``"dry"``).
+        label: Human-readable name shown in banners and summaries.
+        prompt: The review prompt sent to Claude Code for this check.
+    """
 
     id: str
     label: str
@@ -107,7 +113,8 @@ CHECKS: list[CheckDef] = [
         "label": "Performance",
         "prompt": (
             "Review for obvious performance issues: "
-            "N+1 queries, missing indexes, unnecessary re-renders, "
+            "N+1 queries, O(N²) algorithms that could be O(N) or O(N log N), "
+            "missing indexes, unnecessary re-renders, "
             "blocking I/O that could be async, large allocations in loops. "
             "Fix anything significant and add a comment explaining the optimisation."
         ),
@@ -243,7 +250,6 @@ CHECK_IDS: list[str] = [check["id"] for check in CHECKS]
 
 _BOOKEND_FIRST_CHECKS: list[str] = ["test-fix"]
 _BOOKEND_LAST_CHECKS: list[str] = ["test-validate"]
-_BOOKEND_IDS: set[str] = {*_BOOKEND_FIRST_CHECKS, *_BOOKEND_LAST_CHECKS}
 _CORE_BASIC: list[str] = ["readability", "dry", "tests", "docs"]
 _CORE_THOROUGH: list[str] = ["security", "perf", "errors", "types"]
 _CORE_EXHAUSTIVE: list[str] = ["edge-cases", "complexity", "deps", "logging", "concurrency", "accessibility", "api-design"]
@@ -326,7 +332,7 @@ def _compile_danger_patterns() -> list[re.Pattern[str]]:
 _DANGEROUS_PROMPT_PATTERNS: list[re.Pattern[str]] = _compile_danger_patterns()
 
 
-def _looks_dangerous(text: str) -> bool:
+def looks_dangerous(text: str) -> bool:
     """Check if a prompt contains any destructive keyword.
 
     Uses word-boundary anchors (\\b) around alphanumeric edges so e.g.

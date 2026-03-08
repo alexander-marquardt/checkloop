@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 import pytest
@@ -100,19 +101,20 @@ class TestCountFileLinesOSErrorDuringRead:
 
         original_open = open
 
-        def patched_open(filepath, mode="r", **kwargs):
+        def patched_open(filepath: str | Path, mode: str = "r", **kwargs: Any) -> Any:
             fh = original_open(filepath, mode, **kwargs)
             original_read = fh.read
 
             call_count = 0
-            def failing_read(size=-1):
+            def failing_read(size: int = -1) -> bytes:
                 nonlocal call_count
                 call_count += 1
                 if call_count == 1:
-                    return original_read(size)
+                    result: bytes = original_read(size)
+                    return result
                 raise OSError("disk error during read")
 
-            fh.read = failing_read
+            fh.read = failing_read  # type: ignore[method-assign]
             return fh
 
         with mock.patch("builtins.open", side_effect=patched_open):
@@ -205,7 +207,7 @@ class TestCountTrackedLinesFileOSError:
         with mock.patch.object(git, "_git_run", return_value=ls_result):
             original_resolve = Path.resolve
 
-            def failing_resolve(self, *args, **kwargs):
+            def failing_resolve(self: Path, *args: Any, **kwargs: Any) -> Path:
                 if self.name == "good.txt" and "good.txt" in str(self):
                     raise OSError("permission denied")
                 return original_resolve(self, *args, **kwargs)

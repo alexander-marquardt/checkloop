@@ -53,7 +53,7 @@ class TestCheckIdleTimeout:
         with mock.patch("time.time", return_value=100.0):
             result = process._check_idle_timeout(
                 last_output_time=90.0, idle_timeout=120,
-                pass_start_time=80.0, process=mock_proc,
+                check_start_time=80.0, process=mock_proc,
             )
         assert result is False
 
@@ -63,7 +63,7 @@ class TestCheckIdleTimeout:
         with mock.patch("time.time", return_value=220.0):
             result = process._check_idle_timeout(
                 last_output_time=100.0, idle_timeout=120,
-                pass_start_time=80.0, process=mock_proc,
+                check_start_time=80.0, process=mock_proc,
             )
         assert result is False
 
@@ -72,7 +72,7 @@ class TestCheckIdleTimeout:
         with mock.patch("time.time", return_value=221.0):
             result = process._check_idle_timeout(
                 last_output_time=100.0, idle_timeout=120,
-                pass_start_time=80.0, process=mock_proc,
+                check_start_time=80.0, process=mock_proc,
             )
         assert result is True
 
@@ -124,8 +124,9 @@ class TestRunClaude:
     """Tests for the public run_claude() function."""
 
     def test_dry_run(self, capsys: pytest.CaptureFixture[str]) -> None:
-        code = process.run_claude("prompt", "/tmp", dry_run=True)
-        assert code == 0
+        result = process.run_claude("prompt", "/tmp", dry_run=True)
+        assert result.exit_code == 0
+        assert result.kill_reason is None
         out = capsys.readouterr().out
         assert "DRY RUN" in out
 
@@ -138,49 +139,61 @@ class TestRunClaude:
         mock_proc.returncode = 0
 
         with mock.patch.object(process, "_spawn_claude_process", return_value=mock_proc):
-            with mock.patch.object(process, "_stream_process_output", return_value=time.time()):
-                code = process.run_claude("prompt", "/tmp", dry_run=False)
-        assert code == 0
+            with mock.patch.object(process, "_stream_process_output", return_value=(time.time(), None)):
+                result = process.run_claude("prompt", "/tmp", dry_run=False)
+        assert result.exit_code == 0
+        assert result.kill_reason is None
 
     def test_dry_run_short_prompt_no_ellipsis(self, capsys: pytest.CaptureFixture[str]) -> None:
-        code = process.run_claude("short", "/tmp", dry_run=True)
-        assert code == 0
+        result = process.run_claude("short", "/tmp", dry_run=True)
+        assert result.exit_code == 0
         out = capsys.readouterr().out
         assert "short" in out
         assert "short..." not in out
 
     def test_dry_run_long_prompt_truncated(self, capsys: pytest.CaptureFixture[str]) -> None:
         long_prompt = "x" * 200
-        code = process.run_claude(long_prompt, "/tmp", dry_run=True)
-        assert code == 0
+        result = process.run_claude(long_prompt, "/tmp", dry_run=True)
+        assert result.exit_code == 0
         out = capsys.readouterr().out
         assert "..." in out
 
     def test_dry_run_empty_prompt(self, capsys: pytest.CaptureFixture[str]) -> None:
-        code = process.run_claude("", "/tmp", dry_run=True)
-        assert code == 0
+        result = process.run_claude("", "/tmp", dry_run=True)
+        assert result.exit_code == 0
 
     def test_nonzero_exit(self, capsys: pytest.CaptureFixture[str]) -> None:
         mock_proc = mock.MagicMock()
         mock_proc.returncode = 1
 
         with mock.patch.object(process, "_spawn_claude_process", return_value=mock_proc):
-            with mock.patch.object(process, "_stream_process_output", return_value=time.time()):
+            with mock.patch.object(process, "_stream_process_output", return_value=(time.time(), None)):
                 mock_proc.wait.return_value = None
-                code = process.run_claude("prompt", "/tmp", dry_run=False)
-        assert code == 1
+                result = process.run_claude("prompt", "/tmp", dry_run=False)
+        assert result.exit_code == 1
         out = capsys.readouterr().out
         assert "exited with code 1" in out
 
     def test_whitespace_only_prompt_dry_run(self, capsys: pytest.CaptureFixture[str]) -> None:
-        code = process.run_claude("   \t\n  ", "/tmp", dry_run=True)
-        assert code == 0
+        result = process.run_claude("   \t\n  ", "/tmp", dry_run=True)
+        assert result.exit_code == 0
 
     def test_unicode_prompt_dry_run(self, capsys: pytest.CaptureFixture[str]) -> None:
-        code = process.run_claude("レビューコード 🔍 review", "/tmp", dry_run=True)
-        assert code == 0
+        result = process.run_claude("レビューコード 🔍 review", "/tmp", dry_run=True)
+        assert result.exit_code == 0
         out = capsys.readouterr().out
         assert "レビューコード" in out
+
+    def test_memory_kill_returns_kill_reason(self, capsys: pytest.CaptureFixture[str]) -> None:
+        mock_proc = mock.MagicMock()
+        mock_proc.returncode = -9
+        mock_proc.wait.return_value = None
+
+        with mock.patch.object(process, "_spawn_claude_process", return_value=mock_proc):
+            with mock.patch.object(process, "_stream_process_output",
+                                   return_value=(time.time(), process.KILL_REASON_MEMORY)):
+                result = process.run_claude("prompt", "/tmp")
+        assert result.kill_reason == process.KILL_REASON_MEMORY
 
 
 class TestRunClaudeReturnCodeNone:
@@ -193,11 +206,11 @@ class TestRunClaudeReturnCodeNone:
         mock_proc.wait.return_value = None
 
         with mock.patch.object(process, "_spawn_claude_process", return_value=mock_proc):
-            with mock.patch.object(process, "_stream_process_output", return_value=time.time()):
+            with mock.patch.object(process, "_stream_process_output", return_value=(time.time(), None)):
                 with mock.patch.object(process, "_kill_process_group"):
-                    with mock.patch.object(process, "_log_memory_usage"):
-                        code = process.run_claude("test", "/tmp")
-        assert code == -1
+                    with mock.patch.object(process, "log_memory_usage"):
+                        result = process.run_claude("test", "/tmp")
+        assert result.exit_code == -1
         out = capsys.readouterr().out
         assert "exited with code -1" in out
 
@@ -212,7 +225,7 @@ class TestRunClaudeWaitTimeout:
         mock_proc.returncode = -9
 
         with mock.patch.object(process, "_spawn_claude_process", return_value=mock_proc):
-            with mock.patch.object(process, "_stream_process_output", return_value=time.time()):
+            with mock.patch.object(process, "_stream_process_output", return_value=(time.time(), None)):
                 with mock.patch.object(process, "_kill_process_group") as mock_kill:
                     process.run_claude("test prompt", "/tmp", idle_timeout=1)
                     assert mock_kill.call_count == 1
@@ -228,7 +241,7 @@ class TestExecuteClaudeProcessCleanup:
             with mock.patch.object(process, "_stream_process_output", side_effect=RuntimeError("boom")):
                 with mock.patch.object(process, "_kill_process_group") as kill_mock:
                     with pytest.raises(RuntimeError, match="boom"):
-                        process._execute_claude_process(["claude"], "/tmp", 120, False)
+                        process._execute_claude_process(["claude"], "/tmp", idle_timeout=120, debug=False)
                     kill_mock.assert_called_with(mock_proc)
 
 
@@ -282,7 +295,7 @@ class TestCheckHardTimeout:
     def test_disabled_when_zero(self) -> None:
         mock_proc = mock.MagicMock()
         result = process._check_hard_timeout(
-            pass_start_time=time.time() - 9999, check_timeout=0, process=mock_proc,
+            check_start_time=time.time() - 9999, check_timeout=0, process=mock_proc,
         )
         assert result is False
 
@@ -290,7 +303,7 @@ class TestCheckHardTimeout:
         mock_proc = mock.MagicMock()
         with mock.patch("time.time", return_value=100.0):
             result = process._check_hard_timeout(
-                pass_start_time=90.0, check_timeout=60, process=mock_proc,
+                check_start_time=90.0, check_timeout=60, process=mock_proc,
             )
         assert result is False
 
@@ -299,7 +312,7 @@ class TestCheckHardTimeout:
         with mock.patch("time.time", return_value=200.0):
             with mock.patch.object(process, "_kill_process_group") as mock_kill:
                 result = process._check_hard_timeout(
-                    pass_start_time=100.0, check_timeout=60, process=mock_proc,
+                    check_start_time=100.0, check_timeout=60, process=mock_proc,
                 )
         assert result is True
         mock_kill.assert_called_once_with(mock_proc)
@@ -311,7 +324,7 @@ class TestCheckMemoryLimit:
     def test_disabled_when_zero(self) -> None:
         exceeded, _ = process._check_memory_limit(
             session_id=123, max_memory_mb=0,
-            pass_start_time=time.time(), process=mock.MagicMock(),
+            check_start_time=time.time(), process=mock.MagicMock(),
             last_memory_check=time.time(),
         )
         assert exceeded is False
@@ -320,7 +333,7 @@ class TestCheckMemoryLimit:
         now = time.time()
         exceeded, last = process._check_memory_limit(
             session_id=123, max_memory_mb=4096,
-            pass_start_time=now, process=mock.MagicMock(),
+            check_start_time=now, process=mock.MagicMock(),
             last_memory_check=now,  # just checked
         )
         assert exceeded is False
@@ -329,10 +342,10 @@ class TestCheckMemoryLimit:
     def test_under_limit(self) -> None:
         now = time.time()
         old_check = now - 20  # well past interval
-        with mock.patch.object(process, "_measure_session_rss_mb", return_value=500.0):
+        with mock.patch.object(process, "measure_session_rss_mb", return_value=500.0):
             exceeded, last = process._check_memory_limit(
                 session_id=123, max_memory_mb=4096,
-                pass_start_time=now - 60, process=mock.MagicMock(),
+                check_start_time=now - 60, process=mock.MagicMock(),
                 last_memory_check=old_check,
             )
         assert exceeded is False
@@ -341,28 +354,46 @@ class TestCheckMemoryLimit:
     def test_over_limit_kills_process(self) -> None:
         now = time.time()
         mock_proc = mock.MagicMock()
-        with mock.patch.object(process, "_measure_session_rss_mb", return_value=5000.0):
+        with mock.patch.object(process, "measure_session_rss_mb", return_value=5000.0):
             with mock.patch.object(process, "_kill_process_group") as mock_kill:
                 exceeded, _ = process._check_memory_limit(
                     session_id=123, max_memory_mb=4096,
-                    pass_start_time=now - 60, process=mock_proc,
+                    check_start_time=now - 60, process=mock_proc,
                     last_memory_check=now - 20,
                 )
         assert exceeded is True
         mock_kill.assert_called_once_with(mock_proc)
 
 
-class TestKillSessionStragglers:
-    """Tests for _kill_session_stragglers() post-group-kill cleanup."""
+class TestStreamProcessOutputKillReasons:
+    """Tests for _stream_process_output returning different kill reasons."""
 
-    def test_kills_stragglers_when_found(self) -> None:
-        with mock.patch.object(process, "_find_session_pids", return_value=[111, 222]):
-            with mock.patch.object(process, "_kill_pids") as mock_kill:
-                process._kill_session_stragglers(42)
-                mock_kill.assert_called_once_with([111, 222])
+    def test_hard_timeout_returns_timeout_reason(self) -> None:
+        """When _check_hard_timeout triggers, kill_reason is KILL_REASON_TIMEOUT."""
+        mock_proc = mock.MagicMock()
+        mock_proc.stdout = io.BytesIO(b"")
+        mock_proc.pid = 123
 
-    def test_no_op_when_no_stragglers(self) -> None:
-        with mock.patch.object(process, "_find_session_pids", return_value=[]):
-            with mock.patch.object(process, "_kill_pids") as mock_kill:
-                process._kill_session_stragglers(42)
-                mock_kill.assert_not_called()
+        with mock.patch.object(process, "_check_idle_timeout", return_value=False), \
+             mock.patch.object(process, "_check_hard_timeout", return_value=True), \
+             mock.patch.object(process, "_check_memory_limit", return_value=(False, time.time())):
+            _, kill_reason = process._stream_process_output(
+                mock_proc, idle_timeout=120, debug=False,
+                check_timeout=60, max_memory_mb=0,
+            )
+        assert kill_reason == process.KILL_REASON_TIMEOUT
+
+    def test_memory_limit_returns_memory_reason(self) -> None:
+        """When _check_memory_limit triggers, kill_reason is KILL_REASON_MEMORY."""
+        mock_proc = mock.MagicMock()
+        mock_proc.stdout = io.BytesIO(b"")
+        mock_proc.pid = 123
+
+        with mock.patch.object(process, "_check_idle_timeout", return_value=False), \
+             mock.patch.object(process, "_check_hard_timeout", return_value=False), \
+             mock.patch.object(process, "_check_memory_limit", return_value=(True, time.time())):
+            _, kill_reason = process._stream_process_output(
+                mock_proc, idle_timeout=120, debug=False,
+                check_timeout=60, max_memory_mb=4096,
+            )
+        assert kill_reason == process.KILL_REASON_MEMORY

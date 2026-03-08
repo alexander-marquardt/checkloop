@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+import unittest.mock
 from typing import Any
 
 import pytest
@@ -248,25 +249,25 @@ class TestPrintEventEdgeCases:
 
 
 class TestProcessJsonlBuffer:
-    """Tests for _process_jsonl_buffer() JSONL buffer processing."""
+    """Tests for process_jsonl_buffer() JSONL buffer processing."""
 
     def test_complete_line(self, capsys: pytest.CaptureFixture[str]) -> None:
         event = json.dumps({"type": "system", "message": "hello"})
         buf = bytearray((event + "\n").encode())
-        remainder = streaming._process_jsonl_buffer(buf, time.time(), debug=False)
+        remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=False)
         assert remainder == bytearray()
         assert "hello" in capsys.readouterr().out
 
     def test_partial_line_returned(self) -> None:
         buf = bytearray(b"partial")
-        remainder = streaming._process_jsonl_buffer(buf, time.time(), debug=False)
+        remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=False)
         assert remainder == bytearray(b"partial")
 
     def test_multiple_lines(self, capsys: pytest.CaptureFixture[str]) -> None:
         e1 = json.dumps({"type": "system", "message": "one"})
         e2 = json.dumps({"type": "system", "message": "two"})
         buf = bytearray(f"{e1}\n{e2}\n".encode())
-        remainder = streaming._process_jsonl_buffer(buf, time.time(), debug=False)
+        remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=False)
         assert remainder == bytearray()
         out = capsys.readouterr().out
         assert "one" in out
@@ -274,58 +275,174 @@ class TestProcessJsonlBuffer:
 
     def test_invalid_json_debug(self, capsys: pytest.CaptureFixture[str]) -> None:
         buf = bytearray(b"not json\n")
-        remainder = streaming._process_jsonl_buffer(buf, time.time(), debug=True)
+        remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=True)
         assert remainder == bytearray()
         assert "not json" in capsys.readouterr().out
 
     def test_invalid_json_not_debug(self, capsys: pytest.CaptureFixture[str]) -> None:
         buf = bytearray(b"not json\n")
-        remainder = streaming._process_jsonl_buffer(buf, time.time(), debug=False)
+        remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=False)
         assert remainder == bytearray()
         assert "not json" not in capsys.readouterr().out
 
     def test_empty_line_skipped(self, capsys: pytest.CaptureFixture[str]) -> None:
         buf = bytearray(b"\n\n")
-        remainder = streaming._process_jsonl_buffer(buf, time.time(), debug=False)
+        remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=False)
         assert remainder == bytearray()
         assert capsys.readouterr().out == ""
 
     def test_line_with_remainder(self) -> None:
         event = json.dumps({"type": "system", "message": "x"})
         buf = bytearray(f"{event}\npartial".encode())
-        remainder = streaming._process_jsonl_buffer(buf, time.time(), debug=False)
+        remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=False)
         assert remainder == bytearray(b"partial")
 
     def test_empty_buffer(self) -> None:
         buf = bytearray(b"")
-        remainder = streaming._process_jsonl_buffer(buf, time.time(), debug=False)
+        remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=False)
         assert remainder == bytearray(b"")
 
     def test_whitespace_only_lines(self, capsys: pytest.CaptureFixture[str]) -> None:
         buf = bytearray(b"   \n\t\n")
-        remainder = streaming._process_jsonl_buffer(buf, time.time(), debug=False)
+        remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=False)
         assert remainder == bytearray()
         assert capsys.readouterr().out == ""
 
     def test_unicode_content(self, capsys: pytest.CaptureFixture[str]) -> None:
         event = json.dumps({"type": "system", "message": "こんにちは 🎉"})
         buf = bytearray((event + "\n").encode("utf-8"))
-        remainder = streaming._process_jsonl_buffer(buf, time.time(), debug=False)
+        remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=False)
         assert remainder == bytearray()
         assert "こんにちは" in capsys.readouterr().out
 
 
 class TestProcessJsonlBufferInvalidUtf8:
-    """Edge case: _process_jsonl_buffer with invalid UTF-8 bytes."""
+    """Edge case: process_jsonl_buffer with invalid UTF-8 bytes."""
 
     def test_invalid_utf8_does_not_crash(self, capsys: pytest.CaptureFixture[str]) -> None:
         buf = bytearray(b"\xff\xfe invalid\n")
-        remainder = streaming._process_jsonl_buffer(buf, time.time(), debug=True)
+        remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=True)
         assert remainder == bytearray()
 
     def test_valid_utf8_json(self, capsys: pytest.CaptureFixture[str]) -> None:
         event = json.dumps({"type": "system", "message": "café ñ ü"})
         buf = bytearray((event + "\n").encode("utf-8"))
-        remainder = streaming._process_jsonl_buffer(buf, time.time(), debug=False)
+        remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=False)
         assert remainder == bytearray()
         assert "café" in capsys.readouterr().out
+
+
+class TestProcessJsonlBufferLargeInput:
+    """Tests for process_jsonl_buffer with large or boundary-sized inputs."""
+
+    def test_single_newline_only(self) -> None:
+        """A buffer with only a newline produces no output and clears."""
+        buf = bytearray(b"\n")
+        remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=False)
+        assert remainder == bytearray()
+
+    def test_multiple_consecutive_newlines(self) -> None:
+        """Multiple newlines are treated as empty lines and skipped."""
+        buf = bytearray(b"\n\n\n\n")
+        remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=False)
+        assert remainder == bytearray()
+
+    def test_json_with_escaped_newlines_in_string(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """JSON value containing escaped newlines should parse correctly."""
+        event = json.dumps({"type": "system", "message": "line1\\nline2"})
+        buf = bytearray((event + "\n").encode())
+        remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=False)
+        assert remainder == bytearray()
+        assert "line1" in capsys.readouterr().out
+
+
+class TestSummariseToolUseAdditionalEdgeCases:
+    """Additional edge case tests for _summarise_tool_use."""
+
+    def test_bash_command_one_under_limit(self) -> None:
+        """Command one char under the limit should not be truncated."""
+        cmd = "x" * (streaming._BASH_DISPLAY_LIMIT - 1)
+        result = streaming._summarise_tool_use("Bash", {"command": cmd})
+        assert "..." not in result
+
+    def test_read_file_with_empty_file_path(self) -> None:
+        """Empty file_path string is still returned."""
+        result = streaming._summarise_tool_use("Read", {"file_path": ""})
+        assert result == " "
+
+    def test_grep_with_empty_pattern(self) -> None:
+        """Empty grep pattern produces valid output."""
+        result = streaming._summarise_tool_use("Grep", {"pattern": ""})
+        assert result == " //"
+
+    def test_case_variants_of_file_tools(self) -> None:
+        """read_file, EDIT, Write_File etc. all match via lowercasing."""
+        assert streaming._summarise_tool_use("READ_FILE", {"file_path": "/a"}) == " /a"
+        assert streaming._summarise_tool_use("EDIT", {"file_path": "/b"}) == " /b"
+        assert streaming._summarise_tool_use("WRITE", {"file_path": "/c"}) == " /c"
+
+
+class TestPrintToolUseEventEdgeCases:
+    """Edge cases for _print_tool_use_event() with unusual input types."""
+
+    def test_non_dict_input_field(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """When event['input'] is a string, should not crash."""
+        event: dict[str, Any] = {"type": "tool_use", "tool": "bash", "input": "not a dict"}
+        streaming._print_tool_use_event(event, "[0m00s] ")
+        output = capsys.readouterr().out
+        assert "bash" in output
+
+    def test_list_input_field(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """When event['input'] is a list, should not crash."""
+        event: dict[str, Any] = {"type": "tool_use", "tool": "read", "input": [1, 2, 3]}
+        streaming._print_tool_use_event(event, "[0m00s] ")
+        output = capsys.readouterr().out
+        assert "read" in output
+
+    def test_missing_input_field(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """When event has no 'input' key, should not crash."""
+        event: dict[str, Any] = {"type": "tool_use", "tool": "bash"}
+        streaming._print_tool_use_event(event, "[0m00s] ")
+        output = capsys.readouterr().out
+        assert "bash" in output
+
+
+class TestProcessJsonlBufferMixedContent:
+    """Tests for process_jsonl_buffer with mixed valid/invalid content."""
+
+    def test_mixed_valid_and_invalid(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Mix of valid and invalid lines should process valid ones."""
+        valid_event = json.dumps({"type": "system", "message": "hello"})
+        buf = bytearray(f"invalid\n{valid_event}\n".encode())
+        result = streaming.process_jsonl_buffer(buf, 0.0, False)
+        assert result == bytearray(b"")
+        output = capsys.readouterr().out
+        assert "hello" in output
+
+
+class TestProcessJsonlBufferEventErrors:
+    """Tests for process_jsonl_buffer when _print_event raises TypeError/KeyError/AttributeError."""
+
+    def test_type_error_in_print_event_logged(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """When _print_event raises TypeError, the line is logged and processing continues."""
+        valid_event = json.dumps({"type": "system", "message": "hello"})
+        buf = bytearray((valid_event + "\n").encode())
+        with unittest.mock.patch.object(streaming, "_print_event", side_effect=TypeError("bad type")):
+            remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=False)
+        assert remainder == bytearray()
+
+    def test_key_error_in_print_event_logged(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """When _print_event raises KeyError, the line is logged and processing continues."""
+        valid_event = json.dumps({"type": "tool_use", "tool": "Read"})
+        buf = bytearray((valid_event + "\n").encode())
+        with unittest.mock.patch.object(streaming, "_print_event", side_effect=KeyError("missing key")):
+            remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=False)
+        assert remainder == bytearray()
+
+    def test_attribute_error_in_print_event_logged(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """When _print_event raises AttributeError, the line is logged and processing continues."""
+        valid_event = json.dumps({"type": "result", "result": "done"})
+        buf = bytearray((valid_event + "\n").encode())
+        with unittest.mock.patch.object(streaming, "_print_event", side_effect=AttributeError("no attr")):
+            remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=False)
+        assert remainder == bytearray()

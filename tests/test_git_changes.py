@@ -6,187 +6,184 @@ from pathlib import Path
 from unittest import mock
 
 from checkloop import git
+from helpers import make_git_result
 
 
 class TestComputeChangeStats:
-    """Tests for _compute_change_stats() convergence metric."""
+    """Tests for compute_change_stats() convergence metric."""
 
     def test_calculates_lines_and_percentage(self) -> None:
         resolved = str(Path("/tmp").resolve())
         git._total_lines_cache.pop(resolved, None)
         with mock.patch("subprocess.run") as mock_run:
             mock_run.side_effect = [
-                mock.MagicMock(returncode=0, stdout=" 2 files changed, 10 insertions(+), 5 deletions(-)"),
-                mock.MagicMock(returncode=0, stdout=b"file1.py\0file2.py\0"),
+                make_git_result(stdout=" 2 files changed, 10 insertions(+), 5 deletions(-)"),
+                make_git_result(stdout=b"file1.py\0file2.py\0"),
             ]
             file_content = b"line\n" * 1000
             mock_open = mock.mock_open(read_data=file_content)
             with mock.patch("builtins.open", mock_open):
-                lines, pct = git._compute_change_stats("/tmp", "abc123")
+                lines, pct = git.compute_change_stats("/tmp", "abc123")
                 assert lines == 15
                 assert 0 < pct < 100
         git._total_lines_cache.pop(resolved, None)
 
     def test_zero_when_no_changes(self) -> None:
-        with mock.patch("subprocess.run") as mock_run:
-            mock_run.return_value = mock.MagicMock(returncode=0, stdout="")
-            lines, pct = git._compute_change_stats("/tmp", "abc123")
+        with mock.patch("subprocess.run", return_value=make_git_result()):
+            lines, pct = git.compute_change_stats("/tmp", "abc123")
             assert lines == 0
             assert pct == 0.0
 
     def test_failed_git_diff_returns_zero(self) -> None:
         with mock.patch.object(git, "_git_run") as mock_git:
             mock_git.return_value = mock.Mock(returncode=1, stderr="error")
-            lines, pct = git._compute_change_stats("/tmp", "abc123")
+            lines, pct = git.compute_change_stats("/tmp", "abc123")
             assert lines == 0
             assert pct == 0.0
 
 
 class TestComputeChangeStatsEdgeCases:
-    """Edge case tests for _compute_change_stats()."""
+    """Edge case tests for compute_change_stats()."""
 
     def test_zero_lines_changed(self) -> None:
         with mock.patch.object(git, "_count_lines_changed", return_value=0):
-            lines, pct = git._compute_change_stats("/tmp", "abc123")
+            lines, pct = git.compute_change_stats("/tmp", "abc123")
         assert lines == 0
         assert pct == 0.0
 
     def test_all_lines_changed(self) -> None:
         with mock.patch.object(git, "_count_lines_changed", return_value=1000):
             with mock.patch.object(git, "_cached_total_tracked_lines", return_value=1000):
-                lines, pct = git._compute_change_stats("/tmp", "abc123")
+                lines, pct = git.compute_change_stats("/tmp", "abc123")
         assert lines == 1000
         assert pct == 100.0
 
 
 class TestDetectDefaultBranch:
-    """Tests for _detect_default_branch()."""
+    """Tests for detect_default_branch()."""
 
     def test_detect_default_branch_main(self) -> None:
-        with mock.patch.object(git, "_git_run") as mock_git:
-            mock_git.return_value = mock.MagicMock(returncode=0)
-            assert git._detect_default_branch("/tmp") == "main"
+        with mock.patch.object(git, "_git_run", return_value=make_git_result()):
+            assert git.detect_default_branch("/tmp") == "main"
 
     def test_detect_default_branch_master(self) -> None:
         with mock.patch.object(git, "_git_run") as mock_git:
             mock_git.side_effect = [
-                mock.MagicMock(returncode=1),
-                mock.MagicMock(returncode=0),
+                make_git_result(returncode=1),
+                make_git_result(),
             ]
-            assert git._detect_default_branch("/tmp") == "master"
+            assert git.detect_default_branch("/tmp") == "master"
 
     def test_detect_default_branch_fallback(self) -> None:
-        with mock.patch.object(git, "_git_run") as mock_git:
-            mock_git.return_value = mock.MagicMock(returncode=1)
-            assert git._detect_default_branch("/tmp") == "main"
+        with mock.patch.object(git, "_git_run", return_value=make_git_result(returncode=1)):
+            assert git.detect_default_branch("/tmp") == "main"
 
     def test_oserror_on_both_branches_returns_main(self) -> None:
         with mock.patch.object(git, "_git_run", side_effect=OSError("no git")):
-            assert git._detect_default_branch("/tmp") == "main"
+            assert git.detect_default_branch("/tmp") == "main"
 
     def test_oserror_on_main_then_master_found(self) -> None:
         with mock.patch.object(git, "_git_run") as mock_git:
             mock_git.side_effect = [
                 OSError("no main"),
-                mock.MagicMock(returncode=0),
+                make_git_result(),
             ]
-            assert git._detect_default_branch("/tmp") == "master"
+            assert git.detect_default_branch("/tmp") == "master"
 
 
 class TestGetChangedFiles:
-    """Tests for _get_changed_files()."""
+    """Tests for get_changed_files()."""
 
     def test_get_changed_files(self) -> None:
         with mock.patch.object(git, "_git_run") as mock_git:
             mock_git.side_effect = [
-                mock.MagicMock(returncode=0, stdout="abc123"),
-                mock.MagicMock(returncode=0, stdout="src/a.py\nsrc/b.py\n"),
+                make_git_result(stdout="abc123"),
+                make_git_result(stdout="src/a.py\nsrc/b.py\n"),
             ]
-            files = git._get_changed_files("/tmp", "main")
+            files = git.get_changed_files("/tmp", "main")
             assert files == ["src/a.py", "src/b.py"]
 
     def test_get_changed_files_merge_base_fails(self) -> None:
-        with mock.patch.object(git, "_git_run") as mock_git:
-            mock_git.return_value = mock.MagicMock(returncode=1)
-            assert git._get_changed_files("/tmp", "main") == []
+        with mock.patch.object(git, "_git_run", return_value=make_git_result(returncode=1)):
+            assert git.get_changed_files("/tmp", "main") == []
 
     def test_empty_diff_output(self) -> None:
-        merge_base_result = mock.MagicMock(returncode=0, stdout="abc123\n")
-        diff_result = mock.MagicMock(returncode=0, stdout="")
-        with mock.patch.object(git, "_git_run", side_effect=[merge_base_result, diff_result]):
-            result = git._get_changed_files("/tmp", "main")
+        with mock.patch.object(git, "_git_run", side_effect=[
+            make_git_result(stdout="abc123\n"),
+            make_git_result(),
+        ]):
+            result = git.get_changed_files("/tmp", "main")
         assert result == []
 
     def test_merge_base_failure(self) -> None:
-        merge_base_result = mock.MagicMock(returncode=128, stdout="", stderr="")
-        with mock.patch.object(git, "_git_run", return_value=merge_base_result):
-            result = git._get_changed_files("/tmp", "nonexistent")
+        with mock.patch.object(git, "_git_run", return_value=make_git_result(returncode=128)):
+            result = git.get_changed_files("/tmp", "nonexistent")
         assert result == []
 
     def test_merge_base_oserror(self) -> None:
         with mock.patch.object(git, "_git_run", side_effect=OSError("no git")):
-            assert git._get_changed_files("/tmp", "main") == []
+            assert git.get_changed_files("/tmp", "main") == []
 
     def test_diff_oserror(self) -> None:
         with mock.patch.object(git, "_git_run") as mock_git:
             mock_git.side_effect = [
-                mock.MagicMock(returncode=0, stdout="abc123"),
+                make_git_result(stdout="abc123"),
                 OSError("diff failed"),
             ]
-            assert git._get_changed_files("/tmp", "main") == []
+            assert git.get_changed_files("/tmp", "main") == []
 
     def test_diff_nonzero_returncode(self) -> None:
         with mock.patch.object(git, "_git_run") as mock_git:
             mock_git.side_effect = [
-                mock.MagicMock(returncode=0, stdout="abc123"),
-                mock.MagicMock(returncode=128, stdout=""),
+                make_git_result(stdout="abc123"),
+                make_git_result(returncode=128),
             ]
-            assert git._get_changed_files("/tmp", "main") == []
+            assert git.get_changed_files("/tmp", "main") == []
 
     def test_diff_output_with_blank_lines_filtered(self) -> None:
         """Blank lines in diff output are filtered out."""
         with mock.patch.object(git, "_git_run") as mock_git:
             mock_git.side_effect = [
-                mock.MagicMock(returncode=0, stdout="abc123"),
-                mock.MagicMock(returncode=0, stdout="\n\nsrc/a.py\n\n\n"),
+                make_git_result(stdout="abc123"),
+                make_git_result(stdout="\n\nsrc/a.py\n\n\n"),
             ]
-            files = git._get_changed_files("/tmp", "main")
+            files = git.get_changed_files("/tmp", "main")
         assert files == ["src/a.py"]
 
     def test_whitespace_only_merge_base(self) -> None:
         """Whitespace-only merge-base stdout still produces a ref for diff."""
         with mock.patch.object(git, "_git_run") as mock_git:
             mock_git.side_effect = [
-                mock.MagicMock(returncode=0, stdout="   \n"),
-                mock.MagicMock(returncode=0, stdout="a.py\n"),
+                make_git_result(stdout="   \n"),
+                make_git_result(stdout="a.py\n"),
             ]
-            files = git._get_changed_files("/tmp", "main")
+            files = git.get_changed_files("/tmp", "main")
         assert files == ["a.py"]
 
 
 class TestBuildChangedFilesPrefix:
-    """Tests for _build_changed_files_prefix()."""
+    """Tests for build_changed_files_prefix()."""
 
     def test_build_changed_files_prefix(self) -> None:
-        prefix = git._build_changed_files_prefix(["src/a.py", "src/b.py"])
+        prefix = git.build_changed_files_prefix(["src/a.py", "src/b.py"])
         assert "2 file(s)" in prefix
         assert "src/a.py" in prefix
         assert "src/b.py" in prefix
         assert "IMPORTANT" in prefix
 
     def test_single_file(self) -> None:
-        result = git._build_changed_files_prefix(["src/main.py"])
+        result = git.build_changed_files_prefix(["src/main.py"])
         assert "1 file(s)" in result
         assert "src/main.py" in result
 
     def test_file_with_spaces(self) -> None:
-        result = git._build_changed_files_prefix(["src/my file.py"])
+        result = git.build_changed_files_prefix(["src/my file.py"])
         assert "my file.py" in result
 
     def test_file_with_unicode(self) -> None:
-        result = git._build_changed_files_prefix(["src/日本語.py"])
+        result = git.build_changed_files_prefix(["src/日本語.py"])
         assert "日本語.py" in result
 
-    def test_empty_list_produces_zero_files(self) -> None:
-        result = git._build_changed_files_prefix([])
-        assert "0 file(s)" in result
+    def test_empty_list_returns_empty_string(self) -> None:
+        result = git.build_changed_files_prefix([])
+        assert result == ""

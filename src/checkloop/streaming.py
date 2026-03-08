@@ -1,4 +1,10 @@
-"""JSONL stream parsing and event display for Claude Code subprocess output."""
+"""JSONL stream parsing and event display for Claude Code subprocess output.
+
+Parses the ``--output-format stream-json`` output from Claude Code line by
+line and dispatches each event to a type-specific printer.  Supported event
+types are ``assistant`` (text responses), ``tool_use`` (tool invocations),
+``system`` (status messages), and ``result`` (final summary).
+"""
 
 from __future__ import annotations
 
@@ -8,7 +14,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from checkloop.terminal import BLUE, DIM, GREEN, RESET, _format_duration
+from checkloop.terminal import BLUE, DIM, GREEN, RESET, format_duration
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +46,12 @@ def _summarise_tool_use(tool_name: str, tool_input: dict[str, Any]) -> str:
 
 def _print_assistant_event(event: dict[str, Any], elapsed_prefix: str) -> None:
     """Print text blocks from an assistant response event."""
-    content = event.get("message", {}).get("content") or []
+    message = event.get("message")
+    if not isinstance(message, dict):
+        logger.debug("Unexpected message type in assistant event: %s (expected dict)",
+                     type(message).__name__)
+        return
+    content = message.get("content") or []
     if not isinstance(content, list):
         logger.debug("Unexpected content type in assistant event: %s", type(content).__name__)
         return
@@ -57,7 +68,10 @@ def _print_assistant_event(event: dict[str, Any], elapsed_prefix: str) -> None:
 def _print_tool_use_event(event: dict[str, Any], elapsed_prefix: str) -> None:
     """Print a tool invocation with its name and a short summary of inputs."""
     tool_name = event.get("tool", event.get("name", "unknown"))
-    detail = _summarise_tool_use(tool_name, event.get("input") or {})
+    raw_input = event.get("input")
+    tool_input = raw_input if isinstance(raw_input, dict) else {}
+    detail = _summarise_tool_use(tool_name, tool_input)
+    logger.debug("Tool invocation: %s%s", tool_name, detail)
     print(f"{elapsed_prefix}{BLUE}[{tool_name}]{RESET}{detail}")
 
 
@@ -72,6 +86,9 @@ def _print_result_event(event: dict[str, Any], elapsed_prefix: str) -> None:
     """Print the final result summary from a completed check."""
     result_text = event.get("result", "")
     if result_text:
+        if isinstance(result_text, str):
+            logger.info("Check result received (length=%d chars)", len(result_text))
+            logger.debug("Check result text: %.500s", result_text)
         print(f"\n{elapsed_prefix}{GREEN}--- Result ---{RESET}")
         print(result_text)
 
@@ -88,19 +105,21 @@ _EVENT_TYPE_HANDLERS: dict[str, _EventHandler] = {
 }
 
 
-def _print_event(event: dict[str, Any], pass_start_time: float) -> None:
+def _print_event(event: dict[str, Any], check_start_time: float) -> None:
     """Parse a stream-json event and dispatch to the appropriate printer."""
     event_type = event.get("type", "")
     printer = _EVENT_TYPE_HANDLERS.get(event_type)
     if printer is None:
+        if event_type:
+            logger.debug("Unhandled stream event type: %s", event_type)
         return
-    elapsed_prefix = f"{DIM}[{_format_duration(time.time() - pass_start_time)}]{RESET} "
+    elapsed_prefix = f"{DIM}[{format_duration(time.time() - check_start_time)}]{RESET} "
     printer(event, elapsed_prefix)
 
 
-def _process_jsonl_buffer(
+def process_jsonl_buffer(
     output_buffer: bytearray,
-    pass_start_time: float,
+    check_start_time: float,
     debug: bool,
 ) -> bytearray:
     """Process complete JSONL lines from the buffer, return the remainder.
@@ -122,10 +141,11 @@ def _process_jsonl_buffer(
         if not line_str:
             continue
         try:
-            _print_event(json.loads(line_str), pass_start_time)
+            _print_event(json.loads(line_str), check_start_time)
         except json.JSONDecodeError:
+            logger.debug("Skipping non-JSON line from subprocess: %.120s", line_str)
             if debug:
                 print(f"{DIM}{line_str}{RESET}")
-        except (TypeError, KeyError, AttributeError) as exc:
-            logger.debug("Failed to process JSONL event: %s (line: %.120s)", exc, line_str)
+        except Exception as exc:
+            logger.warning("Failed to process JSONL event: %s (line: %.120s)", exc, line_str)
     return output_buffer

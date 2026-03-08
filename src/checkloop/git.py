@@ -1,4 +1,9 @@
-"""Git helpers for convergence detection and change tracking."""
+"""Git helpers for convergence detection and change tracking.
+
+Wraps git CLI commands to support change measurement (line diffs, tracked-file
+line counting), commit operations, branch detection,
+and changed-file listing for the ``--changed-only`` feature.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +14,7 @@ import time
 from pathlib import Path
 from typing import Literal, overload
 
-from checkloop.terminal import _print_status
+from checkloop.terminal import print_status
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +48,7 @@ def _git_run(
     text: bool = True,
 ) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
     """Run a git command in *workdir* with captured output."""
+    logger.debug("git %s (cwd=%s)", " ".join(args), workdir)
     try:
         return subprocess.run(
             ["git", *args],
@@ -59,7 +65,7 @@ def _git_run(
         raise
 
 
-def _is_git_repo(workdir: str) -> bool:
+def is_git_repo(workdir: str) -> bool:
     """Return True if workdir is inside a git repository."""
     try:
         is_repo = _git_run(workdir, "rev-parse", "--is-inside-work-tree").returncode == 0
@@ -71,7 +77,7 @@ def _is_git_repo(workdir: str) -> bool:
     return is_repo
 
 
-def _git_head_sha(workdir: str) -> str | None:
+def git_head_sha(workdir: str) -> str | None:
     """Return the current HEAD commit SHA, or None if unavailable."""
     try:
         result = _git_run(workdir, "rev-parse", "HEAD")
@@ -82,47 +88,25 @@ def _git_head_sha(workdir: str) -> str | None:
     return sha or None  # treat empty stdout as unavailable
 
 
-# --- Commit and squash --------------------------------------------------------
+# --- Commit -------------------------------------------------------------------
 
-def _git_commit_all(workdir: str, message: str) -> bool:
+def git_commit_all(workdir: str, message: str) -> bool:
     """Stage and commit any uncommitted changes.
 
     Returns True if a commit was created (i.e. there were changes to commit).
     """
+    start_time = time.time()
     try:
         _git_run(workdir, "add", "-A", check=True)
         if _git_run(workdir, "diff", "--cached", "--quiet").returncode == 0:
             logger.debug("No staged changes — nothing to commit")
             return False
         _git_run(workdir, "commit", "-m", message, check=True)
-        new_sha = _git_head_sha(workdir)
-        logger.info("Committed: %s (sha=%s)", message, new_sha)
+        new_sha = git_head_sha(workdir)
+        logger.info("Committed in %.2fs: %s (sha=%s)", time.time() - start_time, message, new_sha)
         return True
     except (subprocess.CalledProcessError, OSError) as exc:
-        logger.warning("Git commit failed: %s", exc, exc_info=True)
-        return False
-
-
-def _git_squash_since(workdir: str, base_sha: str, message: str) -> bool:
-    """Squash all commits since *base_sha* into a single commit.
-
-    Commits any uncommitted changes first, then soft-resets to *base_sha*
-    and creates one new commit with the given message.
-
-    Returns True if a squashed commit was created.
-    """
-    try:
-        _git_commit_all(workdir, "wip")
-        current_sha = _git_head_sha(workdir)
-        if current_sha is None or current_sha == base_sha:
-            return False
-        _git_run(workdir, "reset", "--soft", base_sha, check=True)
-        _git_run(workdir, "commit", "-m", message, check=True)
-        new_sha = _git_head_sha(workdir)
-        logger.info("Squashed to %s: %s", new_sha, message)
-        return True
-    except (subprocess.CalledProcessError, OSError) as exc:
-        logger.warning("Git squash failed: %s", exc, exc_info=True)
+        logger.warning("Git commit failed after %.2fs: %s", time.time() - start_time, exc, exc_info=True)
         return False
 
 
@@ -161,7 +145,8 @@ def _count_lines_changed(workdir: str, base_sha: str, target: str = "HEAD") -> i
         logger.warning("git diff --shortstat failed in %s: %s", workdir, exc)
         return 0
     if result.returncode != 0:
-        logger.warning("git diff --shortstat failed (rc=%d): %s", result.returncode, result.stderr.strip())
+        logger.warning("git diff --shortstat failed (rc=%d): %s", result.returncode,
+                       (result.stderr or "").strip())
         return 0
     return _parse_shortstat(result.stdout)
 
@@ -198,7 +183,8 @@ def _count_tracked_lines(workdir: str) -> int:
         logger.warning("git ls-files failed in %s: %s", workdir, exc)
         return 1  # avoid division by zero
     if ls_result.returncode != 0:
-        logger.warning("git ls-files failed (rc=%d) — cannot count tracked lines", ls_result.returncode)
+        logger.warning("git ls-files failed (rc=%d): %s", ls_result.returncode,
+                       (ls_result.stderr or b"").decode("utf-8", errors="replace").strip())
         return 1  # avoid division by zero
     # -z flag outputs null-separated paths; split once, iterate as generator
     # to avoid materialising a full decoded-path list for large repos.
@@ -231,7 +217,11 @@ _total_lines_cache: dict[str, int] = {}
 
 def _cached_total_tracked_lines(workdir: str) -> int:
     """Return cached total line count for all tracked files in *workdir*."""
-    cache_key = str(Path(workdir).resolve())
+    try:
+        cache_key = str(Path(workdir).resolve())
+    except OSError as exc:
+        logger.warning("Cannot resolve workdir '%s' for line counting: %s", workdir, exc)
+        return 1  # avoid division by zero
     if cache_key not in _total_lines_cache:
         _total_lines_cache[cache_key] = _count_tracked_lines(workdir)
     return _total_lines_cache[cache_key]
@@ -239,7 +229,7 @@ def _cached_total_tracked_lines(workdir: str) -> int:
 
 # --- Branch and changed-file helpers -----------------------------------------
 
-def _detect_default_branch(workdir: str) -> str:
+def detect_default_branch(workdir: str) -> str:
     """Return the name of the default branch (main or master), falling back to 'main'."""
     for branch in ("main", "master"):
         try:
@@ -248,16 +238,19 @@ def _detect_default_branch(workdir: str) -> str:
             logger.warning("Could not verify branch '%s': %s", branch, exc)
             continue
         if result.returncode == 0:
+            logger.info("Detected default branch: %s", branch)
             return branch
+    logger.info("No main/master branch found — falling back to 'main'")
     return "main"
 
 
-def _get_changed_files(workdir: str, base_ref: str) -> list[str]:
+def get_changed_files(workdir: str, base_ref: str) -> list[str]:
     """Return list of files changed between *base_ref* and HEAD.
 
     Uses ``git merge-base`` to find the common ancestor, then ``git diff --name-only``
     to list changed files. Returns an empty list if the diff fails.
     """
+    start_time = time.time()
     try:
         merge_base = _git_run(workdir, "merge-base", base_ref, "HEAD")
     except OSError as exc:
@@ -275,11 +268,19 @@ def _get_changed_files(workdir: str, base_ref: str) -> list[str]:
     if result.returncode != 0:
         logger.warning("git diff --name-only failed (rc=%d)", result.returncode)
         return []
-    return [f for f in result.stdout.strip().split("\n") if f]
+    files = [f for f in result.stdout.strip().split("\n") if f]
+    logger.info("Found %d changed file(s) vs %s in %.2fs", len(files), base_ref, time.time() - start_time)
+    return files
 
 
-def _build_changed_files_prefix(changed_files: list[str]) -> str:
-    """Build a prompt prefix that restricts review to the given files."""
+def build_changed_files_prefix(changed_files: list[str]) -> str:
+    """Build a prompt prefix that restricts review to the given files.
+
+    Returns an empty string if *changed_files* is empty, since there are
+    no files to restrict the review to.
+    """
+    if not changed_files:
+        return ""
     file_list = "\n".join(f"  - {f}" for f in changed_files)
     return (
         f"IMPORTANT: Only review the following {len(changed_files)} file(s) that have changed. "
@@ -288,7 +289,7 @@ def _build_changed_files_prefix(changed_files: list[str]) -> str:
     )
 
 
-def _compute_change_stats(workdir: str, base_sha: str) -> tuple[int, float]:
+def compute_change_stats(workdir: str, base_sha: str) -> tuple[int, float]:
     """Return (lines_changed, change_percentage) since *base_sha*."""
     lines_changed = _count_lines_changed(workdir, base_sha)
     if lines_changed == 0:

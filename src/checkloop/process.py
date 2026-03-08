@@ -1,4 +1,10 @@
-"""Claude Code subprocess management: spawning, streaming, and cleanup."""
+"""Claude Code subprocess management: spawning, streaming, and cleanup.
+
+Each check runs Claude Code as a subprocess in its own process group (via
+``os.setsid``).  Output is streamed as JSONL and parsed in real time.  The
+module enforces idle timeouts, hard wall-clock timeouts, and child-tree RSS
+memory limits, killing the entire process group when any limit is exceeded.
+"""
 
 from __future__ import annotations
 
@@ -9,32 +15,74 @@ import signal
 import subprocess
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import IO
 
+
+# --- Kill reasons -------------------------------------------------------------
+
+KILL_REASON_MEMORY = "memory"
+"""Kill reason when the child process tree exceeds the RSS memory limit."""
+
+KILL_REASON_TIMEOUT = "check_timeout"
+"""Kill reason when the hard wall-clock timeout per check is exceeded."""
+
+KILL_REASON_IDLE = "idle_timeout"
+"""Kill reason when the subprocess produces no output for too long."""
+
+
+@dataclass
+class CheckResult:
+    """Result of a single Claude Code check invocation.
+
+    Attributes:
+        exit_code: The subprocess exit code (0 for success, non-zero for failure,
+            -1 if the process never set a return code).
+        kill_reason: One of the ``KILL_REASON_*`` constants if the process was
+            killed, or ``None`` for a normal exit.
+    """
+
+    exit_code: int
+    kill_reason: str | None = None
+
+# --- Deferred imports (after CheckResult definition) -------------------------
+# These imports must appear after CheckResult is defined to break a circular
+# dependency chain: monitoring imports from terminal, and process imports from
+# monitoring — but CheckResult must exist first because external callers
+# import it alongside symbols from monitoring.
 from checkloop.monitoring import (
-    _find_session_pids,
-    _kill_pids,
-    _log_memory_usage,
-    _measure_session_rss_mb,
-    _previous_session_ids,
+    kill_session_stragglers,
+    log_memory_usage,
+    measure_session_rss_mb,
+    previous_session_ids,
 )
 from checkloop.terminal import (
     DIM,
     GREEN,
     RED,
     YELLOW,
-    _fatal,
-    _format_duration,
-    _print_status,
+    fatal,
+    format_duration,
+    print_status,
 )
-from checkloop.streaming import _process_jsonl_buffer
+from checkloop.streaming import process_jsonl_buffer
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_IDLE_TIMEOUT = 300  # seconds before killing a silent subprocess
-DEFAULT_PAUSE_SECONDS = 2  # seconds between consecutive checks
-DEFAULT_MAX_MEMORY_MB = 4096  # max RSS (MB) for child process tree before killing
-DEFAULT_CHECK_TIMEOUT = 0  # hard wall-clock timeout per check (0 = disabled)
+DEFAULT_IDLE_TIMEOUT = 300
+"""Seconds of silence before killing a subprocess (default for *idle_timeout*)."""
+
+DEFAULT_PAUSE_SECONDS = 2
+"""Seconds to pause between consecutive checks (default for *pause*)."""
+
+DEFAULT_MAX_MEMORY_MB = 8192
+"""Max child-tree RSS in MB before killing (default for *max_memory_mb*)."""
+
+DEFAULT_CHECK_TIMEOUT = 0
+"""Hard wall-clock timeout per check in seconds (default for *check_timeout*).
+
+A value of 0 disables the hard timeout entirely.
+"""
 
 _READ_CHUNK_SIZE = 8192  # bytes per stdout read during streaming
 _DRAIN_CHUNK_SIZE = 65536  # bytes per read when draining after process exit
@@ -84,12 +132,12 @@ def _spawn_claude_process(
             start_new_session=True,  # creates a new process group
         )
     except FileNotFoundError:
-        _fatal(
+        fatal(
             "Error: `claude` not found. Is Claude Code installed?\n"
             "  Install: npm install -g @anthropic-ai/claude-code"
         )
     except OSError as exc:
-        _fatal(f"Failed to launch claude subprocess: {exc}")
+        fatal(f"Failed to launch claude subprocess: {exc}")
 
 
 def _read_stdout_chunk(stdout: IO[bytes]) -> bytes:
@@ -106,10 +154,18 @@ def _read_stdout_chunk(stdout: IO[bytes]) -> bytes:
         return b""
 
 
+def _check_buffer_overflow(output_buffer: bytearray) -> bytearray:
+    """Clear the buffer if it exceeds the safety cap, logging a warning."""
+    if len(output_buffer) > _MAX_BUFFER_SIZE:
+        logger.warning("Output buffer exceeded %d bytes — truncating", _MAX_BUFFER_SIZE)
+        output_buffer.clear()
+    return output_buffer
+
+
 def _drain_remaining_stdout(
     stdout: IO[bytes],
     output_buffer: bytearray,
-    pass_start_time: float,
+    check_start_time: float,
     debug: bool,
 ) -> bytearray:
     """Read all remaining data from stdout after the process has exited."""
@@ -119,10 +175,8 @@ def _drain_remaining_stdout(
             if not remaining:
                 break
             output_buffer.extend(remaining)
-            output_buffer = _process_jsonl_buffer(output_buffer, pass_start_time, debug)
-            if len(output_buffer) > _MAX_BUFFER_SIZE:
-                logger.warning("Drain buffer exceeded %d bytes — truncating", _MAX_BUFFER_SIZE)
-                output_buffer.clear()
+            output_buffer = process_jsonl_buffer(output_buffer, check_start_time, debug)
+            output_buffer = _check_buffer_overflow(output_buffer)
     except OSError as exc:
         logger.debug("Failed to drain remaining stdout: %s", exc)
     return output_buffer
@@ -131,7 +185,7 @@ def _drain_remaining_stdout(
 def _check_idle_timeout(
     last_output_time: float,
     idle_timeout: int,
-    pass_start_time: float,
+    check_start_time: float,
     process: subprocess.Popen[bytes],
 ) -> bool:
     """Return True and kill the process if it has been idle too long."""
@@ -139,28 +193,28 @@ def _check_idle_timeout(
     if now - last_output_time > idle_timeout:
         logger.warning("Idle timeout: pid=%d, idle=%.0fs, elapsed=%s",
                        process.pid, now - last_output_time,
-                       _format_duration(now - pass_start_time))
-        _print_status(f"\nIdle for {idle_timeout}s — killing "
-                     f"(ran {_format_duration(now - pass_start_time)}).", RED)
+                       format_duration(now - check_start_time))
+        print_status(f"\nIdle for {idle_timeout}s — killing "
+                     f"(ran {format_duration(now - check_start_time)}).", RED)
         _kill_process_group(process)
         return True
     return False
 
 
 def _check_hard_timeout(
-    pass_start_time: float,
+    check_start_time: float,
     check_timeout: int,
     process: subprocess.Popen[bytes],
 ) -> bool:
     """Return True and kill the process if the hard wall-clock timeout is exceeded."""
     if check_timeout <= 0:
         return False
-    elapsed = time.time() - pass_start_time
+    elapsed = time.time() - check_start_time
     if elapsed > check_timeout:
         logger.warning("Hard timeout: pid=%d, elapsed=%s, limit=%ds",
-                       process.pid, _format_duration(elapsed), check_timeout)
-        _print_status(f"\nHard timeout ({_format_duration(elapsed)} > "
-                     f"{_format_duration(check_timeout)}) — killing.", RED)
+                       process.pid, format_duration(elapsed), check_timeout)
+        print_status(f"\nHard timeout ({format_duration(elapsed)} > "
+                     f"{format_duration(check_timeout)}) — killing.", RED)
         _kill_process_group(process)
         return True
     return False
@@ -169,7 +223,7 @@ def _check_hard_timeout(
 def _check_memory_limit(
     session_id: int,
     max_memory_mb: int,
-    pass_start_time: float,
+    check_start_time: float,
     process: subprocess.Popen[bytes],
     last_memory_check: float,
 ) -> tuple[bool, float]:
@@ -183,13 +237,13 @@ def _check_memory_limit(
     now = time.time()
     if now - last_memory_check < _MEMORY_CHECK_INTERVAL:
         return False, last_memory_check
-    rss_mb = _measure_session_rss_mb(session_id)
+    rss_mb = measure_session_rss_mb(session_id)
     logger.debug("Session %d RSS: %.0f MB (limit: %d MB)", session_id, rss_mb, max_memory_mb)
     if rss_mb > max_memory_mb:
-        elapsed = _format_duration(now - pass_start_time)
+        elapsed = format_duration(now - check_start_time)
         logger.warning("Memory limit exceeded: pid=%d, rss=%.0fMB, limit=%dMB, elapsed=%s",
                        process.pid, rss_mb, max_memory_mb, elapsed)
-        _print_status(f"\nChild tree using {rss_mb:.0f}MB (limit: {max_memory_mb}MB) "
+        print_status(f"\nChild tree using {rss_mb:.0f}MB (limit: {max_memory_mb}MB) "
                      f"after {elapsed} — killing.", RED)
         _kill_process_group(process)
         return True, now
@@ -199,13 +253,13 @@ def _check_memory_limit(
 def _flush_and_close_stdout(
     stdout: IO[bytes],
     output_buffer: bytearray,
-    pass_start_time: float,
+    check_start_time: float,
     debug: bool,
 ) -> None:
     """Flush any remaining partial line and close the stdout pipe."""
     # Append a newline to force any trailing incomplete JSONL line through the parser
     output_buffer.extend(b"\n")
-    _process_jsonl_buffer(output_buffer, pass_start_time, debug)
+    process_jsonl_buffer(output_buffer, check_start_time, debug)
     try:
         stdout.close()
     except OSError as exc:
@@ -219,36 +273,41 @@ def _stream_process_output(
     *,
     check_timeout: int = 0,
     max_memory_mb: int = 0,
-) -> float:
+) -> tuple[float, str | None]:
     """Stream and display JSONL output from the Claude process.
 
     Kills the process if it produces no output for *idle_timeout* seconds,
     if the hard *check_timeout* is exceeded, or if the child process tree
     exceeds *max_memory_mb* of RSS.
 
-    Returns the wall-clock start time used for elapsed-time display.
+    Returns ``(check_start_time, kill_reason)`` where *kill_reason* is one of
+    the ``KILL_REASON_*`` constants, or None for a normal exit.
     """
     if process.stdout is None:
         logger.error("Subprocess stdout is None — cannot stream output (pid=%d)", process.pid)
-        return time.time()
+        return time.time(), None
     stdout = process.stdout
-    pass_start_time = time.time()
-    last_output_time = pass_start_time  # idle timer starts from launch
-    last_memory_check = pass_start_time
+    check_start_time = time.time()
+    last_output_time = check_start_time  # idle timer starts from launch
+    last_memory_check = check_start_time
     output_buffer = bytearray()
+    kill_reason: str | None = None
 
     try:
         while True:
-            if _check_idle_timeout(last_output_time, idle_timeout, pass_start_time, process):
+            if _check_idle_timeout(last_output_time, idle_timeout, check_start_time, process):
+                kill_reason = KILL_REASON_IDLE
                 break
 
-            if _check_hard_timeout(pass_start_time, check_timeout, process):
+            if _check_hard_timeout(check_start_time, check_timeout, process):
+                kill_reason = KILL_REASON_TIMEOUT
                 break
 
             exceeded, last_memory_check = _check_memory_limit(
-                process.pid, max_memory_mb, pass_start_time, process, last_memory_check,
+                process.pid, max_memory_mb, check_start_time, process, last_memory_check,
             )
             if exceeded:
+                kill_reason = KILL_REASON_MEMORY
                 break
 
             try:
@@ -260,28 +319,27 @@ def _stream_process_output(
 
             if not ready:
                 if process.poll() is not None:
+                    logger.debug("Process exited (rc=%s) — draining remaining stdout", process.returncode)
                     output_buffer = _drain_remaining_stdout(
-                        stdout, output_buffer, pass_start_time, debug,
+                        stdout, output_buffer, check_start_time, debug,
                     )
                     break
                 continue
 
             chunk = _read_stdout_chunk(stdout)
             if not chunk:
+                logger.debug("EOF on stdout (pid=%d)", process.pid)
                 break
 
             last_output_time = time.time()
             output_buffer.extend(chunk)
-            output_buffer = _process_jsonl_buffer(output_buffer, pass_start_time, debug)
-
-            if len(output_buffer) > _MAX_BUFFER_SIZE:
-                logger.warning("Output buffer exceeded %d bytes — truncating", _MAX_BUFFER_SIZE)
-                output_buffer.clear()
+            output_buffer = process_jsonl_buffer(output_buffer, check_start_time, debug)
+            output_buffer = _check_buffer_overflow(output_buffer)
 
     finally:
-        _flush_and_close_stdout(stdout, output_buffer, pass_start_time, debug)
+        _flush_and_close_stdout(stdout, output_buffer, check_start_time, debug)
 
-    return pass_start_time
+    return check_start_time, kill_reason
 
 
 # --- Process group cleanup ----------------------------------------------------
@@ -294,21 +352,6 @@ def _signal_process_group(pgid: int, sig: signal.Signals) -> None:
         logger.debug("%s to pgid %d failed: %s", sig.name, pgid, exc)
 
 
-def _kill_session_stragglers(session_id: int) -> None:
-    """Kill any processes still alive in the session that escaped the group kill.
-
-    When ``start_new_session=True`` is used, the subprocess becomes the session
-    leader (SID = its PID).  Children that call ``setsid()`` or ``setpgid()``
-    escape ``os.killpg()`` but remain in the original session.  This function
-    catches those stragglers.
-    """
-    stragglers = _find_session_pids(session_id)
-    if not stragglers:
-        return
-    logger.warning("Found %d straggler(s) in session %d: %s", len(stragglers), session_id, stragglers)
-    _kill_pids(stragglers)
-
-
 def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
     """Terminate the process and its entire process group.
 
@@ -319,12 +362,13 @@ def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
         pgid = os.getpgid(process.pid)
     except OSError:
         # Process already gone — just clean up session stragglers.
-        _kill_session_stragglers(process.pid)
+        kill_session_stragglers(process.pid)
         return
 
     # Escalate: SIGTERM → wait → SIGKILL → wait
     for sig in (signal.SIGTERM, signal.SIGKILL):
         _signal_process_group(pgid, sig)
+        logger.info("Sent %s to process group %d (pid=%d)", sig.name, pgid, process.pid)
         try:
             process.wait(timeout=_PROCESS_WAIT_TIMEOUT)
             break
@@ -335,7 +379,7 @@ def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
     # Kill any processes that escaped the process group but remain in the
     # session created by start_new_session=True.  The session ID equals the
     # claude PID because setsid() makes it the session leader.
-    _kill_session_stragglers(process.pid)
+    kill_session_stragglers(process.pid)
 
 
 # --- Public API: run a single Claude Code check ------------------------------
@@ -346,11 +390,11 @@ def run_claude(
     *,
     skip_permissions: bool = False,
     dry_run: bool = False,
-    idle_timeout: int = DEFAULT_IDLE_TIMEOUT,
     debug: bool = False,
+    idle_timeout: int = DEFAULT_IDLE_TIMEOUT,
     check_timeout: int = DEFAULT_CHECK_TIMEOUT,
     max_memory_mb: int = DEFAULT_MAX_MEMORY_MB,
-) -> int:
+) -> CheckResult:
     """Run a single Claude Code check.
 
     Uses ``--output-format stream-json`` so progress events stream in real time.
@@ -358,51 +402,51 @@ def run_claude(
     *check_timeout* wall-clock seconds, or if its child process tree exceeds
     *max_memory_mb* of RSS.
 
-    Args:
-        prompt: The check prompt to send to Claude Code.
-        workdir: Absolute path to the project directory to check.
-        skip_permissions: Pass ``--dangerously-skip-permissions`` to Claude Code.
-        dry_run: If True, print what would run without invoking Claude.
-        idle_timeout: Kill the subprocess after this many seconds of no output.
-        debug: Show raw subprocess output lines that fail JSON parsing.
-        check_timeout: Hard wall-clock limit per check in seconds (0 = no limit).
-        max_memory_mb: Kill the subprocess tree if total RSS exceeds this (0 = no limit).
-
     Returns:
-        The subprocess exit code (0 on success).
+        A ``CheckResult`` with the exit code and, if the process was killed,
+        the reason (``KILL_REASON_MEMORY``, ``KILL_REASON_TIMEOUT``, or
+        ``KILL_REASON_IDLE``).
     """
     cmd = _build_claude_command(prompt, skip_permissions)
     logger.info("run_claude: workdir=%s, prompt_len=%d, skip_permissions=%s, idle_timeout=%d, "
                 "check_timeout=%d, max_memory_mb=%d",
                 workdir, len(prompt), skip_permissions, idle_timeout, check_timeout, max_memory_mb)
-    _print_status(f"$ {' '.join(cmd[:3])} [prompt omitted for brevity]", DIM)
+    logger.debug("run_claude prompt: %.1000s", prompt)
+    print_status(f"$ {' '.join(cmd[:3])} [prompt omitted for brevity]", DIM)
 
     if dry_run:
-        _print_status(f"[DRY RUN] Would run in {workdir}:", YELLOW)
+        logger.info("Dry-run mode — skipping actual subprocess invocation (workdir=%s)", workdir)
+        print_status(f"[DRY RUN] Would run in {workdir}:", YELLOW)
         truncated = prompt[:120] + ("..." if len(prompt) > 120 else "")
         print(f"  Prompt: {truncated}")
-        return 0
+        return CheckResult(exit_code=0)
 
-    return _execute_claude_process(cmd, workdir, idle_timeout, debug, check_timeout, max_memory_mb)
+    return _execute_claude_process(
+        cmd, workdir,
+        idle_timeout=idle_timeout, debug=debug,
+        check_timeout=check_timeout, max_memory_mb=max_memory_mb,
+    )
 
 
 def _execute_claude_process(
     cmd: list[str],
     workdir: str,
+    *,
     idle_timeout: int,
     debug: bool,
     check_timeout: int = 0,
     max_memory_mb: int = 0,
-) -> int:
+) -> CheckResult:
     """Spawn the Claude subprocess, stream its output, and clean up.
 
-    Returns the subprocess exit code (0 on success, -1 if it never set one).
+    Returns a ``CheckResult`` with exit code and kill reason.
     """
     process = _spawn_claude_process(cmd, workdir)
-    # Track session ID so _sweep_previous_sessions can catch stragglers later.
-    _previous_session_ids.append(process.pid)
+    kill_reason: str | None = None
+    # Track session ID so kill_session_stragglers can catch stragglers later.
+    previous_session_ids.append(process.pid)
     try:
-        pass_start_time = _stream_process_output(
+        check_start_time, kill_reason = _stream_process_output(
             process, idle_timeout, debug,
             check_timeout=check_timeout,
             max_memory_mb=max_memory_mb,
@@ -411,22 +455,29 @@ def _execute_claude_process(
         try:
             process.wait(timeout=idle_timeout)
         except subprocess.TimeoutExpired:
-            logger.warning("process.wait() timed out after %ds — killing group", idle_timeout)
+            logger.warning("process.wait() timed out after %ds — killing group (pid=%d)",
+                           idle_timeout, process.pid)
+            if kill_reason is None:
+                kill_reason = KILL_REASON_IDLE
     finally:
         # Ensure the entire process group is dead on every exit path.
         # Claude may spawn child processes (language servers, etc.) that
         # survive after the main process exits.
         _kill_process_group(process)
 
-    return _report_check_exit_status(process, pass_start_time)
+    exit_code = _report_check_exit_status(process, check_start_time)
+    if kill_reason is not None:
+        logger.warning("Check killed: reason=%s, exit_code=%d, pid=%d",
+                       kill_reason, exit_code, process.pid)
+    return CheckResult(exit_code=exit_code, kill_reason=kill_reason)
 
 
-def _report_check_exit_status(process: subprocess.Popen[bytes], pass_start_time: float) -> int:
+def _report_check_exit_status(process: subprocess.Popen[bytes], check_start_time: float) -> int:
     """Log and display the exit status of a completed check.
 
     Returns the subprocess exit code (0 on success, -1 if never set).
     """
-    elapsed = _format_duration(time.time() - pass_start_time)
+    elapsed = format_duration(time.time() - check_start_time)
     exit_code = process.returncode
     if exit_code is None:
         logger.warning("Process exited without a return code (may not have terminated cleanly)")
@@ -434,6 +485,6 @@ def _report_check_exit_status(process: subprocess.Popen[bytes], pass_start_time:
     status_colour = GREEN if exit_code == 0 else YELLOW
     status_text = "completed" if exit_code == 0 else f"exited with code {exit_code}"
     logger.info("Check %s (exit_code=%d, elapsed=%s)", status_text, exit_code, elapsed)
-    _print_status(f"  Check {status_text} in {elapsed}", status_colour)
-    _log_memory_usage("after check")
+    print_status(f"  Check {status_text} in {elapsed}", status_colour)
+    log_memory_usage("after check")
     return exit_code

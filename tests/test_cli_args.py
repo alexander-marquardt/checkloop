@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import argparse
 import logging
+from pathlib import Path
 from unittest import mock
 
 import pytest
 
 from checkloop import cli, suite, process, checks
-from helpers import make_mock_cli_args
+from checkloop.checks import CheckDef
+from helpers import make_mock_cli_args, make_suite_args
 
 
 # =============================================================================
@@ -103,7 +105,7 @@ class TestPrintRunSummary:
     """Tests for _print_run_summary() pre-run output."""
 
     def test_normal_summary(self, capsys: pytest.CaptureFixture[str]) -> None:
-        selected_checks = [{"id": "readability", "label": "Readability"}]
+        selected_checks: list[CheckDef] = [CheckDef(id="readability", label="Readability", prompt="p")]
         cli._print_run_summary("/tmp", selected_checks, 2, 2, 120, False)
         out = capsys.readouterr().out
         assert "checkloop" in out
@@ -112,19 +114,19 @@ class TestPrintRunSummary:
         assert "2" in out
 
     def test_dry_run_summary(self, capsys: pytest.CaptureFixture[str]) -> None:
-        selected_checks = [{"id": "tests", "label": "Tests"}]
+        selected_checks: list[CheckDef] = [CheckDef(id="tests", label="Tests", prompt="p")]
         cli._print_run_summary("/tmp", selected_checks, 1, 1, 120, True)
         out = capsys.readouterr().out
         assert "DRY RUN" in out
 
     def test_single_cycle_no_plural(self, capsys: pytest.CaptureFixture[str]) -> None:
-        selected_checks = [{"id": "dry", "label": "DRY"}]
+        selected_checks: list[CheckDef] = [CheckDef(id="dry", label="DRY", prompt="p")]
         cli._print_run_summary("/dir", selected_checks, 1, 1, 60, False)
         out = capsys.readouterr().out
         assert "1 cycle)" in out
 
     def test_multiple_cycles_plural(self, capsys: pytest.CaptureFixture[str]) -> None:
-        selected_checks = [{"id": "dry", "label": "DRY"}]
+        selected_checks: list[CheckDef] = [CheckDef(id="dry", label="DRY", prompt="p")]
         cli._print_run_summary("/dir", selected_checks, 3, 3, 60, False)
         out = capsys.readouterr().out
         assert "cycles)" in out
@@ -135,14 +137,14 @@ class TestPrintRunSummary:
         assert "Total steps  : 0" in out
 
     def test_convergence_threshold_displayed(self, capsys: pytest.CaptureFixture[str]) -> None:
-        selected_checks = [{"id": "dry", "label": "DRY"}]
+        selected_checks: list[CheckDef] = [CheckDef(id="dry", label="DRY", prompt="p")]
         cli._print_run_summary("/dir", selected_checks, 1, 1, 60, False, convergence_threshold=0.5)
         out = capsys.readouterr().out
         assert "0.5%" in out
         assert "Convergence" in out
 
     def test_zero_convergence_not_displayed(self, capsys: pytest.CaptureFixture[str]) -> None:
-        selected_checks = [{"id": "dry", "label": "DRY"}]
+        selected_checks: list[CheckDef] = [CheckDef(id="dry", label="DRY", prompt="p")]
         cli._print_run_summary("/dir", selected_checks, 1, 1, 60, False, convergence_threshold=0.0)
         out = capsys.readouterr().out
         assert "Convergence" not in out
@@ -156,43 +158,39 @@ class TestValidateArguments:
     """Tests for _validate_arguments()."""
 
     def test_cycles_zero_exits(self) -> None:
-        args = argparse.Namespace(idle_timeout=120, pause=0, cycles=0, converged_at_percentage=0.1, max_memory_mb=4096, check_timeout=0)
         with pytest.raises(SystemExit) as exc_info:
-            cli._validate_arguments(args)
+            cli._validate_arguments(make_suite_args(cycles=0))
         assert exc_info.value.code == 1
 
     def test_negative_cycles_exits(self) -> None:
-        args = argparse.Namespace(idle_timeout=120, pause=0, cycles=-5, converged_at_percentage=0.1, max_memory_mb=4096, check_timeout=0)
         with pytest.raises(SystemExit) as exc_info:
-            cli._validate_arguments(args)
+            cli._validate_arguments(make_suite_args(cycles=-5))
         assert exc_info.value.code == 1
 
     def test_negative_convergence_exits(self) -> None:
-        args = argparse.Namespace(idle_timeout=120, pause=0, cycles=1, converged_at_percentage=-0.5, max_memory_mb=4096, check_timeout=0)
         with pytest.raises(SystemExit) as exc_info:
-            cli._validate_arguments(args)
+            cli._validate_arguments(make_suite_args(convergence_threshold=-0.5))
         assert exc_info.value.code == 1
 
     def test_valid_arguments_no_exit(self) -> None:
-        args = argparse.Namespace(idle_timeout=1, pause=0, cycles=1, converged_at_percentage=0.0, max_memory_mb=4096, check_timeout=0)
-        cli._validate_arguments(args)  # should not raise
+        cli._validate_arguments(make_suite_args(idle_timeout=1, convergence_threshold=0.0))  # should not raise
 
 
 class TestValidateArgumentsEdgeCases:
     """Edge case tests for _validate_arguments()."""
 
-    def test_converged_at_percentage_over_100_exits(self) -> None:
-        args = make_mock_cli_args(converged_at_percentage=101.0)
+    def test_convergence_threshold_over_100_exits(self) -> None:
+        args = make_mock_cli_args(convergence_threshold=101.0)
         with pytest.raises(SystemExit) as exc_info:
             cli._validate_arguments(args)
         assert exc_info.value.code == 1
 
     def test_converged_at_zero_is_valid(self) -> None:
-        args = make_mock_cli_args(converged_at_percentage=0.0)
+        args = make_mock_cli_args(convergence_threshold=0.0)
         cli._validate_arguments(args)
 
     def test_converged_at_100_is_valid(self) -> None:
-        args = make_mock_cli_args(converged_at_percentage=100.0)
+        args = make_mock_cli_args(convergence_threshold=100.0)
         cli._validate_arguments(args)
 
     def test_idle_timeout_exactly_one(self) -> None:
@@ -298,23 +296,23 @@ class TestResolveChangedFilesPrefix:
 
     def test_not_git_repo_exits(self) -> None:
         args = argparse.Namespace(changed_only="auto")
-        with mock.patch.object(cli, "_is_git_repo", return_value=False):
+        with mock.patch.object(cli, "is_git_repo", return_value=False):
             with pytest.raises(SystemExit) as exc_info:
                 cli._resolve_changed_files_prefix(args, "/tmp")
             assert exc_info.value.code == 1
 
     def test_no_changed_files_exits(self) -> None:
         args = argparse.Namespace(changed_only="main")
-        with mock.patch.object(cli, "_is_git_repo", return_value=True), \
-             mock.patch.object(cli, "_get_changed_files", return_value=[]):
+        with mock.patch.object(cli, "is_git_repo", return_value=True), \
+             mock.patch.object(cli, "get_changed_files", return_value=[]):
             with pytest.raises(SystemExit) as exc_info:
                 cli._resolve_changed_files_prefix(args, "/tmp")
             assert exc_info.value.code == 1
 
     def test_returns_prefix_with_changed_files(self, capsys: pytest.CaptureFixture[str]) -> None:
         args = argparse.Namespace(changed_only="main")
-        with mock.patch.object(cli, "_is_git_repo", return_value=True), \
-             mock.patch.object(cli, "_get_changed_files", return_value=["a.py", "b.py"]):
+        with mock.patch.object(cli, "is_git_repo", return_value=True), \
+             mock.patch.object(cli, "get_changed_files", return_value=["a.py", "b.py"]):
             result = cli._resolve_changed_files_prefix(args, "/tmp")
         assert "a.py" in result
         assert "b.py" in result
@@ -323,23 +321,23 @@ class TestResolveChangedFilesPrefix:
 
 
 # =============================================================================
-# --converged-at-percentage and --changed-only CLI args
+# --convergence-threshold and --changed-only CLI args
 # =============================================================================
 
-class TestConvergedAtPercentageArg:
-    """Tests for --converged-at-percentage CLI argument."""
+class TestConvergenceThresholdArg:
+    """Tests for --convergence-threshold CLI argument."""
 
     def test_default(self) -> None:
         ns = _parse_cli(["--dir", "/tmp"])
-        assert ns.converged_at_percentage == cli.DEFAULT_CONVERGENCE_THRESHOLD
+        assert ns.convergence_threshold == cli.DEFAULT_CONVERGENCE_THRESHOLD
 
     def test_custom_value(self) -> None:
-        ns = _parse_cli(["--dir", "/tmp", "--converged-at-percentage", "0.5"])
-        assert ns.converged_at_percentage == 0.5
+        ns = _parse_cli(["--dir", "/tmp", "--convergence-threshold", "0.5"])
+        assert ns.convergence_threshold == 0.5
 
     def test_zero_disables(self) -> None:
-        ns = _parse_cli(["--dir", "/tmp", "--converged-at-percentage", "0"])
-        assert ns.converged_at_percentage == 0.0
+        ns = _parse_cli(["--dir", "/tmp", "--convergence-threshold", "0"])
+        assert ns.convergence_threshold == 0.0
 
 
 class TestChangedOnly:
@@ -387,3 +385,58 @@ class TestConfigureLogging:
                     cli.main()
                 mock_log.assert_called_once()
                 assert mock_log.call_args.kwargs["level"] == logging.DEBUG
+
+
+# =============================================================================
+# _display_pre_run_warning
+# =============================================================================
+
+class TestDisplayPreRunWarning:
+    """Tests for _display_pre_run_warning() permission warnings."""
+
+    def test_skip_permissions_true(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with mock.patch("time.sleep"):
+            cli._display_pre_run_warning(skip_permissions=True)
+        out = capsys.readouterr().out
+        assert "dangerously-skip-permissions is ENABLED" in out
+        assert f"Starting in {cli._WARNING_COUNTDOWN_SECONDS} seconds" in out
+
+    def test_skip_permissions_false(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with mock.patch("time.sleep"):
+            cli._display_pre_run_warning(skip_permissions=False)
+        out = capsys.readouterr().out
+        assert "Running without --dangerously-skip-permissions" in out
+        assert "Re-run with" in out
+        assert "Continuing anyway" in out
+
+    def test_keyboard_interrupt_exits(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with mock.patch("time.sleep", side_effect=KeyboardInterrupt):
+            with pytest.raises(SystemExit) as exc_info:
+                cli._display_pre_run_warning(skip_permissions=True)
+            assert exc_info.value.code == 0
+        out = capsys.readouterr().out
+        assert "Aborted" in out
+
+
+# =============================================================================
+# _print_run_summary — optional fields
+# =============================================================================
+
+class TestPrintRunSummaryOptionalFields:
+    """Tests for _print_run_summary with check_timeout and max_memory_mb."""
+
+    def test_check_timeout_displayed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        selected_checks: list[CheckDef] = [CheckDef(id="dry", label="DRY", prompt="p")]
+        cli._print_run_summary("/dir", selected_checks, 1, 1, 60, False, check_timeout=300)
+        out = capsys.readouterr().out
+        assert "Check timeout" in out
+        assert "300s" in out
+
+    def test_memory_limit_displayed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        selected_checks: list[CheckDef] = [CheckDef(id="dry", label="DRY", prompt="p")]
+        cli._print_run_summary("/dir", selected_checks, 1, 1, 60, False, max_memory_mb=4096)
+        out = capsys.readouterr().out
+        assert "Memory limit" in out
+        assert "4096MB" in out
+
+
