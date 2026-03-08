@@ -271,10 +271,10 @@ FULL_CODEBASE_SCOPE: str = (
 
 COMMIT_MESSAGE_INSTRUCTIONS: str = (
     "\n\nIf you make any git commits, follow these commit message rules:\n"
-    "- Maximum 5-10 lines\n"
-    "- Do not mention Claude, AI, or any AI tools\n"
-    "- Do not add Co-Authored-By or Signed-off-by trailers\n"
-    "- Provide only a high-level summary of what was cleaned up, fixed, or changed\n"
+    "- Write a 2-3 sentence description of what was changed and why\n"
+    "- Do NOT mention Claude, AI, checkloop, or any AI tools anywhere in the message\n"
+    "- Do NOT add Co-Authored-By or Signed-off-by trailers\n"
+    "- Do NOT use generic messages like 'test-fix', 'cleanup', or single-word summaries\n"
     "- Use clear, professional commit message style"
 )
 """Instructions appended to every check prompt to enforce clean commit messages."""

@@ -88,7 +88,7 @@ def _run_single_check(
         _print_status(f"Check '{check['id']}' exited with code {exit_code}. Continuing...", YELLOW)
 
     if is_git:
-        committed = _git_commit_all(workdir, f"checkloop: {check['id']}")
+        committed = _git_commit_all(workdir, check["label"])
         if not committed:
             logger.debug("No changes to commit after check '%s'", check["id"])
     made_changes = _report_check_changes(workdir, check["id"], sha_before)
@@ -233,9 +233,13 @@ def _run_check_suite(
 
         should_squash = is_git and base_sha and changed_this_cycle and not args.dry_run
         if should_squash:
-            check_names = ", ".join(sorted(changed_this_cycle))
-            cycle_label = f" (cycle {cycle}/{num_cycles})" if num_cycles > 1 else ""
-            _git_squash_since(workdir, base_sha, f"checkloop{cycle_label}: {check_names}")
+            # Build a descriptive squash message from the labels of checks that made changes.
+            changed_labels = [
+                check["label"] for check in active_checks
+                if check["id"] in changed_this_cycle
+            ]
+            squash_summary = "; ".join(changed_labels)
+            _git_squash_since(workdir, base_sha, squash_summary)
 
         should_check_convergence = convergence_enabled and base_sha and not args.dry_run
         if should_check_convergence:
