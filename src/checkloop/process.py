@@ -30,6 +30,7 @@ DEFAULT_PAUSE_SECONDS = 2  # seconds between consecutive checks
 
 _READ_CHUNK_SIZE = 8192  # bytes per stdout read during streaming
 _DRAIN_CHUNK_SIZE = 65536  # bytes per read when draining after process exit
+_MAX_BUFFER_SIZE = 10 * 1024 * 1024  # 10 MB safety cap on JSONL output buffer
 _PROCESS_WAIT_TIMEOUT = 5  # seconds to wait for process group to die
 
 # Perf: build once instead of copying os.environ on every subprocess spawn.
@@ -65,16 +66,8 @@ def _measure_current_rss_mb() -> float:
         return 0.0
 
 
-def _find_child_pids() -> list[int]:
-    """Return PIDs of surviving child processes (including orphaned grandchildren)."""
-    try:
-        result = subprocess.run(
-            ["pgrep", "-P", str(os.getpid())],
-            capture_output=True, text=True,
-        )
-    except OSError as exc:
-        logger.debug("pgrep failed: %s", exc)
-        return []
+def _parse_pgrep_output(result: subprocess.CompletedProcess[str]) -> list[int]:
+    """Extract integer PIDs from pgrep stdout."""
     if result.returncode != 0 or not result.stdout.strip():
         return []
     pids: list[int] = []
@@ -84,6 +77,33 @@ def _find_child_pids() -> list[int]:
         except ValueError:
             logger.debug("pgrep returned non-integer PID line: %r", line)
     return pids
+
+
+def _find_child_pids() -> list[int]:
+    """Return PIDs of surviving child processes (direct children only)."""
+    try:
+        result = subprocess.run(
+            ["pgrep", "-P", str(os.getpid())],
+            capture_output=True, text=True,
+        )
+    except OSError as exc:
+        logger.debug("pgrep failed: %s", exc)
+        return []
+    return _parse_pgrep_output(result)
+
+
+def _find_session_pids(session_id: int) -> list[int]:
+    """Return PIDs of all processes in the given session, excluding ourselves."""
+    my_pid = os.getpid()
+    try:
+        result = subprocess.run(
+            ["pgrep", "-s", str(session_id)],
+            capture_output=True, text=True,
+        )
+    except OSError as exc:
+        logger.debug("pgrep -s failed: %s", exc)
+        return []
+    return [pid for pid in _parse_pgrep_output(result) if pid != my_pid]
 
 
 def _kill_orphaned_children(pids: list[int] | None = None) -> int:
@@ -279,6 +299,10 @@ def _stream_process_output(
             output_buffer.extend(chunk)
             output_buffer = _process_jsonl_buffer(output_buffer, pass_start_time, debug)
 
+            if len(output_buffer) > _MAX_BUFFER_SIZE:
+                logger.warning("Output buffer exceeded %d bytes — truncating", _MAX_BUFFER_SIZE)
+                output_buffer.clear()
+
     finally:
         _flush_and_close_stdout(stdout, output_buffer, pass_start_time, debug)
 
@@ -295,6 +319,26 @@ def _signal_process_group(pgid: int, sig: signal.Signals) -> None:
         logger.debug("%s to pgid %d failed: %s", sig.name, pgid, exc)
 
 
+def _kill_session_stragglers(session_id: int) -> None:
+    """Kill any processes still alive in the session that escaped the group kill.
+
+    When ``start_new_session=True`` is used, the subprocess becomes the session
+    leader (SID = its PID).  Children that call ``setsid()`` or ``setpgid()``
+    escape ``os.killpg()`` but remain in the original session.  This function
+    catches those stragglers.
+    """
+    stragglers = _find_session_pids(session_id)
+    if not stragglers:
+        return
+    logger.warning("Found %d straggler(s) in session %d: %s", len(stragglers), session_id, stragglers)
+    for pid in stragglers:
+        try:
+            os.kill(pid, signal.SIGKILL)
+            logger.info("Killed session straggler pid=%d", pid)
+        except OSError as exc:
+            logger.debug("Could not kill straggler %d: %s", pid, exc)
+
+
 def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
     """Terminate the process and its entire process group.
 
@@ -304,20 +348,23 @@ def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
     try:
         pgid = os.getpgid(process.pid)
     except OSError:
-        return  # process already gone
+        pgid = None  # process already gone
 
-    _signal_process_group(pgid, signal.SIGTERM)
-    try:
-        process.wait(timeout=_PROCESS_WAIT_TIMEOUT)
-        return
-    except subprocess.TimeoutExpired:
-        pass
+    if pgid is not None:
+        _signal_process_group(pgid, signal.SIGTERM)
+        try:
+            process.wait(timeout=_PROCESS_WAIT_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            _signal_process_group(pgid, signal.SIGKILL)
+            try:
+                process.wait(timeout=_PROCESS_WAIT_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                logger.warning("Process %d did not exit after SIGKILL", process.pid)
 
-    _signal_process_group(pgid, signal.SIGKILL)
-    try:
-        process.wait(timeout=_PROCESS_WAIT_TIMEOUT)
-    except subprocess.TimeoutExpired:
-        logger.warning("Process %d did not exit after SIGKILL", process.pid)
+    # Kill any processes that escaped the process group but remain in the
+    # session created by start_new_session=True.  The session ID equals the
+    # claude PID because setsid() makes it the session leader.
+    _kill_session_stragglers(process.pid)
 
 
 # --- Public API: run a single Claude Code check ------------------------------
