@@ -24,7 +24,6 @@ dependencies = []
 [dependency-groups]
 dev = [
     "pytest>=8",
-    "pytest-cov>=6",
     "mypy>=1.10",
 ]
 

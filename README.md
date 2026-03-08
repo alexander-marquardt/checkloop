@@ -200,9 +200,6 @@ uv sync --dev
 # Run the test suite
 uv run pytest
 
-# Run with coverage
-uv run pytest --cov=checkloop --cov-report=term-missing
-
 # Type checking
 uv run mypy src/checkloop/
 
@@ -210,7 +207,7 @@ uv run mypy src/checkloop/
 uv run checkloop --dir . --dangerously-skip-permissions
 ```
 
-The project has no runtime dependencies — only `pytest`, `pytest-cov`, and `mypy` in the dev group.
+The project has no runtime dependencies — only `pytest` and `mypy` in the dev group.
 
 ## Troubleshooting
 
@@ -230,7 +227,7 @@ The project has no runtime dependencies — only `pytest`, `pytest-cov`, and `my
 3. Make your changes in the relevant module under `src/checkloop/`.
 4. Run the full check suite:
    ```bash
-   uv run pytest --cov=checkloop --cov-report=term-missing
+   uv run pytest
    uv run mypy src/checkloop/
    ```
 5. Ensure all tests pass and coverage stays above 90%.
