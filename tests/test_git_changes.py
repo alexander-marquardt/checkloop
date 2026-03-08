@@ -187,3 +187,18 @@ class TestBuildChangedFilesPrefix:
     def test_empty_list_returns_empty_string(self) -> None:
         result = git.build_changed_files_prefix([])
         assert result == ""
+
+
+class TestBuildChangedFilesPrefixEdgeCases:
+    """Edge cases for build_changed_files_prefix()."""
+
+    def test_single_empty_string_filename(self) -> None:
+        """An empty-string filename is unusual but should not crash."""
+        result = git.build_changed_files_prefix([""])
+        assert "1 file(s)" in result
+
+    def test_very_long_filename(self) -> None:
+        """A filename with 1000 characters should work."""
+        long_name = "a" * 1000 + ".py"
+        result = git.build_changed_files_prefix([long_name])
+        assert long_name in result

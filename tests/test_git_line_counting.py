@@ -230,3 +230,53 @@ class TestCachedTotalTrackedLines:
                 assert result == 500
         finally:
             git._total_lines_cache.pop(resolved, None)
+
+
+class TestCountFileLinesLineEndings:
+    """Edge cases for _count_file_lines() with different line endings."""
+
+    def test_cr_only_line_endings_counted_as_zero(self, tmp_path: Path) -> None:
+        """Old Mac line endings (\\r without \\n) are counted as 0 lines."""
+        f = tmp_path / "cr_only.txt"
+        f.write_bytes(b"line1\rline2\rline3\r")
+        assert git._count_file_lines(f) == 0
+
+    def test_mixed_cr_and_crlf(self, tmp_path: Path) -> None:
+        """Mix of \\r and \\r\\n: only \\n characters are counted."""
+        f = tmp_path / "mixed.txt"
+        f.write_bytes(b"line1\r\nline2\rline3\r\nline4\r")
+        assert git._count_file_lines(f) == 2
+
+    def test_file_with_only_newlines(self, tmp_path: Path) -> None:
+        """A file with only newlines should count them all."""
+        f = tmp_path / "newlines.txt"
+        f.write_bytes(b"\n\n\n\n\n")
+        assert git._count_file_lines(f) == 5
+
+    def test_single_byte_file(self, tmp_path: Path) -> None:
+        """A single non-newline byte."""
+        f = tmp_path / "single.txt"
+        f.write_bytes(b"x")
+        assert git._count_file_lines(f) == 0
+
+    def test_single_newline_byte(self, tmp_path: Path) -> None:
+        """A single newline byte."""
+        f = tmp_path / "nl.txt"
+        f.write_bytes(b"\n")
+        assert git._count_file_lines(f) == 1
+
+    def test_null_byte_at_position_zero(self, tmp_path: Path) -> None:
+        """A file starting with a null byte is treated as binary."""
+        f = tmp_path / "null_start.bin"
+        f.write_bytes(b"\0line1\nline2\n")
+        assert git._count_file_lines(f) == 0
+
+
+class TestCachedTotalTrackedLinesEdgeCases:
+    """Edge cases for _cached_total_tracked_lines()."""
+
+    def test_oserror_on_resolve_returns_1(self) -> None:
+        """When Path.resolve() raises OSError, should return 1."""
+        with mock.patch.object(Path, "resolve", side_effect=OSError("bad path")):
+            result = git._cached_total_tracked_lines("/nonexistent\x00path")
+        assert result == 1

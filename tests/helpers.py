@@ -8,7 +8,7 @@ from collections.abc import Iterator
 from typing import Any
 from unittest import mock
 
-from checkloop import process, suite
+from checkloop import check_runner, process, suite
 from checkloop.checks import CheckDef
 from checkloop.checkpoint import CheckpointData
 from checkloop.cli import DEFAULT_CONVERGENCE_THRESHOLD
@@ -84,14 +84,20 @@ def patch_suite_git(
     """
     result = CheckResult(exit_code=run_claude_return)
     with contextlib.ExitStack() as stack:
-        stack.enter_context(mock.patch.object(suite, "_invoke_claude", return_value=result))
+        stack.enter_context(mock.patch.object(check_runner, "_invoke_claude", return_value=result))
         stack.enter_context(mock.patch.object(suite, "is_git_repo", return_value=True))
-        stack.enter_context(mock.patch.object(suite, "git_head_sha", side_effect=sha_sequence))
-        stack.enter_context(mock.patch.object(suite, "git_commit_all", return_value=True))
+        # Share a single iterator so both modules consume from the same SHA sequence.
+        sha_iter = iter(sha_sequence)
+        stack.enter_context(mock.patch.object(suite, "git_head_sha", side_effect=sha_iter))
+        stack.enter_context(mock.patch.object(check_runner, "git_head_sha", side_effect=sha_iter))
+        stack.enter_context(mock.patch.object(check_runner, "git_commit_all", return_value=True))
         if lines_changed is not None:
+            change_pct = lines_changed / (total_tracked or 1000) * 100
             stack.enter_context(mock.patch.object(
-                suite, "compute_change_stats",
-                return_value=(lines_changed, lines_changed / (total_tracked or 1000) * 100),
+                suite, "compute_change_stats", return_value=(lines_changed, change_pct),
+            ))
+            stack.enter_context(mock.patch.object(
+                check_runner, "compute_change_stats", return_value=(lines_changed, change_pct),
             ))
         yield
 

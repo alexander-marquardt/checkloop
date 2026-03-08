@@ -446,3 +446,67 @@ class TestProcessJsonlBufferEventErrors:
         with unittest.mock.patch.object(streaming, "_print_event", side_effect=AttributeError("no attr")):
             remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=False)
         assert remainder == bytearray()
+
+
+class TestProcessJsonlBufferNonDictJson:
+    """Edge cases for process_jsonl_buffer with valid JSON that isn't a dict."""
+
+    def test_json_array_does_not_crash(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """A JSON array is valid JSON but not a stream event dict."""
+        buf = bytearray(b'[1, 2, 3]\n')
+        remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=False)
+        assert remainder == bytearray()
+
+    def test_json_number_does_not_crash(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """A JSON number is valid JSON but not a dict."""
+        buf = bytearray(b'42\n')
+        remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=False)
+        assert remainder == bytearray()
+
+    def test_json_string_does_not_crash(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """A JSON string is valid JSON but not a dict."""
+        buf = bytearray(b'"hello"\n')
+        remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=False)
+        assert remainder == bytearray()
+
+    def test_json_null_does_not_crash(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """A JSON null is valid JSON but not a dict."""
+        buf = bytearray(b'null\n')
+        remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=False)
+        assert remainder == bytearray()
+
+    def test_json_boolean_does_not_crash(self, capsys: pytest.CaptureFixture[str]) -> None:
+        buf = bytearray(b'true\n')
+        remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=False)
+        assert remainder == bytearray()
+
+
+class TestPrintEventEdgeCasesAdditional:
+    """Additional edge cases for _print_event()."""
+
+    def test_assistant_message_is_none(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """When message is None (not a dict), should not crash."""
+        event: dict[str, Any] = {"type": "assistant", "message": None}
+        streaming._print_event(event, time.time())
+        assert capsys.readouterr().out.strip() == ""
+
+    def test_assistant_message_is_string(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """When message is a string (not a dict), should not crash."""
+        event: dict[str, Any] = {"type": "assistant", "message": "just a string"}
+        streaming._print_event(event, time.time())
+        assert capsys.readouterr().out.strip() == ""
+
+    def test_result_event_with_dict_result(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """When result is a dict, it should be printed (via str conversion)."""
+        event: dict[str, Any] = {"type": "result", "result": {"key": "value"}}
+        streaming._print_event(event, time.time())
+        out = capsys.readouterr().out
+        assert "Result" in out
+        assert "key" in out
+
+    def test_system_event_with_non_string_message(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """When system message is a non-string truthy value, it should be printed."""
+        event: dict[str, Any] = {"type": "system", "message": 42}
+        streaming._print_event(event, time.time())
+        out = capsys.readouterr().out
+        assert "42" in out

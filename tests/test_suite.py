@@ -8,7 +8,7 @@ from unittest import mock
 
 import pytest
 
-from checkloop import checkpoint, suite
+from checkloop import check_runner, checkpoint, suite
 from checkloop.checks import CheckDef
 from checkloop.process import CheckResult
 from helpers import make_check, make_checkpoint_data, make_suite_args, patch_suite_git
@@ -40,7 +40,7 @@ class TestRunCheckSuite:
     def test_dangerous_prompt_skipped(self, capsys: pytest.CaptureFixture[str]) -> None:
         selected_checks: list[CheckDef] = [make_check("evil", "Evil", "rm -rf / everything")]
         args = make_suite_args(dry_run=False)
-        with mock.patch.object(suite, "_invoke_claude") as mock_run:
+        with mock.patch.object(check_runner, "_invoke_claude") as mock_run:
             suite._run_check_suite(selected_checks, 1, "/tmp", args)
             mock_run.assert_not_called()
         out = capsys.readouterr().out
@@ -52,7 +52,7 @@ class TestRunCheckSuite:
             make_check("b", "B", "do b"),
         ]
         args = make_suite_args(dry_run=False)
-        with mock.patch.object(suite, "_invoke_claude", return_value=CheckResult(exit_code=1)):
+        with mock.patch.object(check_runner, "_invoke_claude", return_value=CheckResult(exit_code=1)):
             suite._run_check_suite(selected_checks, 1, "/tmp", args)
         out = capsys.readouterr().out
         assert "exited with code 1" in out
@@ -107,19 +107,17 @@ class TestCheckCycleConvergence:
     """Tests for _check_cycle_convergence() convergence detection."""
 
     def test_no_changes_converged(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch.object(suite, "git_commit_all"):
-            with mock.patch.object(suite, "git_head_sha", return_value="abc123"):
-                should_stop, pct = suite._check_cycle_convergence(
-                    "/tmp", cycle=1, base_sha="abc123",
-                    convergence_threshold=0.1, prev_change_pct=None,
-                )
+        with mock.patch.object(suite, "git_head_sha", return_value="abc123"):
+            should_stop, pct = suite._check_cycle_convergence(
+                "/tmp", cycle=1, base_sha="abc123",
+                convergence_threshold=0.1, prev_change_pct=None,
+            )
         assert should_stop is True
         assert pct is None
         assert "converged" in capsys.readouterr().out.lower()
 
     def test_oscillation_warning(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch.object(suite, "git_commit_all"), \
-             mock.patch.object(suite, "git_head_sha", return_value="def456"), \
+        with mock.patch.object(suite, "git_head_sha", return_value="def456"), \
              mock.patch.object(suite, "compute_change_stats", return_value=(50, 5.0)):
             should_stop, pct = suite._check_cycle_convergence(
                 "/tmp", cycle=2, base_sha="abc123",
@@ -130,8 +128,7 @@ class TestCheckCycleConvergence:
         assert "oscillation" in capsys.readouterr().out.lower()
 
     def test_not_converged(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch.object(suite, "git_commit_all"), \
-             mock.patch.object(suite, "git_head_sha", return_value="def456"), \
+        with mock.patch.object(suite, "git_head_sha", return_value="def456"), \
              mock.patch.object(suite, "compute_change_stats", return_value=(15, 1.5)):
             should_stop, pct = suite._check_cycle_convergence(
                 "/tmp", cycle=1, base_sha="abc123",
@@ -141,10 +138,9 @@ class TestCheckCycleConvergence:
         assert pct == 1.5
 
     def test_changes_below_threshold_converges(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch.object(suite, "git_commit_all"):
-            with mock.patch.object(suite, "git_head_sha", return_value="new_sha"):
-                with mock.patch.object(suite, "compute_change_stats", return_value=(5, 0.05)):
-                    converged, pct = suite._check_cycle_convergence(
+        with mock.patch.object(suite, "git_head_sha", return_value="new_sha"):
+            with mock.patch.object(suite, "compute_change_stats", return_value=(5, 0.05)):
+                converged, pct = suite._check_cycle_convergence(
                         "/tmp", 1, "old_sha", 0.1, None,
                     )
         assert converged is True
@@ -162,7 +158,6 @@ class TestConvergenceInSuite:
         selected_checks: list[CheckDef] = [make_check("readability", "Readability", "review code")]
         args = make_suite_args(dry_run=False)
         with patch_suite_git(["sha1", "sha2", "sha2", "sha3"]), \
-             mock.patch.object(suite, "git_commit_all", return_value=True), \
              mock.patch.object(suite, "compute_change_stats", return_value=(1, 0.05)):
             suite._run_check_suite(selected_checks, 3, "/tmp", args, convergence_threshold=0.1)
         out = capsys.readouterr().out
@@ -199,15 +194,14 @@ class TestRunSingleCheck:
         args = make_suite_args(dry_run=True)
         if hasattr(args, "changed_files_prefix"):
             delattr(args, "changed_files_prefix")
-        with mock.patch.object(suite, "is_git_repo", return_value=False):
-            result = suite._run_single_check(check_def, "/tmp", args, "[1/1]", is_git=False)
+        result = check_runner._run_single_check(check_def, "/tmp", args, "[1/1]", is_git=False)
         assert result.made_changes is True
 
     def test_changed_prefix_prepended_to_prompt(self) -> None:
         selected_checks: list[CheckDef] = [make_check("readability", "Readability", "review code")]
         args = make_suite_args(dry_run=False)
         args.changed_files_prefix = "ONLY THESE FILES: a.py\n\n"
-        with mock.patch.object(suite, "_invoke_claude", return_value=CheckResult(exit_code=0)) as mock_run, \
+        with mock.patch.object(check_runner, "_invoke_claude", return_value=CheckResult(exit_code=0)) as mock_run, \
              mock.patch.object(suite, "is_git_repo", return_value=False):
             suite._run_check_suite(selected_checks, 1, "/tmp", args)
             prompt_used = mock_run.call_args[0][0]
@@ -223,21 +217,21 @@ class TestReportCheckChanges:
     """Tests for _report_check_changes()."""
 
     def test_no_git_repo_assumes_changes(self) -> None:
-        made, lines, pct = suite._report_check_changes("/tmp", "test", None)
+        made, lines, pct = check_runner._report_check_changes("/tmp", "test", None)
         assert made is True
         assert lines is None
 
     def test_same_sha_no_changes(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch.object(suite, "git_head_sha", return_value="sha1"):
-            made, lines, pct = suite._report_check_changes("/tmp", "test", "sha1")
+        with mock.patch.object(check_runner, "git_head_sha", return_value="sha1"):
+            made, lines, pct = check_runner._report_check_changes("/tmp", "test", "sha1")
         assert made is False
         assert lines == 0
         assert "no changes" in capsys.readouterr().out
 
     def test_different_sha_reports_changes(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch.object(suite, "git_head_sha", return_value="sha2"):
-            with mock.patch.object(suite, "compute_change_stats", return_value=(10, 0.50)):
-                made, lines, pct = suite._report_check_changes("/tmp", "test", "sha1")
+        with mock.patch.object(check_runner, "git_head_sha", return_value="sha2"):
+            with mock.patch.object(check_runner, "compute_change_stats", return_value=(10, 0.50)):
+                made, lines, pct = check_runner._report_check_changes("/tmp", "test", "sha1")
         assert made is True
         assert lines == 10
         assert pct == 0.50
@@ -245,8 +239,8 @@ class TestReportCheckChanges:
 
     def test_sha_after_none_assumes_changes(self) -> None:
         """When git_head_sha returns None after a check, assume changes were made."""
-        with mock.patch.object(suite, "git_head_sha", return_value=None):
-            made, lines, pct = suite._report_check_changes("/tmp", "test", "sha1")
+        with mock.patch.object(check_runner, "git_head_sha", return_value=None):
+            made, lines, pct = check_runner._report_check_changes("/tmp", "test", "sha1")
         assert made is True
         assert lines is None
 
@@ -279,7 +273,7 @@ class TestCommitMessageInstructions:
     def test_prompt_includes_commit_instructions(self, capsys: pytest.CaptureFixture[str]) -> None:
         selected_checks: list[CheckDef] = [make_check("readability", "Readability", "review code")]
         args = make_suite_args()
-        with mock.patch.object(suite, "_invoke_claude", return_value=CheckResult(exit_code=0)) as mock_run:
+        with mock.patch.object(check_runner, "_invoke_claude", return_value=CheckResult(exit_code=0)) as mock_run:
             suite._run_check_suite(selected_checks, 1, "/tmp", args)
             prompt_used = mock_run.call_args[0][0]
             assert "commit message rules" in prompt_used
@@ -399,12 +393,11 @@ class TestRunSingleCheckNoCommit:
         check_def: CheckDef = make_check("readability", "Readability", "review code")
         args = make_suite_args(dry_run=False)
 
-        with mock.patch.object(suite, "_invoke_claude", return_value=CheckResult(exit_code=0)), \
-             mock.patch.object(suite, "is_git_repo", return_value=True), \
-             mock.patch.object(suite, "git_head_sha", return_value="sha1"), \
-             mock.patch.object(suite, "git_commit_all", return_value=False), \
-             mock.patch.object(suite, "_report_check_changes", return_value=(False, 0, 0.0)):
-            result = suite._run_single_check(check_def, "/tmp", args, "[1/1]", is_git=True)
+        with mock.patch.object(check_runner, "_invoke_claude", return_value=CheckResult(exit_code=0)), \
+             mock.patch.object(check_runner, "git_head_sha", return_value="sha1"), \
+             mock.patch.object(check_runner, "git_commit_all", return_value=False), \
+             mock.patch.object(check_runner, "_report_check_changes", return_value=(False, 0, 0.0)):
+            result = check_runner._run_single_check(check_def, "/tmp", args, "[1/1]", is_git=True)
         assert result.made_changes is False
 
 
@@ -443,3 +436,101 @@ class TestRunCheckSuiteEdgeCases:
         # Should complete without "Cycle 2" appearing
         out = capsys.readouterr().out
         assert "Cycle 2" not in out
+
+
+# =============================================================================
+# _build_suite_state edge cases
+# =============================================================================
+
+class TestBuildSuiteStateEdgeCases:
+    """Edge cases for _build_suite_state()."""
+
+    def test_none_resume_creates_fresh_state(self) -> None:
+        state = suite._build_suite_state(None)
+        assert state.start_cycle == 1
+        assert state.start_check_index == 0
+        assert state.resume_active_check_ids is None
+        assert state.resume_changed == set()
+        assert state.prev_change_pct is None
+        assert state.previously_changed_ids is None
+        assert state.started_at != ""
+
+    def test_resume_with_previously_changed_ids(self) -> None:
+        data = make_checkpoint_data(
+            previously_changed_ids=["a", "b"],
+            prev_change_pct=2.5,
+        )
+        state = suite._build_suite_state(data)
+        assert state.previously_changed_ids == {"a", "b"}
+        assert state.prev_change_pct == 2.5
+
+
+# =============================================================================
+# _resolve_cycle_checks edge cases
+# =============================================================================
+
+class TestResolveCycleChecksEdgeCases:
+    """Edge cases for _resolve_cycle_checks()."""
+
+    def test_resume_check_not_in_selected(self) -> None:
+        """When resume active_check_ids includes IDs not in selected_checks, they're filtered."""
+        state = suite._SuiteState()
+        state.resume_active_check_ids = ["a", "b", "c"]
+        state.start_check_index = 0
+        state.resume_changed = set()
+        selected = [make_check("a"), make_check("c")]
+        active, start_idx, changed = suite._resolve_cycle_checks(selected, state)
+        ids = [c["id"] for c in active]
+        assert "b" not in ids
+        assert "a" in ids
+        assert "c" in ids
+
+    def test_non_resume_returns_all_selected(self) -> None:
+        state = suite._SuiteState()
+        selected = [make_check("x"), make_check("y")]
+        active, start_idx, changed = suite._resolve_cycle_checks(selected, state)
+        assert len(active) == 2
+        assert start_idx == 0
+        assert changed is None
+
+
+# =============================================================================
+# CheckOutcome edge cases
+# =============================================================================
+
+class TestCheckOutcomeToSummaryDict:
+    """Edge cases for CheckOutcome.to_summary_dict()."""
+
+    def test_all_none_optional_fields(self) -> None:
+        outcome = suite.CheckOutcome(
+            check_id="test", label="Test", cycle=1,
+            exit_code=0, kill_reason=None,
+            made_changes=False, lines_changed=None,
+            change_pct=None, duration_seconds=0.0,
+        )
+        row = outcome.to_summary_dict()
+        assert row["lines_changed"] is None
+        assert row["change_pct"] is None
+        assert row["kill_reason"] is None
+        assert row["duration"] == "0m00s"
+
+    def test_zero_duration(self) -> None:
+        outcome = suite.CheckOutcome(
+            check_id="t", label="T", cycle=1,
+            exit_code=0, kill_reason=None,
+            made_changes=False, lines_changed=0,
+            change_pct=0.0, duration_seconds=0.0,
+        )
+        row = outcome.to_summary_dict()
+        assert row["duration"] == "0m00s"
+
+    def test_negative_duration(self) -> None:
+        """Negative duration (clock skew) should be handled gracefully."""
+        outcome = suite.CheckOutcome(
+            check_id="t", label="T", cycle=1,
+            exit_code=0, kill_reason=None,
+            made_changes=False, lines_changed=0,
+            change_pct=0.0, duration_seconds=-5.0,
+        )
+        row = outcome.to_summary_dict()
+        assert row["duration"] == "0m00s"  # format_duration clamps negative to 0

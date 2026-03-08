@@ -132,3 +132,67 @@ class TestCompileDangerPatternsEdgeCases:
             assert len(patterns) == len(checks._DANGEROUS_PROMPT_KEYWORDS) - 1
         finally:
             checks._DANGEROUS_PROMPT_KEYWORDS[:] = original
+
+
+class TestLooksDangerousAdditional:
+    """Additional edge cases for looks_dangerous()."""
+
+    def test_keyword_at_start_of_string(self) -> None:
+        assert checks.looks_dangerous("rm -rf / now") is True
+
+    def test_keyword_at_end_of_string(self) -> None:
+        assert checks.looks_dangerous("please rm -rf /") is True
+
+    def test_multiple_dangerous_keywords(self) -> None:
+        """String with multiple dangerous keywords should still be detected."""
+        assert checks.looks_dangerous("rm -rf / and drop database") is True
+
+    def test_partial_keyword_not_detected(self) -> None:
+        """'format' alone should not match if not followed by matching pattern."""
+        assert checks.looks_dangerous("reformat the code") is False
+
+    def test_keyword_surrounded_by_punctuation(self) -> None:
+        assert checks.looks_dangerous("(rm -rf /)") is True
+
+    def test_very_long_string_with_keyword_at_end(self) -> None:
+        """Keyword buried at the end of a long string should still be found."""
+        padding = "safe text " * 10000
+        assert checks.looks_dangerous(padding + "rm -rf /") is True
+
+
+class TestTierConsistency:
+    """Tests for tier configuration consistency."""
+
+    def test_all_tier_ids_are_valid(self) -> None:
+        """Every check ID in every tier must exist in CHECK_IDS."""
+        for tier_name, tier_ids in checks.TIERS.items():
+            for check_id in tier_ids:
+                assert check_id in checks.CHECK_IDS, f"{check_id} from tier {tier_name} not in CHECK_IDS"
+
+    def test_exhaustive_tier_includes_all_checks(self) -> None:
+        """The exhaustive tier should include every defined check."""
+        assert set(checks.TIER_EXHAUSTIVE) == set(checks.CHECK_IDS)
+
+    def test_basic_is_subset_of_thorough(self) -> None:
+        assert set(checks.TIER_BASIC).issubset(set(checks.TIER_THOROUGH))
+
+    def test_thorough_is_subset_of_exhaustive(self) -> None:
+        assert set(checks.TIER_THOROUGH).issubset(set(checks.TIER_EXHAUSTIVE))
+
+    def test_bookend_checks_in_all_tiers(self) -> None:
+        """test-fix and test-validate should appear in all tiers."""
+        for tier_name, tier_ids in checks.TIERS.items():
+            assert "test-fix" in tier_ids, f"test-fix missing from {tier_name}"
+            assert "test-validate" in tier_ids, f"test-validate missing from {tier_name}"
+
+    def test_check_ids_have_unique_values(self) -> None:
+        """No duplicate check IDs."""
+        assert len(checks.CHECK_IDS) == len(set(checks.CHECK_IDS))
+
+    def test_all_checks_have_nonempty_prompt(self) -> None:
+        for check in checks.CHECKS:
+            assert check["prompt"].strip(), f"Check {check['id']} has empty prompt"
+
+    def test_all_checks_have_nonempty_label(self) -> None:
+        for check in checks.CHECKS:
+            assert check["label"].strip(), f"Check {check['id']} has empty label"

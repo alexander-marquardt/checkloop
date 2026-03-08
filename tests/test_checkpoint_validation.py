@@ -351,3 +351,132 @@ class TestCheckpointValidationEdgeCases:
             active_check_ids=["a", "b", "c", "d"],
         )
         assert _has_valid_field_types(cast(dict[str, object], data)) is False
+
+
+class TestLoadCheckpointMissingOptionalFields:
+    """Edge cases for load_checkpoint when fields are missing."""
+
+    def test_missing_convergence_threshold_rejected(self, tmp_path: Path) -> None:
+        """A checkpoint missing convergence_threshold should be rejected."""
+        raw: dict[str, Any] = dict(make_checkpoint_data(workdir=str(tmp_path)))
+        del raw["convergence_threshold"]
+        path = tmp_path / checkpoint._CHECKPOINT_FILENAME
+        path.write_text(json.dumps(raw))
+        assert checkpoint.load_checkpoint(str(tmp_path)) is None
+
+    def test_missing_prev_change_pct_still_valid(self, tmp_path: Path) -> None:
+        """prev_change_pct missing is treated as None (not in required_keys)."""
+        raw: dict[str, Any] = dict(make_checkpoint_data(workdir=str(tmp_path)))
+        if "prev_change_pct" in raw:
+            del raw["prev_change_pct"]
+        path = tmp_path / checkpoint._CHECKPOINT_FILENAME
+        path.write_text(json.dumps(raw))
+        loaded = checkpoint.load_checkpoint(str(tmp_path))
+        assert loaded is not None
+
+    def test_missing_previously_changed_ids_still_valid(self, tmp_path: Path) -> None:
+        """previously_changed_ids missing is treated as None."""
+        raw: dict[str, Any] = dict(make_checkpoint_data(workdir=str(tmp_path)))
+        if "previously_changed_ids" in raw:
+            del raw["previously_changed_ids"]
+        path = tmp_path / checkpoint._CHECKPOINT_FILENAME
+        path.write_text(json.dumps(raw))
+        loaded = checkpoint.load_checkpoint(str(tmp_path))
+        assert loaded is not None
+
+
+class TestPromptResumeEdgeCases:
+    """Edge cases for prompt_resume()."""
+
+    def test_user_says_YES_uppercase(self, tmp_path: Path) -> None:
+        """'YES' (uppercase) should be accepted as resume."""
+        data = make_checkpoint_data(workdir=str(tmp_path))
+        checkpoint.save_checkpoint(str(tmp_path), data)
+        with mock.patch("sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = True
+            mock_stdin.readline.return_value = "YES\n"
+            with mock.patch("select.select", return_value=([mock_stdin], [], [])):
+                result = checkpoint.prompt_resume(str(tmp_path))
+        assert result is True
+
+    def test_user_says_yes_with_whitespace(self, tmp_path: Path) -> None:
+        """'  yes  ' with surrounding whitespace should be accepted."""
+        data = make_checkpoint_data(workdir=str(tmp_path))
+        checkpoint.save_checkpoint(str(tmp_path), data)
+        with mock.patch("sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = True
+            mock_stdin.readline.return_value = "  yes  \n"
+            with mock.patch("select.select", return_value=([mock_stdin], [], [])):
+                result = checkpoint.prompt_resume(str(tmp_path))
+        assert result is True
+
+    def test_user_says_ye_not_accepted(self, tmp_path: Path) -> None:
+        """'ye' is not 'y' or 'yes', so it should not resume."""
+        data = make_checkpoint_data(workdir=str(tmp_path))
+        checkpoint.save_checkpoint(str(tmp_path), data)
+        with mock.patch("sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = True
+            mock_stdin.readline.return_value = "ye\n"
+            with mock.patch("select.select", return_value=([mock_stdin], [], [])):
+                result = checkpoint.prompt_resume(str(tmp_path))
+        assert result is False
+
+    def test_readline_oserror_returns_false(self, tmp_path: Path) -> None:
+        """When readline() raises OSError, should return False."""
+        data = make_checkpoint_data(workdir=str(tmp_path))
+        checkpoint.save_checkpoint(str(tmp_path), data)
+        with mock.patch("sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = True
+            mock_stdin.readline.side_effect = OSError("broken pipe")
+            with mock.patch("select.select", return_value=([mock_stdin], [], [])):
+                result = checkpoint.prompt_resume(str(tmp_path))
+        assert result is False
+
+
+class TestIsStrictIntEdgeCases:
+    """Additional boundary tests for _is_strict_int()."""
+
+    def test_none_is_rejected(self) -> None:
+        assert _is_strict_int(None) is False
+
+    def test_string_number_is_rejected(self) -> None:
+        assert _is_strict_int("5") is False
+
+    def test_negative_one_with_min_zero(self) -> None:
+        assert _is_strict_int(-1, min_value=0) is False
+
+    def test_zero_with_min_zero(self) -> None:
+        assert _is_strict_int(0, min_value=0) is True
+
+    def test_max_python_int(self) -> None:
+        """Very large ints should still be accepted."""
+        assert _is_strict_int(2**63) is True
+
+    def test_list_is_rejected(self) -> None:
+        assert _is_strict_int([1]) is False
+
+    def test_dict_is_rejected(self) -> None:
+        assert _is_strict_int({"a": 1}) is False
+
+
+class TestIsStringListEdgeCases:
+    """Additional edge cases for _is_string_list()."""
+
+    def test_tuple_is_rejected(self) -> None:
+        """Tuples are not lists."""
+        assert _is_string_list(("a", "b")) is False
+
+    def test_single_string_item(self) -> None:
+        assert _is_string_list(["hello"]) is True
+
+    def test_unicode_strings(self) -> None:
+        assert _is_string_list(["こんにちは", "🎉"]) is True
+
+    def test_empty_strings(self) -> None:
+        assert _is_string_list(["", "", ""]) is True
+
+    def test_int_is_rejected(self) -> None:
+        assert _is_string_list(42) is False
+
+    def test_none_is_rejected(self) -> None:
+        assert _is_string_list(None) is False

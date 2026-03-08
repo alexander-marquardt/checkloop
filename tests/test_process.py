@@ -397,3 +397,94 @@ class TestStreamProcessOutputKillReasons:
                 check_timeout=60, max_memory_mb=4096,
             )
         assert kill_reason == process.KILL_REASON_MEMORY
+
+
+class TestCheckHardTimeoutBoundary:
+    """Boundary tests for _check_hard_timeout()."""
+
+    def test_exactly_at_threshold_does_not_trigger(self) -> None:
+        """elapsed == check_timeout uses > comparison, so exact match doesn't kill."""
+        mock_proc = mock.MagicMock()
+        with mock.patch("time.time", return_value=160.0):
+            result = process._check_hard_timeout(
+                check_start_time=100.0, check_timeout=60, process=mock_proc,
+            )
+        assert result is False
+
+    def test_one_nanosecond_over_threshold_triggers(self) -> None:
+        """Just barely over the threshold should trigger."""
+        mock_proc = mock.MagicMock()
+        with mock.patch("time.time", return_value=160.0000001):
+            with mock.patch.object(process, "_kill_process_group"):
+                result = process._check_hard_timeout(
+                    check_start_time=100.0, check_timeout=60, process=mock_proc,
+                )
+        assert result is True
+
+    def test_negative_check_timeout_disabled(self) -> None:
+        """Negative timeout should be treated as disabled (same as 0)."""
+        mock_proc = mock.MagicMock()
+        result = process._check_hard_timeout(
+            check_start_time=0.0, check_timeout=-5, process=mock_proc,
+        )
+        assert result is False
+
+
+class TestCheckMemoryLimitBoundary:
+    """Boundary tests for _check_memory_limit()."""
+
+    def test_exactly_at_limit_does_not_kill(self) -> None:
+        """rss_mb == max_memory_mb uses > comparison, so exact match doesn't kill."""
+        now = time.time()
+        with mock.patch.object(process, "measure_session_rss_mb", return_value=4096.0):
+            exceeded, _ = process._check_memory_limit(
+                session_id=123, max_memory_mb=4096,
+                check_start_time=now - 60, process=mock.MagicMock(),
+                last_memory_check=now - 20,
+            )
+        assert exceeded is False
+
+    def test_one_mb_over_limit_kills(self) -> None:
+        """One MB over the limit should trigger kill."""
+        now = time.time()
+        mock_proc = mock.MagicMock()
+        with mock.patch.object(process, "measure_session_rss_mb", return_value=4097.0):
+            with mock.patch.object(process, "_kill_process_group") as mock_kill:
+                exceeded, _ = process._check_memory_limit(
+                    session_id=123, max_memory_mb=4096,
+                    check_start_time=now - 60, process=mock_proc,
+                    last_memory_check=now - 20,
+                )
+        assert exceeded is True
+        mock_kill.assert_called_once_with(mock_proc)
+
+    def test_negative_max_memory_disabled(self) -> None:
+        """Negative max_memory_mb should be treated as disabled."""
+        exceeded, _ = process._check_memory_limit(
+            session_id=123, max_memory_mb=-100,
+            check_start_time=time.time(), process=mock.MagicMock(),
+            last_memory_check=0.0,
+        )
+        assert exceeded is False
+
+
+class TestCheckBufferOverflow:
+    """Edge cases for _check_buffer_overflow()."""
+
+    def test_buffer_at_exact_limit(self) -> None:
+        """Buffer at exactly _MAX_BUFFER_SIZE should NOT be truncated."""
+        buf = bytearray(b"x" * process._MAX_BUFFER_SIZE)
+        result = process._check_buffer_overflow(buf)
+        assert len(result) == process._MAX_BUFFER_SIZE
+
+    def test_buffer_one_over_limit(self) -> None:
+        """Buffer one byte over _MAX_BUFFER_SIZE should be cleared."""
+        buf = bytearray(b"x" * (process._MAX_BUFFER_SIZE + 1))
+        result = process._check_buffer_overflow(buf)
+        assert len(result) == 0
+
+    def test_empty_buffer(self) -> None:
+        """Empty buffer should be returned unchanged."""
+        buf = bytearray()
+        result = process._check_buffer_overflow(buf)
+        assert len(result) == 0

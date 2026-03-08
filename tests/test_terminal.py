@@ -353,3 +353,58 @@ class TestFatal:
         assert exc_info.value.code == 1
         out = capsys.readouterr().out
         assert "something went wrong" in out
+
+
+class TestComputeSummaryStatsEdgeCases:
+    """Edge cases for compute_summary_stats()."""
+
+    def test_empty_results_returns_all_zeros(self) -> None:
+        stats = terminal.compute_summary_stats([])
+        assert stats.succeeded == 0
+        assert stats.failed == 0
+        assert stats.killed == 0
+        assert stats.total_lines == 0
+        assert stats.with_changes == 0
+
+    def test_all_none_lines_changed(self) -> None:
+        """lines_changed=None should be treated as 0 in sum."""
+        row = terminal.SummaryRow(
+            check_id="a", label="A", cycle=1, exit_code=0,
+            kill_reason=None, made_changes=True,
+            lines_changed=None, change_pct=None, duration="0m01s",
+        )
+        stats = terminal.compute_summary_stats([row])
+        assert stats.total_lines == 0
+        assert stats.with_changes == 1
+
+    def test_mix_of_none_and_int_lines_changed(self) -> None:
+        rows = [
+            terminal.SummaryRow(
+                check_id="a", label="A", cycle=1, exit_code=0,
+                kill_reason=None, made_changes=True,
+                lines_changed=None, change_pct=None, duration="0m01s",
+            ),
+            terminal.SummaryRow(
+                check_id="b", label="B", cycle=1, exit_code=0,
+                kill_reason=None, made_changes=True,
+                lines_changed=42, change_pct=1.0, duration="0m02s",
+            ),
+        ]
+        stats = terminal.compute_summary_stats(rows)
+        assert stats.total_lines == 42
+
+
+class TestFormatDurationAdditional:
+    """Additional edge cases for format_duration()."""
+
+    def test_negative_zero(self) -> None:
+        assert terminal.format_duration(-0.0) == "0m00s"
+
+    def test_one_second(self) -> None:
+        assert terminal.format_duration(1) == "0m01s"
+
+    def test_59_seconds(self) -> None:
+        assert terminal.format_duration(59) == "0m59s"
+
+    def test_61_seconds(self) -> None:
+        assert terminal.format_duration(61) == "1m01s"

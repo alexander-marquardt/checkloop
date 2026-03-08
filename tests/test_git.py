@@ -198,3 +198,21 @@ class TestParseShortstatEdgeCases:
         """Ensure parsing handles very large numbers without overflow."""
         text = f" 1 file changed, {2**31} insertions(+)"
         assert git._parse_shortstat(text) == 2**31
+
+
+class TestParseShortstatAdditional:
+    """Additional edge cases for _parse_shortstat()."""
+
+    def test_negative_number_before_insertion(self) -> None:
+        """\\d+ matches digits after the minus sign (git never outputs negatives)."""
+        assert git._parse_shortstat(" 1 file changed, -5 insertions(+)") == 5
+
+    def test_decimal_number_partial_match(self) -> None:
+        """'1.5 insertions' — regex matches '5' as the digits before ' insertion'."""
+        result = git._parse_shortstat(" 1 file changed, 1.5 insertions(+)")
+        assert result == 5
+
+    def test_no_space_before_insertion(self) -> None:
+        """Without a space before 'insertion', the regex might not match."""
+        result = git._parse_shortstat(" 1 file changed,5 insertions(+)")
+        assert result == 5

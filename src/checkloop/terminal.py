@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import sys
 from typing import NamedTuple, NoReturn, TypedDict
 
@@ -208,7 +209,6 @@ def compute_cycle_summaries(results: list[SummaryRow]) -> list[CycleSummary]:
 def _parse_duration(duration_str: str) -> float:
     """Parse a duration string like '2m30s' or '1h02m30s' back to seconds."""
     total = 0.0
-    import re
     match = re.match(r"(?:(\d+)h)?(\d+)m(\d+)s", duration_str)
     if match:
         hours = int(match.group(1) or 0)

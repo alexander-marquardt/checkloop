@@ -309,3 +309,34 @@ class TestCleanupAllSessionsExceptions:
         with mock.patch.object(monitoring, "_find_child_pids", side_effect=RuntimeError("boom")):
             # Should not raise
             monitoring.cleanup_all_sessions()
+
+
+class TestMonitoringEdgeCases:
+    """Edge cases for monitoring module."""
+
+    def test_sum_rss_from_ps_empty_stdout(self) -> None:
+        """ps returning empty stdout should return 0.0."""
+        with mock.patch("subprocess.run", return_value=make_git_result(stdout="")):
+            assert monitoring._sum_rss_from_ps("-p", "1") == 0.0
+
+    def test_sum_rss_from_ps_whitespace_only_stdout(self) -> None:
+        """ps returning whitespace-only stdout should return 0.0."""
+        with mock.patch("subprocess.run", return_value=make_git_result(stdout="   \n  \n")):
+            result = monitoring._sum_rss_from_ps("-p", "1")
+            assert result == 0.0
+
+    def test_sum_rss_from_ps_all_non_numeric(self) -> None:
+        """ps returning only non-numeric lines should return 0.0."""
+        with mock.patch("subprocess.run", return_value=make_git_result(stdout="abc\ndef\n")):
+            result = monitoring._sum_rss_from_ps("-p", "1")
+            assert result == 0.0
+
+    def test_kill_pids_single_pid(self) -> None:
+        """Killing a single PID should return 1 if successful."""
+        with mock.patch("os.kill"):
+            assert monitoring.kill_pids([42]) == 1
+
+    def test_kill_pids_all_dead(self) -> None:
+        """If all PIDs are already dead, killed count should be 0."""
+        with mock.patch("os.kill", side_effect=OSError("No such process")):
+            assert monitoring.kill_pids([1, 2, 3]) == 0
