@@ -209,7 +209,9 @@ def _run_check_suite(
         changed_this_cycle: set[str] = set()
 
         for i, check in enumerate(active_checks, 1):
-            time.sleep(args.pause)
+            # Perf: only pause between checks, not before the first one in each cycle.
+            if i > 1:
+                time.sleep(args.pause)
             cycle_suffix = f" (cycle {cycle}/{num_cycles})" if num_cycles > 1 else ""
             step_label = f"[{i}/{len(active_checks)}]{cycle_suffix}"
 
