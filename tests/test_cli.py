@@ -9,7 +9,7 @@ from unittest import mock
 
 import pytest
 
-from checkloop import cli, suite, checks
+from checkloop import cli, cli_args, suite, checks
 from checkloop.checks import CheckDef
 from tests.helpers import make_checkpoint_data, make_mock_cli_args
 

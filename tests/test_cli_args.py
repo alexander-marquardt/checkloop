@@ -1,4 +1,4 @@
-"""Tests for checkloop.cli — argument parsing, validation, and resolution."""
+"""Tests for checkloop.cli_args — argument parsing, validation, and resolution."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from unittest import mock
 
 import pytest
 
-from checkloop import cli, suite, process, checks
+from checkloop import cli, cli_args, suite, process, checks
 from checkloop.checks import CheckDef
 from tests.helpers import make_mock_cli_args, make_suite_args
 
@@ -22,7 +22,7 @@ def _parse_cli(args: list[str]) -> argparse.Namespace:
     """Parse CLI args, auto-adding --dir /tmp if not provided."""
     if "--dir" not in args and "-d" not in args:
         args = ["--dir", "/tmp"] + args
-    return cli._build_argument_parser().parse_args(args)
+    return cli_args._build_argument_parser().parse_args(args)
 
 
 # =============================================================================
@@ -46,7 +46,7 @@ class TestBuildArgumentParser:
 
     def test_dir_is_required(self) -> None:
         with pytest.raises(SystemExit):
-            cli._build_argument_parser().parse_args([])
+            cli_args._build_argument_parser().parse_args([])
 
     def test_dir(self) -> None:
         ns = _parse_cli(["--dir", "/foo"])
@@ -106,7 +106,7 @@ class TestPrintRunSummary:
 
     def test_normal_summary(self, capsys: pytest.CaptureFixture[str]) -> None:
         selected_checks: list[CheckDef] = [CheckDef(id="readability", label="Readability", prompt="p")]
-        cli._print_run_summary("/tmp", selected_checks, 2, 2, 120, False)
+        cli_args._print_run_summary("/tmp", selected_checks, 2, 2, 120, False)
         out = capsys.readouterr().out
         assert "checkloop" in out
         assert "/tmp" in out
@@ -115,37 +115,37 @@ class TestPrintRunSummary:
 
     def test_dry_run_summary(self, capsys: pytest.CaptureFixture[str]) -> None:
         selected_checks: list[CheckDef] = [CheckDef(id="tests", label="Tests", prompt="p")]
-        cli._print_run_summary("/tmp", selected_checks, 1, 1, 120, True)
+        cli_args._print_run_summary("/tmp", selected_checks, 1, 1, 120, True)
         out = capsys.readouterr().out
         assert "DRY RUN" in out
 
     def test_single_cycle_no_plural(self, capsys: pytest.CaptureFixture[str]) -> None:
         selected_checks: list[CheckDef] = [CheckDef(id="dry", label="DRY", prompt="p")]
-        cli._print_run_summary("/dir", selected_checks, 1, 1, 60, False)
+        cli_args._print_run_summary("/dir", selected_checks, 1, 1, 60, False)
         out = capsys.readouterr().out
         assert "1 cycle)" in out
 
     def test_multiple_cycles_plural(self, capsys: pytest.CaptureFixture[str]) -> None:
         selected_checks: list[CheckDef] = [CheckDef(id="dry", label="DRY", prompt="p")]
-        cli._print_run_summary("/dir", selected_checks, 3, 3, 60, False)
+        cli_args._print_run_summary("/dir", selected_checks, 3, 3, 60, False)
         out = capsys.readouterr().out
         assert "cycles)" in out
 
     def test_empty_checks_list(self, capsys: pytest.CaptureFixture[str]) -> None:
-        cli._print_run_summary("/dir", [], 1, 0, 60, False)
+        cli_args._print_run_summary("/dir", [], 1, 0, 60, False)
         out = capsys.readouterr().out
         assert "Total steps  : 0" in out
 
     def test_convergence_threshold_displayed(self, capsys: pytest.CaptureFixture[str]) -> None:
         selected_checks: list[CheckDef] = [CheckDef(id="dry", label="DRY", prompt="p")]
-        cli._print_run_summary("/dir", selected_checks, 1, 1, 60, False, convergence_threshold=0.5)
+        cli_args._print_run_summary("/dir", selected_checks, 1, 1, 60, False, convergence_threshold=0.5)
         out = capsys.readouterr().out
         assert "0.5%" in out
         assert "Convergence" in out
 
     def test_zero_convergence_not_displayed(self, capsys: pytest.CaptureFixture[str]) -> None:
         selected_checks: list[CheckDef] = [CheckDef(id="dry", label="DRY", prompt="p")]
-        cli._print_run_summary("/dir", selected_checks, 1, 1, 60, False, convergence_threshold=0.0)
+        cli_args._print_run_summary("/dir", selected_checks, 1, 1, 60, False, convergence_threshold=0.0)
         out = capsys.readouterr().out
         assert "Convergence" not in out
 
@@ -159,21 +159,21 @@ class TestValidateArguments:
 
     def test_cycles_zero_exits(self) -> None:
         with pytest.raises(SystemExit) as exc_info:
-            cli._validate_arguments(make_suite_args(cycles=0))
+            cli_args._validate_arguments(make_suite_args(cycles=0))
         assert exc_info.value.code == 1
 
     def test_negative_cycles_exits(self) -> None:
         with pytest.raises(SystemExit) as exc_info:
-            cli._validate_arguments(make_suite_args(cycles=-5))
+            cli_args._validate_arguments(make_suite_args(cycles=-5))
         assert exc_info.value.code == 1
 
     def test_negative_convergence_exits(self) -> None:
         with pytest.raises(SystemExit) as exc_info:
-            cli._validate_arguments(make_suite_args(convergence_threshold=-0.5))
+            cli_args._validate_arguments(make_suite_args(convergence_threshold=-0.5))
         assert exc_info.value.code == 1
 
     def test_valid_arguments_no_exit(self) -> None:
-        cli._validate_arguments(make_suite_args(idle_timeout=1, convergence_threshold=0.0))  # should not raise
+        cli_args._validate_arguments(make_suite_args(idle_timeout=1, convergence_threshold=0.0))  # should not raise
 
 
 class TestValidateArgumentsEdgeCases:
@@ -182,48 +182,48 @@ class TestValidateArgumentsEdgeCases:
     def test_convergence_threshold_over_100_exits(self) -> None:
         args = make_mock_cli_args(convergence_threshold=101.0)
         with pytest.raises(SystemExit) as exc_info:
-            cli._validate_arguments(args)
+            cli_args._validate_arguments(args)
         assert exc_info.value.code == 1
 
     def test_converged_at_zero_is_valid(self) -> None:
         args = make_mock_cli_args(convergence_threshold=0.0)
-        cli._validate_arguments(args)
+        cli_args._validate_arguments(args)
 
     def test_converged_at_100_is_valid(self) -> None:
         args = make_mock_cli_args(convergence_threshold=100.0)
-        cli._validate_arguments(args)
+        cli_args._validate_arguments(args)
 
     def test_idle_timeout_exactly_one(self) -> None:
         args = make_mock_cli_args(idle_timeout=1)
-        cli._validate_arguments(args)
+        cli_args._validate_arguments(args)
 
     def test_pause_zero_is_valid(self) -> None:
         args = make_mock_cli_args(pause=0)
-        cli._validate_arguments(args)
+        cli_args._validate_arguments(args)
 
     def test_cycles_exactly_one(self) -> None:
         args = make_mock_cli_args(cycles=1)
-        cli._validate_arguments(args)
+        cli_args._validate_arguments(args)
 
     def test_negative_max_memory_mb_exits(self) -> None:
         args = make_mock_cli_args(max_memory_mb=-1)
         with pytest.raises(SystemExit) as exc_info:
-            cli._validate_arguments(args)
+            cli_args._validate_arguments(args)
         assert exc_info.value.code == 1
 
     def test_zero_max_memory_mb_is_valid(self) -> None:
         args = make_mock_cli_args(max_memory_mb=0)
-        cli._validate_arguments(args)
+        cli_args._validate_arguments(args)
 
     def test_negative_check_timeout_exits(self) -> None:
         args = make_mock_cli_args(check_timeout=-1)
         with pytest.raises(SystemExit) as exc_info:
-            cli._validate_arguments(args)
+            cli_args._validate_arguments(args)
         assert exc_info.value.code == 1
 
     def test_zero_check_timeout_is_valid(self) -> None:
         args = make_mock_cli_args(check_timeout=0)
-        cli._validate_arguments(args)
+        cli_args._validate_arguments(args)
 
 
 # =============================================================================
@@ -235,35 +235,35 @@ class TestResolveSelectedChecks:
 
     def test_level_basic(self) -> None:
         args = argparse.Namespace(all_checks=False, checks=None, level="basic")
-        result = cli._resolve_selected_checks(args)
+        result = cli_args._resolve_selected_checks(args)
         ids = [p["id"] for p in result]
         assert ids == checks.TIER_BASIC
 
     def test_all_checks(self) -> None:
         args = argparse.Namespace(all_checks=True, checks=None, level=None)
-        result = cli._resolve_selected_checks(args)
+        result = cli_args._resolve_selected_checks(args)
         assert len(result) == len(checks.CHECKS)
 
     def test_checks_override_level(self) -> None:
         args = argparse.Namespace(all_checks=False, checks=["security"], level="exhaustive")
-        result = cli._resolve_selected_checks(args)
+        result = cli_args._resolve_selected_checks(args)
         assert len(result) == 1
         assert result[0]["id"] == "security"
 
     def test_all_checks_flag(self) -> None:
         args = make_mock_cli_args(all_checks=True, checks=None, level=None)
-        result = cli._resolve_selected_checks(args)
+        result = cli_args._resolve_selected_checks(args)
         assert len(result) == len(checks.CHECKS)
 
     def test_explicit_checks_override_level(self) -> None:
         args = make_mock_cli_args(all_checks=False, checks=["security"], level="basic")
-        result = cli._resolve_selected_checks(args)
+        result = cli_args._resolve_selected_checks(args)
         assert len(result) == 1
         assert result[0]["id"] == "security"
 
     def test_default_tier_when_nothing_specified(self) -> None:
         args = make_mock_cli_args(all_checks=False, checks=None, level=None)
-        result = cli._resolve_selected_checks(args)
+        result = cli_args._resolve_selected_checks(args)
         expected_ids = set(checks.TIERS[checks.DEFAULT_TIER])
         assert {p["id"] for p in result} == expected_ids
 
@@ -279,7 +279,7 @@ class TestResolveWorkingDirectory:
         from pathlib import Path
         with mock.patch.object(Path, "resolve", side_effect=OSError("bad path")):
             with pytest.raises(SystemExit):
-                cli._resolve_working_directory("/nonexistent/\x00path")
+                cli_args._resolve_working_directory("/nonexistent/\x00path")
 
 
 # =============================================================================
@@ -291,29 +291,29 @@ class TestResolveChangedFilesPrefix:
 
     def test_changed_only_none_returns_empty(self) -> None:
         args = argparse.Namespace(changed_only=None)
-        result = cli._resolve_changed_files_prefix(args, "/tmp")
+        result = cli_args._resolve_changed_files_prefix(args, "/tmp")
         assert result == ""
 
     def test_not_git_repo_exits(self) -> None:
         args = argparse.Namespace(changed_only="auto")
-        with mock.patch.object(cli, "is_git_repo", return_value=False):
+        with mock.patch.object(cli_args, "is_git_repo", return_value=False):
             with pytest.raises(SystemExit) as exc_info:
-                cli._resolve_changed_files_prefix(args, "/tmp")
+                cli_args._resolve_changed_files_prefix(args, "/tmp")
             assert exc_info.value.code == 1
 
     def test_no_changed_files_exits(self) -> None:
         args = argparse.Namespace(changed_only="main")
-        with mock.patch.object(cli, "is_git_repo", return_value=True), \
-             mock.patch.object(cli, "get_changed_files", return_value=[]):
+        with mock.patch.object(cli_args, "is_git_repo", return_value=True), \
+             mock.patch.object(cli_args, "get_changed_files", return_value=[]):
             with pytest.raises(SystemExit) as exc_info:
-                cli._resolve_changed_files_prefix(args, "/tmp")
+                cli_args._resolve_changed_files_prefix(args, "/tmp")
             assert exc_info.value.code == 1
 
     def test_returns_prefix_with_changed_files(self, capsys: pytest.CaptureFixture[str]) -> None:
         args = argparse.Namespace(changed_only="main")
-        with mock.patch.object(cli, "is_git_repo", return_value=True), \
-             mock.patch.object(cli, "get_changed_files", return_value=["a.py", "b.py"]):
-            result = cli._resolve_changed_files_prefix(args, "/tmp")
+        with mock.patch.object(cli_args, "is_git_repo", return_value=True), \
+             mock.patch.object(cli_args, "get_changed_files", return_value=["a.py", "b.py"]):
+            result = cli_args._resolve_changed_files_prefix(args, "/tmp")
         assert "a.py" in result
         assert "b.py" in result
         out = capsys.readouterr().out
@@ -329,7 +329,7 @@ class TestConvergenceThresholdArg:
 
     def test_default(self) -> None:
         ns = _parse_cli(["--dir", "/tmp"])
-        assert ns.convergence_threshold == cli.DEFAULT_CONVERGENCE_THRESHOLD
+        assert ns.convergence_threshold == cli_args.DEFAULT_CONVERGENCE_THRESHOLD
 
     def test_custom_value(self) -> None:
         ns = _parse_cli(["--dir", "/tmp", "--convergence-threshold", "0.5"])
@@ -396,14 +396,14 @@ class TestDisplayPreRunWarning:
 
     def test_skip_permissions_true(self, capsys: pytest.CaptureFixture[str]) -> None:
         with mock.patch("time.sleep"):
-            cli._display_pre_run_warning(skip_permissions=True)
+            cli_args._display_pre_run_warning(skip_permissions=True)
         out = capsys.readouterr().out
         assert "dangerously-skip-permissions is ENABLED" in out
-        assert f"Starting in {cli._WARNING_COUNTDOWN_SECONDS} seconds" in out
+        assert f"Starting in {cli_args._WARNING_COUNTDOWN_SECONDS} seconds" in out
 
     def test_skip_permissions_false(self, capsys: pytest.CaptureFixture[str]) -> None:
         with mock.patch("time.sleep"):
-            cli._display_pre_run_warning(skip_permissions=False)
+            cli_args._display_pre_run_warning(skip_permissions=False)
         out = capsys.readouterr().out
         assert "Running without --dangerously-skip-permissions" in out
         assert "Re-run with" in out
@@ -412,7 +412,7 @@ class TestDisplayPreRunWarning:
     def test_keyboard_interrupt_exits(self, capsys: pytest.CaptureFixture[str]) -> None:
         with mock.patch("time.sleep", side_effect=KeyboardInterrupt):
             with pytest.raises(SystemExit) as exc_info:
-                cli._display_pre_run_warning(skip_permissions=True)
+                cli_args._display_pre_run_warning(skip_permissions=True)
             assert exc_info.value.code == 0
         out = capsys.readouterr().out
         assert "Aborted" in out
@@ -427,16 +427,14 @@ class TestPrintRunSummaryOptionalFields:
 
     def test_check_timeout_displayed(self, capsys: pytest.CaptureFixture[str]) -> None:
         selected_checks: list[CheckDef] = [CheckDef(id="dry", label="DRY", prompt="p")]
-        cli._print_run_summary("/dir", selected_checks, 1, 1, 60, False, check_timeout=300)
+        cli_args._print_run_summary("/dir", selected_checks, 1, 1, 60, False, check_timeout=300)
         out = capsys.readouterr().out
         assert "Check timeout" in out
         assert "300s" in out
 
     def test_memory_limit_displayed(self, capsys: pytest.CaptureFixture[str]) -> None:
         selected_checks: list[CheckDef] = [CheckDef(id="dry", label="DRY", prompt="p")]
-        cli._print_run_summary("/dir", selected_checks, 1, 1, 60, False, max_memory_mb=4096)
+        cli_args._print_run_summary("/dir", selected_checks, 1, 1, 60, False, max_memory_mb=4096)
         out = capsys.readouterr().out
         assert "Memory limit" in out
         assert "4096MB" in out
-
-

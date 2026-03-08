@@ -18,6 +18,25 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import IO
 
+from checkloop.monitoring import (
+    kill_session_stragglers,
+    log_memory_usage,
+    measure_session_rss_mb,
+    previous_session_ids,
+)
+from checkloop.streaming import process_jsonl_buffer
+from checkloop.terminal import (
+    DIM,
+    GREEN,
+    RED,
+    YELLOW,
+    fatal,
+    format_duration,
+    print_status,
+)
+
+logger = logging.getLogger(__name__)
+
 
 # --- Kill reasons -------------------------------------------------------------
 
@@ -44,30 +63,6 @@ class CheckResult:
 
     exit_code: int
     kill_reason: str | None = None
-
-# --- Deferred imports (after CheckResult definition) -------------------------
-# These imports must appear after CheckResult is defined to break a circular
-# dependency chain: monitoring imports from terminal, and process imports from
-# monitoring — but CheckResult must exist first because external callers
-# import it alongside symbols from monitoring.
-from checkloop.monitoring import (
-    kill_session_stragglers,
-    log_memory_usage,
-    measure_session_rss_mb,
-    previous_session_ids,
-)
-from checkloop.terminal import (
-    DIM,
-    GREEN,
-    RED,
-    YELLOW,
-    fatal,
-    format_duration,
-    print_status,
-)
-from checkloop.streaming import process_jsonl_buffer
-
-logger = logging.getLogger(__name__)
 
 DEFAULT_IDLE_TIMEOUT = 300
 """Seconds of silence before killing a subprocess (default for *idle_timeout*)."""

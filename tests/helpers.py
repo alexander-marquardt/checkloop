@@ -11,7 +11,7 @@ from unittest import mock
 from checkloop import check_runner, process, suite
 from checkloop.checks import CheckDef
 from checkloop.checkpoint import CheckpointData
-from checkloop.cli import DEFAULT_CONVERGENCE_THRESHOLD
+from checkloop.cli_args import DEFAULT_CONVERGENCE_THRESHOLD
 from checkloop.process import CheckResult
 from checkloop.terminal import SummaryRow
 
