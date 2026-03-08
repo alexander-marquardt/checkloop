@@ -294,9 +294,14 @@ def compute_change_stats(workdir: str, base_sha: str) -> tuple[int, float]:
 
     *change_percentage* is calculated relative to the total number of
     tracked lines in the repository, clamped to a minimum of 1 to avoid
-    division by zero.
+    division by zero.  Returns ``(0, 0.0)`` on any unexpected error so
+    callers can continue safely.
     """
-    lines_changed = _count_lines_changed(workdir, base_sha)
-    if lines_changed == 0:
+    try:
+        lines_changed = _count_lines_changed(workdir, base_sha)
+        if lines_changed == 0:
+            return 0, 0.0
+        return lines_changed, (lines_changed / _cached_total_tracked_lines(workdir)) * 100
+    except Exception as exc:
+        logger.error("Failed to compute change stats for %s vs %s: %s", workdir, base_sha, exc, exc_info=True)
         return 0, 0.0
-    return lines_changed, (lines_changed / _cached_total_tracked_lines(workdir)) * 100

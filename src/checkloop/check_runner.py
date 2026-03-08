@@ -141,22 +141,29 @@ def _run_memory_fix(
     This is triggered automatically when a check is killed for exceeding the
     memory limit.  The follow-up prompt instructs Claude to investigate common
     causes (--cov in addopts, missing test timeouts, etc.) and fix them.
+
+    This is a best-effort operation — any failure is logged and the suite
+    continues.
     """
     logger.info("Running memory-fix follow-up after OOM kill (limit=%dMB)", args.max_memory_mb)
     print_banner("Memory fix — investigating excessive memory usage", YELLOW)
-    fix_prompt = _MEMORY_FIX_PROMPT.format(rss_limit=args.max_memory_mb) + COMMIT_MESSAGE_INSTRUCTIONS
+    try:
+        fix_prompt = _MEMORY_FIX_PROMPT.format(rss_limit=args.max_memory_mb) + COMMIT_MESSAGE_INSTRUCTIONS
 
-    fix_result = _invoke_claude(fix_prompt, workdir, args)
-    if fix_result.exit_code != 0:
-        logger.warning("Memory-fix check exited with code %d", fix_result.exit_code)
-        print_status("Memory-fix check did not complete cleanly. Continuing...", YELLOW)
-    else:
-        print_status("Memory-fix check completed.", GREEN)
+        fix_result = _invoke_claude(fix_prompt, workdir, args)
+        if fix_result.exit_code != 0:
+            logger.warning("Memory-fix check exited with code %d", fix_result.exit_code)
+            print_status("Memory-fix check did not complete cleanly. Continuing...", YELLOW)
+        else:
+            print_status("Memory-fix check completed.", GREEN)
 
-    if is_git:
-        committed = git_commit_all(workdir, "Commit uncommitted changes left by memory-fix check")
-        if committed:
-            print_status("  Committed memory-fix changes.", GREEN)
+        if is_git:
+            committed = git_commit_all(workdir, "Commit uncommitted changes left by memory-fix check")
+            if committed:
+                print_status("  Committed memory-fix changes.", GREEN)
+    except Exception as exc:
+        logger.error("Memory-fix follow-up failed: %s", exc, exc_info=True)
+        print_status("Memory-fix follow-up failed — continuing with remaining checks.", YELLOW)
 
 
 # --- Change detection ---------------------------------------------------------
@@ -223,7 +230,17 @@ def _run_single_check(
 
     sha_before = git_head_sha(workdir) if is_git else None
 
-    result = _invoke_claude(prompt, workdir, args)
+    try:
+        result = _invoke_claude(prompt, workdir, args)
+    except Exception as exc:
+        logger.error("Check '%s' raised an unexpected exception: %s", check["id"], exc, exc_info=True)
+        print_status(f"Check '{check['id']}' failed with error: {exc}. Continuing...", YELLOW)
+        return CheckOutcome(
+            check_id=check["id"], label=check["label"], cycle=cycle,
+            exit_code=-1, kill_reason=None, made_changes=False,
+            lines_changed=None, change_pct=None,
+            duration_seconds=time.time() - check_start,
+        )
 
     if result.kill_reason == KILL_REASON_MEMORY:
         _run_memory_fix(workdir, args, is_git)
