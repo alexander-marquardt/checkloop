@@ -1,4 +1,4 @@
-# Contributing to claudeloop
+# Contributing to checkloop
 
 Thanks for your interest in contributing!
 
@@ -11,14 +11,14 @@ Thanks for your interest in contributing!
 
 ```bash
 # Clone the repo
-git clone https://github.com/alexander-marquardt/claudeloop.git
-cd claudeloop
+git clone https://github.com/alexander-marquardt/checkloop.git
+cd checkloop
 
 # Install with uv (recommended)
 uv sync
 
 # Run locally
-uv run claudeloop --help
+uv run checkloop --help
 
 # Or install in editable mode
 uv pip install -e .
@@ -28,7 +28,7 @@ uv pip install -e .
 
 1. Fork the repo and create a branch from `main`.
 2. Make your changes. Keep them focused — one PR per feature or fix.
-3. Test your changes: run `claudeloop --dry-run` at minimum.
+3. Test your changes: run `checkloop --dry-run` at minimum.
 4. Submit a PR with a clear description of what changed and why.
 
 ## Code Style
@@ -37,9 +37,9 @@ uv pip install -e .
 - Use type hints for function signatures.
 - Keep it simple — this is a single-module CLI tool, not a framework.
 
-## Adding Review Passes
+## Adding Checks
 
-New review passes are welcome! Add them to the `REVIEW_PASSES` list in `src/claudeloop/cli.py`. Each pass needs:
-- `id`: short lowercase key (used in `--passes` flag)
+New checks are welcome! Add them to the `CHECKS` list in `src/checkloop/cli.py`. Each check needs:
+- `id`: short lowercase key (used in `--checks` flag)
 - `label`: human-readable name for the banner
 - `prompt`: the instruction sent to Claude

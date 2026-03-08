@@ -11,7 +11,7 @@ A clear description of the bug.
 
 **Command you ran**
 ```bash
-claudeloop ...
+checkloop ...
 ```
 
 **Expected behavior**
@@ -24,4 +24,4 @@ What actually happened. Include any error output.
 - OS:
 - Python version:
 - Claude Code version (`claude --version`):
-- claudeloop version:
+- checkloop version:

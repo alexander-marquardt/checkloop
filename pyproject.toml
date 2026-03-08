@@ -1,14 +1,14 @@
 [project]
-name = "claudeloop"
+name = "checkloop"
 version = "0.1.0"
-description = "Autonomous multi-pass code review using Claude Code"
+description = "Autonomous multi-check code review using Claude Code"
 requires-python = ">=3.12"
 license = "MIT"
 authors = [
     { name = "Alexander Marquardt", email = "alexander.marquardt@gmail.com" },
 ]
 readme = "README.md"
-keywords = ["claude", "code-review", "ai", "automation", "claude-code"]
+keywords = ["code-review", "ai", "automation", "claude-code", "linting"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
@@ -29,17 +29,17 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/alexander-marquardt/claudeloop"
-Repository = "https://github.com/alexander-marquardt/claudeloop"
-Issues = "https://github.com/alexander-marquardt/claudeloop/issues"
-Blog = "https://alexmarquardt.com/ai-tools/claudeloop-autonomous-code-review/"
+Homepage = "https://github.com/alexander-marquardt/checkloop"
+Repository = "https://github.com/alexander-marquardt/checkloop"
+Issues = "https://github.com/alexander-marquardt/checkloop/issues"
+Blog = "https://alexmarquardt.com/ai-tools/checkloop-autonomous-code-review/"
 
 [project.scripts]
-claudeloop = "claudeloop.cli:main"
+checkloop = "checkloop.cli:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/claudeloop"]
+packages = ["src/checkloop"]

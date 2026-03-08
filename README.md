@@ -1,55 +1,55 @@
-# claudeloop
+# checkloop
 
 **Autonomous multi-check code review using Claude Code.**
 
-**Writeup:** [Autonomous Multi-Check AI Code Review](https://alexmarquardt.com/ai-tools/claudeloop-autonomous-code-review/)
+**Writeup:** [Autonomous Multi-Check AI Code Review](https://alexmarquardt.com/ai-tools/checkloop-autonomous-code-review/)
 
-Single-check AI code review misses things. `claudeloop` runs dimension-specific checks — readability, DRY, tests, security, performance, error handling, and more — in sequence, then optionally cycles through the full suite again. Each check creates a cleaner baseline that makes the next category of issues more visible.
+Single-check AI code review misses things. `checkloop` runs dimension-specific checks — readability, DRY, tests, security, performance, error handling, and more — in sequence, then optionally cycles through the full suite again. Each check creates a cleaner baseline that makes the next category of issues more visible.
 
 ## Install
 
 Requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`npm install -g @anthropic-ai/claude-code`).
 
 ```bash
-git clone https://github.com/alexander-marquardt/claudeloop.git
-cd claudeloop
+git clone https://github.com/alexander-marquardt/checkloop.git
+cd checkloop
 uv sync
 ```
 
 ## Usage
 
-Run with `uv run claudeloop` from the project directory. `--dir` is required:
+Run with `uv run checkloop` from the project directory. `--dir` is required:
 
 ```bash
 # Check a project (basic tier: readability, dry, tests, docs)
-uv run claudeloop --dir ~/my-project
+uv run checkloop --dir ~/my-project
 
 # Use the thorough tier for deeper checks
-uv run claudeloop --dir ~/my-project --level thorough
+uv run checkloop --dir ~/my-project --level thorough
 
 # Exhaustive — all 17 checks, repeat twice
-uv run claudeloop --dir ~/my-project --level exhaustive --cycles 2
+uv run checkloop --dir ~/my-project --level exhaustive --cycles 2
 
 # Pick specific checks manually (overrides tier)
-uv run claudeloop --dir ~/my-project --checks readability security tests
+uv run checkloop --dir ~/my-project --checks readability security tests
 
 # Preview without running
-uv run claudeloop --dir ~/my-project --dry-run
+uv run checkloop --dir ~/my-project --dry-run
 
 # Only check files changed on this branch (vs main/master)
-uv run claudeloop --dir ~/my-project --changed-only
+uv run checkloop --dir ~/my-project --changed-only
 
 # Only check files changed vs a specific branch
-uv run claudeloop --dir ~/my-project --changed-only develop
+uv run checkloop --dir ~/my-project --changed-only develop
 
 # See what Claude is doing in detail
-uv run claudeloop --dir ~/my-project -v
+uv run checkloop --dir ~/my-project -v
 ```
 
-To make `claudeloop` available globally (without `uv run`):
+To make `checkloop` available globally (without `uv run`):
 
 ```bash
-uv tool install git+https://github.com/alexander-marquardt/claudeloop.git
+uv tool install git+https://github.com/alexander-marquardt/checkloop.git
 ```
 
 ## Check Tiers
@@ -101,11 +101,11 @@ Each check builds on the work of the previous ones.
 
 ## Convergence Detection
 
-When running multiple cycles (`--cycles N`), `claudeloop` can stop early once the codebase stabilises. After each cycle it commits the changes and measures what percentage of total tracked lines were modified. If that percentage falls below the `--converged-at-percentage` threshold (default 0.1%), the loop exits. This requires the project directory to be a git repo. Set to 0 to disable.
+When running multiple cycles (`--cycles N`), `checkloop` can stop early once the codebase stabilises. After each cycle it commits the changes and measures what percentage of total tracked lines were modified. If that percentage falls below the `--converged-at-percentage` threshold (default 0.1%), the loop exits. This requires the project directory to be a git repo. Set to 0 to disable.
 
 ```bash
 # Run up to 5 cycles, but stop early if changes drop below 0.5%
-uv run claudeloop --cycles 5 --converged-at-percentage 0.5
+uv run checkloop --cycles 5 --converged-at-percentage 0.5
 ```
 
 ## Options
@@ -135,7 +135,7 @@ uv run claudeloop --cycles 5 --converged-at-percentage 0.5
 
 ## How It Works
 
-`claudeloop` is a single-module Python CLI (`src/claudeloop/cli.py`) that orchestrates Claude Code as a subprocess. Here is the high-level flow:
+`checkloop` is a single-module Python CLI (`src/checkloop/cli.py`) that orchestrates Claude Code as a subprocess. Here is the high-level flow:
 
 1. **Argument resolution** — Parses CLI flags, resolves the check tier (or manual check selection), and validates the target directory.
 2. **Pre-run warning** — Displays a 5-second countdown so the user can abort. Warns if `--dangerously-skip-permissions` is (or isn't) set.
@@ -163,8 +163,8 @@ Each check operates on the code left by the previous check, so improvements comp
 
 | Variable | Description |
 |----------|-------------|
-| `ANTHROPIC_API_KEY` | Required by Claude Code for authentication. Must be set before running `claudeloop`. See the [Claude Code docs](https://docs.anthropic.com/en/docs/claude-code) for setup. |
-| `CLAUDECODE` | Automatically stripped by `claudeloop` when spawning subprocesses. This allows `claudeloop` to be invoked from within a Claude Code session without conflict. You do not need to set this yourself. |
+| `ANTHROPIC_API_KEY` | Required by Claude Code for authentication. Must be set before running `checkloop`. See the [Claude Code docs](https://docs.anthropic.com/en/docs/claude-code) for setup. |
+| `CLAUDECODE` | Automatically stripped by `checkloop` when spawning subprocesses. This allows `checkloop` to be invoked from within a Claude Code session without conflict. You do not need to set this yourself. |
 
 No other environment variables or config files are required. All configuration is done via CLI flags.
 
@@ -177,7 +177,7 @@ No other environment variables or config files are required. All configuration i
 ## Project Structure
 
 ```
-src/claudeloop/
+src/checkloop/
 ├── __init__.py   # Package docstring and public API summary
 └── cli.py        # All CLI logic: argument parsing, checks, Claude subprocess management
 ```
@@ -186,21 +186,21 @@ src/claudeloop/
 
 ```bash
 # Clone and install dev dependencies
-git clone https://github.com/alexander-marquardt/claudeloop.git
-cd claudeloop
+git clone https://github.com/alexander-marquardt/checkloop.git
+cd checkloop
 uv sync --dev
 
 # Run the test suite
 uv run pytest
 
 # Run with coverage
-uv run pytest --cov=claudeloop --cov-report=term-missing
+uv run pytest --cov=checkloop --cov-report=term-missing
 
 # Type checking
-uv run mypy src/claudeloop/
+uv run mypy src/checkloop/
 
-# Run claudeloop on itself (dogfooding)
-uv run claudeloop --dir . --dangerously-skip-permissions
+# Run checkloop on itself (dogfooding)
+uv run checkloop --dir . --dangerously-skip-permissions
 ```
 
 The project has no runtime dependencies — only `pytest`, `pytest-cov`, and `mypy` in the dev group.
@@ -210,21 +210,21 @@ The project has no runtime dependencies — only `pytest`, `pytest-cov`, and `my
 | Problem | Solution |
 |---------|----------|
 | `claude` not found | Install Claude Code: `npm install -g @anthropic-ai/claude-code` |
-| Checks hang waiting for permission prompts | You must use `--dangerously-skip-permissions` — claudeloop cannot relay interactive prompts |
-| "CLAUDECODE" conflict when running inside a Claude session | claudeloop automatically strips this variable; no action needed |
+| Checks hang waiting for permission prompts | You must use `--dangerously-skip-permissions` — checkloop cannot relay interactive prompts |
+| "CLAUDECODE" conflict when running inside a Claude session | checkloop automatically strips this variable; no action needed |
 | Convergence detection not working | Ensure the project directory is a git repo (`git init` if needed) |
-| High memory usage over many checks | claudeloop kills orphaned child processes between checks; use `--verbose` to monitor RSS |
+| High memory usage over many checks | checkloop kills orphaned child processes between checks; use `--verbose` to monitor RSS |
 | Idle timeout kills a check too early | Increase with `--idle-timeout 300` (or higher) |
 
 ## Contributing
 
 1. Fork the repo and create a feature branch.
 2. Install dev dependencies: `uv sync --dev`
-3. Make your changes in `src/claudeloop/cli.py`.
+3. Make your changes in `src/checkloop/cli.py`.
 4. Run the full check suite:
    ```bash
-   uv run pytest --cov=claudeloop --cov-report=term-missing
-   uv run mypy src/claudeloop/
+   uv run pytest --cov=checkloop --cov-report=term-missing
+   uv run mypy src/checkloop/
    ```
 5. Ensure all tests pass and coverage stays above 90%.
 6. Open a pull request with a clear description of your changes.

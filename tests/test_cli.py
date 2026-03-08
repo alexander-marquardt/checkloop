@@ -1,4 +1,4 @@
-"""Comprehensive tests for claudeloop.cli — targeting >=90% line coverage."""
+"""Comprehensive tests for checkloop.cli — targeting >=90% line coverage."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from unittest import mock
 
 import pytest
 
-from claudeloop import cli
+from checkloop import cli
 
 
 # =============================================================================
@@ -87,7 +87,15 @@ def _patch_suite_git(
         stack.enter_context(mock.patch.object(cli, "_is_git_repo", return_value=True))
         stack.enter_context(mock.patch.object(cli, "_git_head_sha", side_effect=sha_sequence))
         if lines_changed is not None:
-            stack.enter_context(mock.patch.object(cli, "_count_lines_changed", return_value=lines_changed))
+            # Return 0 for uncommitted-change probes (target="") so that
+            # no-change detection works correctly; return lines_changed for
+            # committed diffs.
+            def _lines_changed_stub(
+                _workdir: str, _base: str, target: str = "HEAD", *, _val: int = lines_changed,
+            ) -> int:
+                return 0 if target == "" else _val
+
+            stack.enter_context(mock.patch.object(cli, "_count_lines_changed", side_effect=_lines_changed_stub))
         if total_tracked is not None:
             stack.enter_context(mock.patch.object(cli, "_cached_total_tracked_lines", return_value=total_tracked))
         yield
@@ -730,7 +738,7 @@ class TestPrintRunSummary:
         passes = [{"id": "readability", "label": "Readability"}]
         cli._print_run_summary("/tmp", passes, 2, 2, 120, False)
         out = capsys.readouterr().out
-        assert "claudeloop" in out
+        assert "checkloop" in out
         assert "/tmp" in out
         assert "readability" in out
         assert "2" in out
@@ -886,51 +894,51 @@ class TestMain:
     """Tests for the main() CLI entry point."""
 
     def test_nonexistent_dir_exits(self) -> None:
-        with mock.patch("sys.argv", ["claudeloop", "--dir", "/nonexistent_xyz_abc"]):
+        with mock.patch("sys.argv", ["checkloop", "--dir", "/nonexistent_xyz_abc"]):
             with pytest.raises(SystemExit) as exc_info:
                 cli.main()
             assert exc_info.value.code == 1
 
     def test_idle_timeout_zero_exits(self) -> None:
-        with mock.patch("sys.argv", ["claudeloop", "--dir", ".", "--idle-timeout", "0"]):
+        with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--idle-timeout", "0"]):
             with pytest.raises(SystemExit) as exc_info:
                 cli.main()
             assert exc_info.value.code == 1
 
     def test_negative_pause_exits(self) -> None:
-        with mock.patch("sys.argv", ["claudeloop", "--dir", ".", "--pause", "-1"]):
+        with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--pause", "-1"]):
             with pytest.raises(SystemExit) as exc_info:
                 cli.main()
             assert exc_info.value.code == 1
 
     def test_dry_run_full(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch("sys.argv", ["claudeloop", "--dir", ".", "--dry-run", "--pause", "0"]):
+        with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--dry-run", "--pause", "0"]):
             cli.main()
         out = capsys.readouterr().out
         assert "DRY RUN" in out
         assert "All done" in out
 
     def test_all_checks_dry_run(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch("sys.argv", ["claudeloop", "--dir", ".", "--all-checks", "--dry-run", "--pause", "0"]):
+        with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--all-checks", "--dry-run", "--pause", "0"]):
             cli.main()
         out = capsys.readouterr().out
         for p in cli.CHECKS:
             assert p["label"] in out
 
     def test_cycles_zero_exits(self) -> None:
-        with mock.patch("sys.argv", ["claudeloop", "--dir", ".", "--cycles", "0"]):
+        with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--cycles", "0"]):
             with pytest.raises(SystemExit) as exc_info:
                 cli.main()
             assert exc_info.value.code == 1
 
     def test_negative_cycles_exits(self) -> None:
-        with mock.patch("sys.argv", ["claudeloop", "--dir", ".", "--cycles", "-1"]):
+        with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--cycles", "-1"]):
             with pytest.raises(SystemExit) as exc_info:
                 cli.main()
             assert exc_info.value.code == 1
 
     def test_specific_passes(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch("sys.argv", ["claudeloop", "--dir", ".", "--checks", "security", "perf", "--dry-run", "--pause", "0"]):
+        with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--checks", "security", "perf", "--dry-run", "--pause", "0"]):
             cli.main()
         out = capsys.readouterr().out
         assert "Security" in out
@@ -1191,14 +1199,14 @@ class TestMainNonDryRun:
     """Tests for main() in non-dry-run mode (with mocked internals)."""
 
     def test_non_dry_run_calls_warning(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch("sys.argv", ["claudeloop", "--dir", ".", "--pause", "0"]):
+        with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--pause", "0"]):
             with mock.patch.object(cli, "_display_pre_run_warning") as mock_warn:
                 with mock.patch.object(cli, "_run_check_suite"):
                     cli.main()
                 mock_warn.assert_called_once()
 
     def test_level_thorough(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch("sys.argv", ["claudeloop", "--dir", ".", "--level", "thorough", "--dry-run", "--pause", "0"]):
+        with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--level", "thorough", "--dry-run", "--pause", "0"]):
             cli.main()
         out = capsys.readouterr().out
         assert "security" in out
@@ -1922,9 +1930,9 @@ class TestMainGuard:
 
     def test_main_guard_calls_main(self) -> None:
         """Verify the __main__ guard invokes main() when __name__ == '__main__'."""
-        with mock.patch.dict("sys.modules", {"claudeloop.cli": cli}):
+        with mock.patch.dict("sys.modules", {"checkloop.cli": cli}):
             with mock.patch.object(cli, "main") as mock_main:
-                # Simulate running "python -m claudeloop.cli"
+                # Simulate running "python -m checkloop.cli"
                 exec(
                     compile('if __name__ == "__main__": main()', cli.__file__, "exec"),
                     {"__name__": "__main__", "main": cli.main},
@@ -2002,7 +2010,7 @@ class TestMainNegativeConvergenceExit:
     """Test that main() exits with negative convergence percentage."""
 
     def test_negative_converged_at_percentage_exits(self) -> None:
-        with mock.patch("sys.argv", ["claudeloop", "--dir", ".", "--converged-at-percentage", "-1"]):
+        with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--converged-at-percentage", "-1"]):
             with pytest.raises(SystemExit) as exc_info:
                 cli.main()
             assert exc_info.value.code == 1
@@ -2086,7 +2094,7 @@ class TestMainVerboseLogging:
     """Test main() with --verbose flag sets INFO log level."""
 
     def test_verbose_sets_info_level(self) -> None:
-        with mock.patch("sys.argv", ["claudeloop", "--dir", ".", "--verbose", "--dry-run", "--pause", "0"]):
+        with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--verbose", "--dry-run", "--pause", "0"]):
             with mock.patch("logging.basicConfig") as mock_log:
                 with mock.patch.object(cli, "_run_check_suite"):
                     cli.main()
@@ -2094,7 +2102,7 @@ class TestMainVerboseLogging:
                 assert mock_log.call_args.kwargs["level"] == logging.INFO
 
     def test_debug_sets_debug_level(self) -> None:
-        with mock.patch("sys.argv", ["claudeloop", "--dir", ".", "--debug", "--dry-run", "--pause", "0"]):
+        with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--debug", "--dry-run", "--pause", "0"]):
             with mock.patch("logging.basicConfig") as mock_log:
                 with mock.patch.object(cli, "_run_check_suite"):
                     cli.main()
@@ -2487,8 +2495,9 @@ class TestReportCheckChangesEdgeCases:
 
     def test_different_sha_reports_changes(self, capsys: pytest.CaptureFixture[str]) -> None:
         with mock.patch.object(cli, "_git_head_sha", return_value="sha2"):
-            with mock.patch.object(cli, "_compute_change_stats", return_value=(10, 0.5)):
-                result = cli._report_check_changes("/tmp", "test", "sha1")
+            with mock.patch.object(cli, "_count_lines_changed", return_value=10):
+                with mock.patch.object(cli, "_cached_total_tracked_lines", return_value=2000):
+                    result = cli._report_check_changes("/tmp", "test", "sha1")
         assert result is True
         assert "10 lines changed" in capsys.readouterr().out
 
@@ -2938,4 +2947,107 @@ class TestGitCommitCycleEdgeCases:
         with mock.patch("subprocess.run", side_effect=OSError("disk full")):
             assert cli._git_commit_cycle("/tmp", 1) is False
 
+
+# =============================================================================
+# Coverage gap: _count_file_lines OSError during chunk read (lines 285-287)
+# =============================================================================
+
+class TestCountFileLinesOSErrorDuringRead:
+    """Test _count_file_lines when read fails after header succeeds."""
+
+    def test_oserror_after_header(self, tmp_path: Path) -> None:
+        """OSError during chunk read (after header) returns 0."""
+        f = tmp_path / "partial.txt"
+        f.write_text("line1\nline2\n")
+
+        original_open = open
+
+        def patched_open(filepath, mode="r", **kwargs):
+            fh = original_open(filepath, mode, **kwargs)
+            original_read = fh.read
+
+            call_count = 0
+            def failing_read(size=-1):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    return original_read(size)  # header read succeeds
+                raise OSError("disk error during read")
+
+            fh.read = failing_read
+            return fh
+
+        with mock.patch("builtins.open", side_effect=patched_open):
+            result = cli._count_file_lines(f)
+        assert result == 0
+
+
+# =============================================================================
+# Coverage gap: _count_tracked_lines OSError from _git_run (lines 299-301)
+# =============================================================================
+
+class TestCountTrackedLinesGitRunOSError:
+    """Test _count_tracked_lines when _git_run raises OSError."""
+
+    def test_git_run_oserror_returns_1(self) -> None:
+        with mock.patch.object(cli, "_git_run", side_effect=OSError("no git")):
+            assert cli._count_tracked_lines("/tmp") == 1
+
+
+# =============================================================================
+# Coverage gap: _count_tracked_lines OSError on file (lines 321-322)
+# =============================================================================
+
+class TestCountTrackedLinesFileOSError:
+    """Test _count_tracked_lines when resolving a file path raises OSError."""
+
+    def test_oserror_on_resolve(self, tmp_path: Path) -> None:
+        """OSError during path resolution is silently skipped."""
+        ls_result = mock.MagicMock(returncode=0, stdout=b"good.txt\x00")
+        (tmp_path / "good.txt").write_text("line\n")
+
+        with mock.patch.object(cli, "_git_run", return_value=ls_result):
+            original_resolve = Path.resolve
+
+            def failing_resolve(self, *args, **kwargs):
+                if self.name == "good.txt" and "good.txt" in str(self):
+                    raise OSError("permission denied")
+                return original_resolve(self, *args, **kwargs)
+
+            with mock.patch.object(Path, "resolve", failing_resolve):
+                result = cli._count_tracked_lines(str(tmp_path))
+        assert result == 1  # clamped to 1 (no lines counted)
+
+
+# =============================================================================
+# Coverage gap: _stream_process_output stdout is None (lines 998-999)
+# =============================================================================
+
+class TestStreamProcessOutputStdoutNone:
+    """Test _stream_process_output when process.stdout is None."""
+
+    def test_returns_time_when_stdout_none(self) -> None:
+        mock_proc = mock.MagicMock()
+        mock_proc.stdout = None
+        mock_proc.pid = 12345
+        result = cli._stream_process_output(mock_proc, idle_timeout=120, debug=False)
+        assert isinstance(result, float)
+
+
+# =============================================================================
+# Coverage gap: _resolve_changed_files_prefix success path (lines 1599-1600)
+# =============================================================================
+
+class TestResolveChangedFilesPrefixSuccess:
+    """Test _resolve_changed_files_prefix success path."""
+
+    def test_returns_prefix_with_changed_files(self, capsys: pytest.CaptureFixture[str]) -> None:
+        args = argparse.Namespace(changed_only="main")
+        with mock.patch.object(cli, "_is_git_repo", return_value=True), \
+             mock.patch.object(cli, "_get_changed_files", return_value=["a.py", "b.py"]):
+            result = cli._resolve_changed_files_prefix(args, "/tmp")
+        assert "a.py" in result
+        assert "b.py" in result
+        out = capsys.readouterr().out
+        assert "2 changed file(s)" in out
 

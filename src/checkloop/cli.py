@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-claudeloop — Autonomous multi-check code review using Claude Code.
+checkloop — Autonomous multi-check code review using Claude Code.
 
 Runs a configurable suite of focused checks (readability, DRY, tests, security,
 etc.) over an existing codebase. Point it at a directory and walk away.
 
 Usage:
-    claudeloop --dir ~/my-project                        # basic tier review
-    claudeloop --dir ~/my-project --level thorough       # thorough review
-    claudeloop --dir ~/my-project --cycles 3             # repeat the full suite 3x
-    claudeloop --dir ~/my-project --checks readability dry tests
-    claudeloop --dir ~/my-project --all-checks --cycles 2
-    claudeloop --dir ~/my-project --dry-run              # preview without running
+    checkloop --dir ~/my-project                        # basic tier review
+    checkloop --dir ~/my-project --level thorough       # thorough review
+    checkloop --dir ~/my-project --cycles 3             # repeat the full suite 3x
+    checkloop --dir ~/my-project --checks readability dry tests
+    checkloop --dir ~/my-project --all-checks --cycles 2
+    checkloop --dir ~/my-project --dry-run              # preview without running
 """
 
 from __future__ import annotations
@@ -59,7 +59,7 @@ _BASH_DISPLAY_LIMIT = 80  # max chars shown for bash commands in tool summaries
 
 # Perf: build once instead of copying os.environ on every subprocess spawn.
 # Strips CLAUDECODE env var whose presence causes nested claude processes
-# to refuse to start when claudeloop is invoked from within a Claude Code session.
+# to refuse to start when checkloop is invoked from within a Claude Code session.
 _SANITIZED_ENV: dict[str, str] = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
 
 FULL_CODEBASE_SCOPE: str = (
@@ -1177,12 +1177,12 @@ def _build_argument_parser() -> argparse.ArgumentParser:
             *(f"  {p['id']:14s}  {p['label']}" for p in CHECKS),
             "",
             "Examples:",
-            "  claudeloop --dir .                                  # basic tier (default)",
-            "  claudeloop --dir ~/proj --level thorough            # thorough tier",
-            "  claudeloop --dir ~/proj --level exhaustive --cycles 2",
-            "  claudeloop --dir ~/proj --checks readability security",
-            "  claudeloop --dir ~/proj --all-checks                # same as --level exhaustive",
-            "  claudeloop --dir ~/proj --dry-run",
+            "  checkloop --dir .                                  # basic tier (default)",
+            "  checkloop --dir ~/proj --level thorough            # thorough tier",
+            "  checkloop --dir ~/proj --level exhaustive --cycles 2",
+            "  checkloop --dir ~/proj --checks readability security",
+            "  checkloop --dir ~/proj --all-checks                # same as --level exhaustive",
+            "  checkloop --dir ~/proj --dry-run",
         ]),
     )
 
@@ -1274,7 +1274,7 @@ def _print_run_summary(
         convergence_threshold: Stop cycling when change percentage falls below
             this value (0 disables convergence detection).
     """
-    print(f"\n{BOLD}claudeloop{RESET}")
+    print(f"\n{BOLD}checkloop{RESET}")
     print(f"  Directory    : {workdir}")
     print(f"  Checks       : {', '.join(p['id'] for p in selected_checks)}")
     print(f"  Cycles       : {num_cycles} (max)")
@@ -1412,9 +1412,17 @@ def _report_check_changes(workdir: str, pass_id: str, sha_before: str | None) ->
         return True  # assume changes if not a git repo
     sha_after = _git_head_sha(workdir)
     if sha_after == sha_before:
-        _print_status(f"  {pass_id}: no changes")
-        return False
-    lines_changed, pct = _compute_change_stats(workdir, sha_before)
+        # HEAD didn't move — check for uncommitted working-tree changes
+        uncommitted = _count_lines_changed(workdir, sha_before, target="")
+        if uncommitted == 0:
+            _print_status(f"  {pass_id}: no changes")
+            return False
+        logger.info("Check '%s' made uncommitted changes (%d lines)", pass_id, uncommitted)
+    # Use working-tree diff when HEAD didn't move, committed diff otherwise
+    diff_target = "" if sha_after == sha_before else "HEAD"
+    lines_changed = _count_lines_changed(workdir, sha_before, target=diff_target)
+    total = _cached_total_tracked_lines(workdir)
+    pct = (lines_changed / total) * 100 if total else 0.0
     _print_status(f"  {pass_id}: {lines_changed} lines changed ({pct:.2f}% of codebase)")
     return True
 
@@ -1526,11 +1534,11 @@ def _build_permission_warning(skip_permissions: bool) -> tuple[str, str, list[st
         "WARNING: Running without --dangerously-skip-permissions",
         [
             "Claude Code requires interactive permission prompts to write files,",
-            "but claudeloop cannot relay those prompts (stdin is disconnected).",
+            "but checkloop cannot relay those prompts (stdin is disconnected).",
             "Checks that modify code will likely FAIL or HANG.",
             "",
             "Re-run with:",
-            f"  {BOLD}claudeloop --dangerously-skip-permissions ...{RESET}{YELLOW}",
+            f"  {BOLD}checkloop --dangerously-skip-permissions ...{RESET}{YELLOW}",
         ],
         f"Continuing anyway in {_PRE_RUN_WARNING_DELAY} seconds (Ctrl+C to abort)...",
     )
@@ -1541,7 +1549,7 @@ def _display_pre_run_warning(skip_permissions: bool) -> None:
 
     With ``--dangerously-skip-permissions``, warns that all actions will run
     without approval.  Without it, warns that checks will likely hang because
-    claudeloop cannot relay interactive permission prompts.  Either way, the
+    checkloop cannot relay interactive permission prompts.  Either way, the
     user has 5 seconds to Ctrl+C before the suite begins.
     """
     warning_colour, heading, body_lines, countdown = _build_permission_warning(skip_permissions)
@@ -1671,7 +1679,7 @@ def _run_suite_with_error_handling(
 def main() -> None:
     """CLI entry point: parse arguments and run the configured check suite.
 
-    This is the function invoked by the ``claudeloop`` console script defined
+    This is the function invoked by the ``checkloop`` console script defined
     in ``pyproject.toml``.  It parses CLI flags, resolves the check tier and
     check list, displays a pre-run summary, then delegates to the check loop.
     """

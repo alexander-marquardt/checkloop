@@ -1,4 +1,4 @@
-"""claudeloop — Autonomous multi-check code review using Claude Code.
+"""checkloop — Autonomous multi-check code review using Claude Code.
 
 This package provides a CLI tool that orchestrates multiple focused checks
 over a codebase using the Claude Code CLI. Each check targets a specific
@@ -6,7 +6,7 @@ quality dimension (readability, DRY, tests, security, etc.) so the model
 can focus deeply on one concern at a time.
 
 Public API:
-    main()          — CLI entry point (also available as the ``claudeloop`` command).
+    main()          — CLI entry point (also available as the ``checkloop`` command).
     run_claude()    — Run a single Claude Code check programmatically.
     CHECKS          — Ordered list of all available check definitions.
     CHECK_IDS       — List of valid check ID strings.
@@ -16,7 +16,7 @@ Public API:
     TIER_EXHAUSTIVE — Check IDs for the exhaustive tier.
 """
 
-from claudeloop.cli import (
+from checkloop.cli import (
     CHECK_IDS,
     CHECKS,
     TIER_BASIC,

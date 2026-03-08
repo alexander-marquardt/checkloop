@@ -22,10 +22,10 @@ jobs:
         run: uv sync
 
       - name: Type check
-        run: uv run python -m py_compile src/claudeloop/cli.py
+        run: uv run python -m py_compile src/checkloop/cli.py
 
       - name: Verify CLI entry point
-        run: uv run claudeloop --help
+        run: uv run checkloop --help
 
       - name: Dry run
-        run: uv run claudeloop --dir . --dry-run
+        run: uv run checkloop --dir . --dry-run
