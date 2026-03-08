@@ -15,6 +15,7 @@ from checkloop.monitoring import (
     _find_session_pids,
     _kill_pids,
     _log_memory_usage,
+    _measure_session_rss_mb,
     _previous_session_ids,
 )
 from checkloop.terminal import (
@@ -32,11 +33,14 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_IDLE_TIMEOUT = 300  # seconds before killing a silent subprocess
 DEFAULT_PAUSE_SECONDS = 2  # seconds between consecutive checks
+DEFAULT_MAX_MEMORY_MB = 4096  # max RSS (MB) for child process tree before killing
+DEFAULT_CHECK_TIMEOUT = 0  # hard wall-clock timeout per check (0 = disabled)
 
 _READ_CHUNK_SIZE = 8192  # bytes per stdout read during streaming
 _DRAIN_CHUNK_SIZE = 65536  # bytes per read when draining after process exit
 _MAX_BUFFER_SIZE = 10 * 1024 * 1024  # 10 MB safety cap on JSONL output buffer
 _PROCESS_WAIT_TIMEOUT = 5  # seconds to wait for process group to die
+_MEMORY_CHECK_INTERVAL = 10  # seconds between child-tree memory checks
 
 # Perf: build once instead of copying os.environ on every subprocess spawn.
 # Strips CLAUDECODE env var whose presence causes nested claude processes
@@ -143,6 +147,55 @@ def _check_idle_timeout(
     return False
 
 
+def _check_hard_timeout(
+    pass_start_time: float,
+    check_timeout: int,
+    process: subprocess.Popen[bytes],
+) -> bool:
+    """Return True and kill the process if the hard wall-clock timeout is exceeded."""
+    if check_timeout <= 0:
+        return False
+    elapsed = time.time() - pass_start_time
+    if elapsed > check_timeout:
+        logger.warning("Hard timeout: pid=%d, elapsed=%s, limit=%ds",
+                       process.pid, _format_duration(elapsed), check_timeout)
+        _print_status(f"\nHard timeout ({_format_duration(elapsed)} > "
+                     f"{_format_duration(check_timeout)}) — killing.", RED)
+        _kill_process_group(process)
+        return True
+    return False
+
+
+def _check_memory_limit(
+    session_id: int,
+    max_memory_mb: int,
+    pass_start_time: float,
+    process: subprocess.Popen[bytes],
+    last_memory_check: float,
+) -> tuple[bool, float]:
+    """Check child tree RSS against the memory limit.
+
+    Returns ``(should_kill, last_check_time)``.  Only samples every
+    ``_MEMORY_CHECK_INTERVAL`` seconds to avoid excessive ``ps`` calls.
+    """
+    if max_memory_mb <= 0:
+        return False, last_memory_check
+    now = time.time()
+    if now - last_memory_check < _MEMORY_CHECK_INTERVAL:
+        return False, last_memory_check
+    rss_mb = _measure_session_rss_mb(session_id)
+    logger.debug("Session %d RSS: %.0f MB (limit: %d MB)", session_id, rss_mb, max_memory_mb)
+    if rss_mb > max_memory_mb:
+        elapsed = _format_duration(now - pass_start_time)
+        logger.warning("Memory limit exceeded: pid=%d, rss=%.0fMB, limit=%dMB, elapsed=%s",
+                       process.pid, rss_mb, max_memory_mb, elapsed)
+        _print_status(f"\nChild tree using {rss_mb:.0f}MB (limit: {max_memory_mb}MB) "
+                     f"after {elapsed} — killing.", RED)
+        _kill_process_group(process)
+        return True, now
+    return False, now
+
+
 def _flush_and_close_stdout(
     stdout: IO[bytes],
     output_buffer: bytearray,
@@ -163,10 +216,16 @@ def _stream_process_output(
     process: subprocess.Popen[bytes],
     idle_timeout: int,
     debug: bool,
+    *,
+    check_timeout: int = 0,
+    max_memory_mb: int = 0,
 ) -> float:
     """Stream and display JSONL output from the Claude process.
 
-    Kills the process if it produces no output for *idle_timeout* seconds.
+    Kills the process if it produces no output for *idle_timeout* seconds,
+    if the hard *check_timeout* is exceeded, or if the child process tree
+    exceeds *max_memory_mb* of RSS.
+
     Returns the wall-clock start time used for elapsed-time display.
     """
     if process.stdout is None:
@@ -175,11 +234,21 @@ def _stream_process_output(
     stdout = process.stdout
     pass_start_time = time.time()
     last_output_time = pass_start_time  # idle timer starts from launch
+    last_memory_check = pass_start_time
     output_buffer = bytearray()
 
     try:
         while True:
             if _check_idle_timeout(last_output_time, idle_timeout, pass_start_time, process):
+                break
+
+            if _check_hard_timeout(pass_start_time, check_timeout, process):
+                break
+
+            exceeded, last_memory_check = _check_memory_limit(
+                process.pid, max_memory_mb, pass_start_time, process, last_memory_check,
+            )
+            if exceeded:
                 break
 
             try:
@@ -279,12 +348,15 @@ def run_claude(
     dry_run: bool = False,
     idle_timeout: int = DEFAULT_IDLE_TIMEOUT,
     debug: bool = False,
+    check_timeout: int = DEFAULT_CHECK_TIMEOUT,
+    max_memory_mb: int = DEFAULT_MAX_MEMORY_MB,
 ) -> int:
     """Run a single Claude Code check.
 
     Uses ``--output-format stream-json`` so progress events stream in real time.
-    There is no hard timeout — the process runs as long as it produces output.
-    It is only killed after *idle_timeout* seconds of silence.
+    The process is killed if it is idle for *idle_timeout* seconds, exceeds
+    *check_timeout* wall-clock seconds, or if its child process tree exceeds
+    *max_memory_mb* of RSS.
 
     Args:
         prompt: The check prompt to send to Claude Code.
@@ -293,13 +365,16 @@ def run_claude(
         dry_run: If True, print what would run without invoking Claude.
         idle_timeout: Kill the subprocess after this many seconds of no output.
         debug: Show raw subprocess output lines that fail JSON parsing.
+        check_timeout: Hard wall-clock limit per check in seconds (0 = no limit).
+        max_memory_mb: Kill the subprocess tree if total RSS exceeds this (0 = no limit).
 
     Returns:
         The subprocess exit code (0 on success).
     """
     cmd = _build_claude_command(prompt, skip_permissions)
-    logger.info("run_claude: workdir=%s, prompt_len=%d, skip_permissions=%s, idle_timeout=%d",
-                workdir, len(prompt), skip_permissions, idle_timeout)
+    logger.info("run_claude: workdir=%s, prompt_len=%d, skip_permissions=%s, idle_timeout=%d, "
+                "check_timeout=%d, max_memory_mb=%d",
+                workdir, len(prompt), skip_permissions, idle_timeout, check_timeout, max_memory_mb)
     _print_status(f"$ {' '.join(cmd[:3])} [prompt omitted for brevity]", DIM)
 
     if dry_run:
@@ -308,7 +383,7 @@ def run_claude(
         print(f"  Prompt: {truncated}")
         return 0
 
-    return _execute_claude_process(cmd, workdir, idle_timeout, debug)
+    return _execute_claude_process(cmd, workdir, idle_timeout, debug, check_timeout, max_memory_mb)
 
 
 def _execute_claude_process(
@@ -316,6 +391,8 @@ def _execute_claude_process(
     workdir: str,
     idle_timeout: int,
     debug: bool,
+    check_timeout: int = 0,
+    max_memory_mb: int = 0,
 ) -> int:
     """Spawn the Claude subprocess, stream its output, and clean up.
 
@@ -325,7 +402,11 @@ def _execute_claude_process(
     # Track session ID so _sweep_previous_sessions can catch stragglers later.
     _previous_session_ids.append(process.pid)
     try:
-        pass_start_time = _stream_process_output(process, idle_timeout, debug)
+        pass_start_time = _stream_process_output(
+            process, idle_timeout, debug,
+            check_timeout=check_timeout,
+            max_memory_mb=max_memory_mb,
+        )
 
         try:
             process.wait(timeout=idle_timeout)

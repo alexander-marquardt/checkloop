@@ -82,6 +82,8 @@ def _run_single_check(
         dry_run=args.dry_run,
         idle_timeout=args.idle_timeout,
         debug=getattr(args, "debug", False),
+        check_timeout=getattr(args, "check_timeout", 0),
+        max_memory_mb=getattr(args, "max_memory_mb", 0),
     )
     if exit_code != 0:
         logger.warning("Check '%s' exited with code %d", check["id"], exit_code)

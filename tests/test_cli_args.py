@@ -156,25 +156,25 @@ class TestValidateArguments:
     """Tests for _validate_arguments()."""
 
     def test_cycles_zero_exits(self) -> None:
-        args = argparse.Namespace(idle_timeout=120, pause=0, cycles=0, converged_at_percentage=0.1)
+        args = argparse.Namespace(idle_timeout=120, pause=0, cycles=0, converged_at_percentage=0.1, max_memory_mb=4096, check_timeout=0)
         with pytest.raises(SystemExit) as exc_info:
             cli._validate_arguments(args)
         assert exc_info.value.code == 1
 
     def test_negative_cycles_exits(self) -> None:
-        args = argparse.Namespace(idle_timeout=120, pause=0, cycles=-5, converged_at_percentage=0.1)
+        args = argparse.Namespace(idle_timeout=120, pause=0, cycles=-5, converged_at_percentage=0.1, max_memory_mb=4096, check_timeout=0)
         with pytest.raises(SystemExit) as exc_info:
             cli._validate_arguments(args)
         assert exc_info.value.code == 1
 
     def test_negative_convergence_exits(self) -> None:
-        args = argparse.Namespace(idle_timeout=120, pause=0, cycles=1, converged_at_percentage=-0.5)
+        args = argparse.Namespace(idle_timeout=120, pause=0, cycles=1, converged_at_percentage=-0.5, max_memory_mb=4096, check_timeout=0)
         with pytest.raises(SystemExit) as exc_info:
             cli._validate_arguments(args)
         assert exc_info.value.code == 1
 
     def test_valid_arguments_no_exit(self) -> None:
-        args = argparse.Namespace(idle_timeout=1, pause=0, cycles=1, converged_at_percentage=0.0)
+        args = argparse.Namespace(idle_timeout=1, pause=0, cycles=1, converged_at_percentage=0.0, max_memory_mb=4096, check_timeout=0)
         cli._validate_arguments(args)  # should not raise
 
 
@@ -205,6 +205,26 @@ class TestValidateArgumentsEdgeCases:
 
     def test_cycles_exactly_one(self) -> None:
         args = make_mock_cli_args(cycles=1)
+        cli._validate_arguments(args)
+
+    def test_negative_max_memory_mb_exits(self) -> None:
+        args = make_mock_cli_args(max_memory_mb=-1)
+        with pytest.raises(SystemExit) as exc_info:
+            cli._validate_arguments(args)
+        assert exc_info.value.code == 1
+
+    def test_zero_max_memory_mb_is_valid(self) -> None:
+        args = make_mock_cli_args(max_memory_mb=0)
+        cli._validate_arguments(args)
+
+    def test_negative_check_timeout_exits(self) -> None:
+        args = make_mock_cli_args(check_timeout=-1)
+        with pytest.raises(SystemExit) as exc_info:
+            cli._validate_arguments(args)
+        assert exc_info.value.code == 1
+
+    def test_zero_check_timeout_is_valid(self) -> None:
+        args = make_mock_cli_args(check_timeout=0)
         cli._validate_arguments(args)
 
 

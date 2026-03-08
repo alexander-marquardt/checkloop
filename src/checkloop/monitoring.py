@@ -41,6 +41,34 @@ def _measure_current_rss_mb() -> float:
         return 0.0
 
 
+def _measure_session_rss_mb(session_id: int) -> float:
+    """Return the total RSS (in MB) of all processes in a session.
+
+    Uses ``ps -o rss= -s <session_id>`` to sum the RSS of every process
+    in the session.  Returns 0.0 if the session has no processes or if
+    the measurement fails.
+    """
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "rss=", "-s", str(session_id)],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return 0.0
+        total_kb = 0
+        for line in result.stdout.strip().splitlines():
+            line = line.strip()
+            if line:
+                try:
+                    total_kb += int(line)
+                except ValueError:
+                    pass
+        return total_kb / 1024
+    except OSError as exc:
+        logger.debug("Session RSS measurement failed for sid %d: %s", session_id, exc)
+        return 0.0
+
+
 # --- Process discovery --------------------------------------------------------
 
 def _parse_pgrep_output(result: subprocess.CompletedProcess[str]) -> list[int]:

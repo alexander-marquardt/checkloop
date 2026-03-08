@@ -174,6 +174,37 @@ class TestKillPidsEdgeCases:
         assert killed == 2
 
 
+class TestMeasureSessionRssMb:
+    """Tests for _measure_session_rss_mb() child tree memory measurement."""
+
+    def test_sums_multiple_processes(self) -> None:
+        mock_result = mock.MagicMock(returncode=0, stdout="10240\n20480\n5120\n")
+        with mock.patch("subprocess.run", return_value=mock_result):
+            rss = monitoring._measure_session_rss_mb(12345)
+        assert abs(rss - (10240 + 20480 + 5120) / 1024) < 0.01
+
+    def test_empty_session_returns_zero(self) -> None:
+        mock_result = mock.MagicMock(returncode=1, stdout="")
+        with mock.patch("subprocess.run", return_value=mock_result):
+            assert monitoring._measure_session_rss_mb(12345) == 0.0
+
+    def test_oserror_returns_zero(self) -> None:
+        with mock.patch("subprocess.run", side_effect=OSError("nope")):
+            assert monitoring._measure_session_rss_mb(12345) == 0.0
+
+    def test_non_numeric_lines_skipped(self) -> None:
+        mock_result = mock.MagicMock(returncode=0, stdout="10240\nnot_a_number\n20480\n")
+        with mock.patch("subprocess.run", return_value=mock_result):
+            rss = monitoring._measure_session_rss_mb(12345)
+        assert abs(rss - (10240 + 20480) / 1024) < 0.01
+
+    def test_single_process(self) -> None:
+        mock_result = mock.MagicMock(returncode=0, stdout="  51200  \n")
+        with mock.patch("subprocess.run", return_value=mock_result):
+            rss = monitoring._measure_session_rss_mb(99)
+        assert abs(rss - 51200 / 1024) < 0.01
+
+
 class TestFindSessionPidsEdgeCases:
     """Edge case tests for _find_session_pids()."""
 

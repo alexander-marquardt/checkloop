@@ -12,6 +12,8 @@ from checkloop.cli import DEFAULT_CONVERGENCE_THRESHOLD
 SHARED_ARG_DEFAULTS: dict[str, Any] = dict(
     pause=0,
     idle_timeout=process.DEFAULT_IDLE_TIMEOUT,
+    check_timeout=process.DEFAULT_CHECK_TIMEOUT,
+    max_memory_mb=process.DEFAULT_MAX_MEMORY_MB,
     verbose=False,
     debug=False,
     dangerously_skip_permissions=False,

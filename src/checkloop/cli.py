@@ -40,7 +40,12 @@ from checkloop.git import (
     _is_git_repo,
 )
 from checkloop.monitoring import _cleanup_all_sessions
-from checkloop.process import DEFAULT_IDLE_TIMEOUT, DEFAULT_PAUSE_SECONDS
+from checkloop.process import (
+    DEFAULT_CHECK_TIMEOUT,
+    DEFAULT_IDLE_TIMEOUT,
+    DEFAULT_MAX_MEMORY_MB,
+    DEFAULT_PAUSE_SECONDS,
+)
 from checkloop.suite import (
     _display_pre_run_warning,
     _run_suite_with_error_handling,
@@ -142,6 +147,21 @@ def _build_argument_parser() -> argparse.ArgumentParser:
             "Requires a git repo. Set to 0 to disable convergence detection."
         ),
     )
+    parser.add_argument(
+        "--max-memory-mb", type=int, default=DEFAULT_MAX_MEMORY_MB, metavar="MB",
+        help=(
+            f"Kill a check if its child process tree exceeds this many MB of RSS "
+            f"(default: {DEFAULT_MAX_MEMORY_MB}). Set to 0 to disable."
+        ),
+    )
+    parser.add_argument(
+        "--check-timeout", type=int, default=DEFAULT_CHECK_TIMEOUT, metavar="SECS",
+        help=(
+            f"Hard wall-clock timeout per check in seconds "
+            f"(default: {DEFAULT_CHECK_TIMEOUT}, 0 = no limit). "
+            "Unlike --idle-timeout, this kills even actively-running checks."
+        ),
+    )
 
     return parser
 
@@ -156,6 +176,8 @@ def _print_run_summary(
     idle_timeout: int,
     dry_run: bool,
     convergence_threshold: float = 0.0,
+    max_memory_mb: int = 0,
+    check_timeout: int = 0,
 ) -> None:
     """Print a summary of the configured check run before starting."""
     print(f"\n{BOLD}checkloop{RESET}")
@@ -163,7 +185,11 @@ def _print_run_summary(
     print(f"  Checks       : {', '.join(check['id'] for check in selected_checks)}")
     print(f"  Cycles       : {num_cycles} (max)")
     print(f"  Total steps  : {total_steps}  ({len(selected_checks)} checks x {num_cycles} cycle{'s' if num_cycles != 1 else ''}) max")
-    print(f"  Idle timeout : {idle_timeout}s (no hard limit)")
+    print(f"  Idle timeout : {idle_timeout}s")
+    if check_timeout > 0:
+        print(f"  Check timeout: {check_timeout}s (hard wall-clock limit)")
+    if max_memory_mb > 0:
+        print(f"  Memory limit : {max_memory_mb}MB per check (child tree RSS)")
     if convergence_threshold > 0:
         print(f"  Convergence  : stop when < {convergence_threshold}% of lines change")
     if dry_run:
@@ -195,6 +221,10 @@ def _validate_arguments(args: argparse.Namespace) -> None:
         _fatal("--converged-at-percentage cannot be negative")
     if args.converged_at_percentage > 100:
         _fatal("--converged-at-percentage cannot exceed 100")
+    if args.max_memory_mb < 0:
+        _fatal("--max-memory-mb cannot be negative")
+    if args.check_timeout < 0:
+        _fatal("--check-timeout cannot be negative")
 
 
 def _resolve_changed_files_prefix(args: argparse.Namespace, workdir: str) -> str:
@@ -270,7 +300,11 @@ def main() -> None:
     total_steps = len(selected_checks) * num_cycles
     convergence_threshold = args.converged_at_percentage
 
-    _print_run_summary(workdir, selected_checks, num_cycles, total_steps, args.idle_timeout, args.dry_run, convergence_threshold)
+    _print_run_summary(
+        workdir, selected_checks, num_cycles, total_steps,
+        args.idle_timeout, args.dry_run, convergence_threshold,
+        max_memory_mb=args.max_memory_mb, check_timeout=args.check_timeout,
+    )
 
     logger.info(
         "Suite started: workdir=%s, checks=[%s], cycles=%d, idle_timeout=%d, convergence=%.2f%%",

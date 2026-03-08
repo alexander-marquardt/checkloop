@@ -276,6 +276,82 @@ class TestKillProcessGroup:
                 process._kill_process_group(mock_proc)
 
 
+class TestCheckHardTimeout:
+    """Tests for _check_hard_timeout() wall-clock limit."""
+
+    def test_disabled_when_zero(self) -> None:
+        mock_proc = mock.MagicMock()
+        result = process._check_hard_timeout(
+            pass_start_time=time.time() - 9999, check_timeout=0, process=mock_proc,
+        )
+        assert result is False
+
+    def test_not_exceeded(self) -> None:
+        mock_proc = mock.MagicMock()
+        with mock.patch("time.time", return_value=100.0):
+            result = process._check_hard_timeout(
+                pass_start_time=90.0, check_timeout=60, process=mock_proc,
+            )
+        assert result is False
+
+    def test_exceeded_kills_process(self) -> None:
+        mock_proc = mock.MagicMock()
+        with mock.patch("time.time", return_value=200.0):
+            with mock.patch.object(process, "_kill_process_group") as mock_kill:
+                result = process._check_hard_timeout(
+                    pass_start_time=100.0, check_timeout=60, process=mock_proc,
+                )
+        assert result is True
+        mock_kill.assert_called_once_with(mock_proc)
+
+
+class TestCheckMemoryLimit:
+    """Tests for _check_memory_limit() child tree RSS monitoring."""
+
+    def test_disabled_when_zero(self) -> None:
+        exceeded, _ = process._check_memory_limit(
+            session_id=123, max_memory_mb=0,
+            pass_start_time=time.time(), process=mock.MagicMock(),
+            last_memory_check=time.time(),
+        )
+        assert exceeded is False
+
+    def test_skipped_before_interval(self) -> None:
+        now = time.time()
+        exceeded, last = process._check_memory_limit(
+            session_id=123, max_memory_mb=4096,
+            pass_start_time=now, process=mock.MagicMock(),
+            last_memory_check=now,  # just checked
+        )
+        assert exceeded is False
+        assert last == now  # unchanged
+
+    def test_under_limit(self) -> None:
+        now = time.time()
+        old_check = now - 20  # well past interval
+        with mock.patch.object(process, "_measure_session_rss_mb", return_value=500.0):
+            exceeded, last = process._check_memory_limit(
+                session_id=123, max_memory_mb=4096,
+                pass_start_time=now - 60, process=mock.MagicMock(),
+                last_memory_check=old_check,
+            )
+        assert exceeded is False
+        assert last > old_check  # updated
+
+    def test_over_limit_kills_process(self) -> None:
+        now = time.time()
+        mock_proc = mock.MagicMock()
+        with mock.patch.object(process, "_measure_session_rss_mb", return_value=5000.0):
+            with mock.patch.object(process, "_kill_process_group") as mock_kill:
+                exceeded, _ = process._check_memory_limit(
+                    session_id=123, max_memory_mb=4096,
+                    pass_start_time=now - 60, process=mock_proc,
+                    last_memory_check=now - 20,
+                )
+        assert exceeded is True
+        mock_kill.assert_called_once_with(mock_proc)
+
+
 class TestKillSessionStragglers:
     """Tests for _kill_session_stragglers() post-group-kill cleanup."""
 
