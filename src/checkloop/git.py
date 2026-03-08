@@ -171,15 +171,8 @@ def _count_lines_changed(workdir: str, base_sha: str, target: str = "HEAD") -> i
 def _count_file_lines(filepath: Path) -> int:
     """Count newlines in a text file, reading in chunks. Returns 0 for binary files."""
     try:
-        raw_file = open(filepath, "rb")
-    except OSError as exc:
-        logger.debug("Cannot open file for line counting %s: %s", filepath, exc)
-        return 0
-    with raw_file:
-        try:
+        with open(filepath, "rb") as raw_file:
             # Read a small header to check for null bytes (binary file indicator).
-            # If the file is text, count newlines in the header, then continue
-            # counting through the rest of the file in larger chunks.
             header = raw_file.read(_BINARY_CHECK_SIZE)
             if b"\0" in header:
                 return 0
@@ -187,9 +180,9 @@ def _count_file_lines(filepath: Path) -> int:
             for chunk in iter(lambda: raw_file.read(_LINE_COUNT_CHUNK_SIZE), b""):
                 total += chunk.count(b"\n")
             return total
-        except OSError as exc:
-            logger.debug("Read error during line counting %s: %s", filepath, exc)
-            return 0
+    except OSError as exc:
+        logger.debug("Cannot read file for line counting %s: %s", filepath, exc)
+        return 0
 
 
 def _count_tracked_lines(workdir: str) -> int:

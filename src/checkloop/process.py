@@ -249,17 +249,18 @@ def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
     try:
         pgid = os.getpgid(process.pid)
     except OSError:
-        pgid = None  # process already gone
+        # Process already gone — just clean up session stragglers.
+        _kill_session_stragglers(process.pid)
+        return
 
-    if pgid is not None:
-        _signal_process_group(pgid, signal.SIGTERM)
+    # Escalate: SIGTERM → wait → SIGKILL → wait
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        _signal_process_group(pgid, sig)
         try:
             process.wait(timeout=_PROCESS_WAIT_TIMEOUT)
+            break
         except subprocess.TimeoutExpired:
-            _signal_process_group(pgid, signal.SIGKILL)
-            try:
-                process.wait(timeout=_PROCESS_WAIT_TIMEOUT)
-            except subprocess.TimeoutExpired:
+            if sig == signal.SIGKILL:
                 logger.warning("Process %d did not exit after SIGKILL", process.pid)
 
     # Kill any processes that escaped the process group but remain in the

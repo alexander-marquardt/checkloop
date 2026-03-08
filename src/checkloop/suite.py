@@ -231,12 +231,14 @@ def _run_check_suite(
 
         previously_changed_ids = changed_this_cycle
 
-        if is_git and base_sha and changed_this_cycle and not args.dry_run:
+        should_squash = is_git and base_sha and changed_this_cycle and not args.dry_run
+        if should_squash:
             check_names = ", ".join(sorted(changed_this_cycle))
             cycle_label = f" (cycle {cycle}/{num_cycles})" if num_cycles > 1 else ""
             _git_squash_since(workdir, base_sha, f"checkloop{cycle_label}: {check_names}")
 
-        if convergence_enabled and base_sha and not args.dry_run:
+        should_check_convergence = convergence_enabled and base_sha and not args.dry_run
+        if should_check_convergence:
             converged, prev_change_pct = _check_cycle_convergence(
                 workdir, cycle, base_sha, convergence_threshold, prev_change_pct,
             )
