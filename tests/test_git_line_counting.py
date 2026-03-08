@@ -45,8 +45,8 @@ class TestCountFileLines:
 
     def test_null_byte_beyond_header(self, tmp_path: Path) -> None:
         f = tmp_path / "late_null.bin"
-        content = b"x" * (git._READ_CHUNK_SIZE + 10)
-        content = content[:git._READ_CHUNK_SIZE + 5] + b"\0" + content[git._READ_CHUNK_SIZE + 6:]
+        content = b"x" * (git._BINARY_CHECK_SIZE + 10)
+        content = content[:git._BINARY_CHECK_SIZE + 5] + b"\0" + content[git._BINARY_CHECK_SIZE + 6:]
         f.write_bytes(content)
         assert git._count_file_lines(f) == 0
 

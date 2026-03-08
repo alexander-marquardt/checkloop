@@ -9,10 +9,13 @@ import time
 from pathlib import Path
 from typing import Literal, overload
 
-from checkloop.process import _DRAIN_CHUNK_SIZE, _READ_CHUNK_SIZE
 from checkloop.terminal import _print_status
 
 logger = logging.getLogger(__name__)
+
+# I/O chunk sizes for file-based line counting (independent of process streaming).
+_BINARY_CHECK_SIZE = 8192  # bytes to read when checking for null bytes (binary detection)
+_LINE_COUNT_CHUNK_SIZE = 65536  # bytes per chunk when counting newlines
 
 
 # --- Low-level git wrappers --------------------------------------------------
@@ -177,11 +180,11 @@ def _count_file_lines(filepath: Path) -> int:
             # Read a small header to check for null bytes (binary file indicator).
             # If the file is text, count newlines in the header, then continue
             # counting through the rest of the file in larger chunks.
-            header = raw_file.read(_READ_CHUNK_SIZE)
+            header = raw_file.read(_BINARY_CHECK_SIZE)
             if b"\0" in header:
                 return 0
             total = header.count(b"\n")
-            for chunk in iter(lambda: raw_file.read(_DRAIN_CHUNK_SIZE), b""):
+            for chunk in iter(lambda: raw_file.read(_LINE_COUNT_CHUNK_SIZE), b""):
                 total += chunk.count(b"\n")
             return total
         except OSError as exc:

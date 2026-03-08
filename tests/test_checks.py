@@ -9,17 +9,17 @@ class TestConstants:
     """Tests for module-level constants and data structures."""
 
     def test_check_ids_match(self) -> None:
-        assert checks.CHECK_IDS == [p["id"] for p in checks.CHECKS]
+        assert checks.CHECK_IDS == [check["id"] for check in checks.CHECKS]
 
-    def test_default_tier_passes_are_valid(self) -> None:
+    def test_default_tier_checks_are_valid(self) -> None:
         for check_id in checks.TIERS[checks.DEFAULT_TIER]:
             assert check_id in checks.CHECK_IDS
 
     def test_all_checks_have_required_keys(self) -> None:
-        for p in checks.CHECKS:
-            assert "id" in p
-            assert "label" in p
-            assert "prompt" in p
+        for check in checks.CHECKS:
+            assert "id" in check
+            assert "label" in check
+            assert "prompt" in check
 
 
 class TestLooksDangerous:
