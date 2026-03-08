@@ -19,6 +19,7 @@ Public API:
 from checkloop.checks import (
     CHECK_IDS,
     CHECKS,
+    CheckDef,
     TIER_BASIC,
     TIER_EXHAUSTIVE,
     TIER_THOROUGH,
@@ -30,6 +31,7 @@ from checkloop.process import run_claude
 __all__ = [
     "CHECK_IDS",
     "CHECKS",
+    "CheckDef",
     "TIER_BASIC",
     "TIER_EXHAUSTIVE",
     "TIER_THOROUGH",

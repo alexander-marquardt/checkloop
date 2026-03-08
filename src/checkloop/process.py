@@ -8,7 +8,8 @@ import select
 import signal
 import subprocess
 import time
-from typing import IO, Any
+from collections.abc import Callable
+from typing import IO
 
 from checkloop.monitoring import (
     _find_session_pids,
@@ -92,7 +93,7 @@ def _read_stdout_chunk(stdout: IO[bytes]) -> bytes:
     try:
         # BufferedReader.read1() returns available data without blocking for the
         # full chunk size. Fall back to os.read() for raw file descriptors.
-        read1 = getattr(stdout, "read1", None)
+        read1: Callable[[int], bytes] | None = getattr(stdout, "read1", None)
         if read1 is not None:
             return read1(_READ_CHUNK_SIZE)
         return os.read(stdout.fileno(), _READ_CHUNK_SIZE)

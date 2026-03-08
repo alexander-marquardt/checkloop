@@ -23,6 +23,7 @@ from pathlib import Path
 from checkloop.checks import (
     CHECK_IDS,
     CHECKS,
+    CheckDef,
     DEFAULT_TIER,
     TIER_BASIC,
     TIER_EXHAUSTIVE,
@@ -145,7 +146,7 @@ def _build_argument_parser() -> argparse.ArgumentParser:
 
 def _print_run_summary(
     workdir: str,
-    selected_checks: list[dict[str, str]],
+    selected_checks: list[CheckDef],
     num_cycles: int,
     total_steps: int,
     idle_timeout: int,
@@ -207,7 +208,7 @@ def _resolve_changed_files_prefix(args: argparse.Namespace, workdir: str) -> str
     return _build_changed_files_prefix(changed_files)
 
 
-def _resolve_selected_checks(args: argparse.Namespace) -> list[dict[str, str]]:
+def _resolve_selected_checks(args: argparse.Namespace) -> list[CheckDef]:
     """Determine which checks to run based on CLI arguments."""
     if args.all_checks:
         selected_ids = set(CHECK_IDS)

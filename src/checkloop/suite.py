@@ -9,6 +9,7 @@ import time
 
 from checkloop.checks import (
     COMMIT_MESSAGE_INSTRUCTIONS,
+    CheckDef,
     FULL_CODEBASE_SCOPE,
     _BOOKEND_IDS,
     _looks_dangerous,
@@ -43,7 +44,7 @@ _PRE_RUN_WARNING_DELAY = 5  # countdown seconds before starting review
 # --- Single check execution ---------------------------------------------------
 
 def _run_single_check(
-    check: dict[str, str],
+    check: CheckDef,
     workdir: str,
     args: argparse.Namespace,
     step_label: str,
@@ -111,9 +112,9 @@ def _report_check_changes(workdir: str, pass_id: str, sha_before: str | None) ->
 # --- Active check filtering ---------------------------------------------------
 
 def _filter_active_checks(
-    selected_checks: list[dict[str, str]],
+    selected_checks: list[CheckDef],
     previously_changed_ids: set[str] | None,
-) -> list[dict[str, str]]:
+) -> list[CheckDef]:
     """Return checks to run this cycle, skipping those that were no-ops last cycle.
 
     On the first cycle (*previously_changed_ids* is None), all checks run.
@@ -179,7 +180,7 @@ def _check_cycle_convergence(
 # --- Suite orchestration ------------------------------------------------------
 
 def _run_check_suite(
-    selected_checks: list[dict[str, str]],
+    selected_checks: list[CheckDef],
     num_cycles: int,
     workdir: str,
     args: argparse.Namespace,
@@ -296,7 +297,7 @@ def _display_pre_run_warning(skip_permissions: bool) -> None:
 # --- Error-handling wrapper ---------------------------------------------------
 
 def _run_suite_with_error_handling(
-    selected_checks: list[dict[str, str]],
+    selected_checks: list[CheckDef],
     num_cycles: int,
     workdir: str,
     args: argparse.Namespace,
