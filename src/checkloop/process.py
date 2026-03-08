@@ -12,6 +12,7 @@ from typing import IO, Any
 
 from checkloop.monitoring import (
     _find_session_pids,
+    _kill_pids,
     _log_memory_usage,
     _previous_session_ids,
 )
@@ -235,12 +236,7 @@ def _kill_session_stragglers(session_id: int) -> None:
     if not stragglers:
         return
     logger.warning("Found %d straggler(s) in session %d: %s", len(stragglers), session_id, stragglers)
-    for pid in stragglers:
-        try:
-            os.kill(pid, signal.SIGKILL)
-            logger.info("Killed session straggler pid=%d", pid)
-        except OSError as exc:
-            logger.debug("Could not kill straggler %d: %s", pid, exc)
+    _kill_pids(stragglers)
 
 
 def _kill_process_group(process: subprocess.Popen[bytes]) -> None:

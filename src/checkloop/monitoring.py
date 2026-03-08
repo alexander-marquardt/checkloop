@@ -56,48 +56,54 @@ def _parse_pgrep_output(result: subprocess.CompletedProcess[str]) -> list[int]:
     return pids
 
 
-def _find_child_pids() -> list[int]:
-    """Return PIDs of surviving child processes (direct children only)."""
+def _run_pgrep(*args: str) -> list[int]:
+    """Run pgrep with the given arguments and return parsed PIDs."""
     try:
         result = subprocess.run(
-            ["pgrep", "-P", str(os.getpid())],
+            ["pgrep", *args],
             capture_output=True, text=True,
         )
     except OSError as exc:
-        logger.debug("pgrep failed: %s", exc)
+        logger.debug("pgrep %s failed: %s", args[0] if args else "", exc)
         return []
     return _parse_pgrep_output(result)
+
+
+def _find_child_pids() -> list[int]:
+    """Return PIDs of surviving child processes (direct children only)."""
+    return _run_pgrep("-P", str(os.getpid()))
 
 
 def _find_session_pids(session_id: int) -> list[int]:
     """Return PIDs of all processes in the given session, excluding ourselves."""
     my_pid = os.getpid()
-    try:
-        result = subprocess.run(
-            ["pgrep", "-s", str(session_id)],
-            capture_output=True, text=True,
-        )
-    except OSError as exc:
-        logger.debug("pgrep -s failed: %s", exc)
-        return []
-    return [pid for pid in _parse_pgrep_output(result) if pid != my_pid]
+    return [pid for pid in _run_pgrep("-s", str(session_id)) if pid != my_pid]
 
 
 # --- Orphan and straggler cleanup --------------------------------------------
+
+def _kill_pids(pids: list[int], sig: signal.Signals = signal.SIGKILL) -> int:
+    """Send a signal to each PID, ignoring already-dead processes. Returns count killed."""
+    killed = 0
+    for pid in pids:
+        try:
+            os.kill(pid, sig)
+            killed += 1
+            logger.debug("Sent %s to pid %d", sig.name, pid)
+        except OSError as exc:
+            logger.debug("Could not signal pid %d: %s", pid, exc)
+    return killed
+
 
 def _kill_orphaned_children(pids: list[int] | None = None) -> int:
     """Kill surviving child processes. Returns count killed.
 
     Accepts an optional pre-fetched pid list to avoid a redundant pgrep spawn.
     """
-    killed = 0
-    for child_pid in (pids if pids is not None else _find_child_pids()):
-        try:
-            os.kill(child_pid, signal.SIGKILL)
-            killed += 1
-            logger.warning("Killed orphaned child process %d", child_pid)
-        except OSError as exc:
-            logger.debug("Could not kill child %d: %s", child_pid, exc)
+    target_pids = pids if pids is not None else _find_child_pids()
+    killed = _kill_pids(target_pids)
+    if killed:
+        logger.warning("Killed %d orphaned child process(es)", killed)
     return killed
 
 
@@ -135,10 +141,6 @@ def _sweep_previous_sessions() -> None:
         if stragglers:
             logger.warning("Session %d still has %d straggler(s): %s", sid, len(stragglers), stragglers)
             _print_status(f"  Warning: {len(stragglers)} straggler(s) from session {sid} — killing.", YELLOW)
-            for pid in stragglers:
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except OSError:
-                    pass
+            _kill_pids(stragglers)
             still_active.append(sid)
     _previous_session_ids[:] = still_active

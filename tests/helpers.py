@@ -23,7 +23,6 @@ def make_mock_cli_args(*, dry_run: bool = False, **overrides: Any) -> mock.Magic
     args = mock.MagicMock()
     defaults: dict[str, Any] = {
         **SHARED_ARG_DEFAULTS,
-        "debug": False,
         "dir": "/tmp",
         "cycles": 1,
         "converged_at_percentage": DEFAULT_CONVERGENCE_THRESHOLD,
