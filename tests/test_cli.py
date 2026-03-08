@@ -12,6 +12,7 @@ from unittest import mock
 import pytest
 
 from checkloop import cli, suite, process, checks, git
+from helpers import SHARED_ARG_DEFAULTS
 
 
 # =============================================================================
@@ -25,20 +26,11 @@ def _parse_cli(args: list[str]) -> argparse.Namespace:
     return cli._build_argument_parser().parse_args(args)
 
 
-_SHARED_ARG_DEFAULTS: dict[str, Any] = dict(
-    pause=0,
-    idle_timeout=process.DEFAULT_IDLE_TIMEOUT,
-    verbose=False,
-    debug=False,
-    dangerously_skip_permissions=False,
-)
-
-
 def _make_main_mock_args(*, dry_run: bool = False, **overrides: Any) -> mock.MagicMock:
     """Build a MagicMock with all attributes main() reads from parsed args."""
     args = mock.MagicMock()
     defaults = {
-        **_SHARED_ARG_DEFAULTS,
+        **SHARED_ARG_DEFAULTS,
         "debug": False,
         "dir": "/tmp",
         "cycles": 1,

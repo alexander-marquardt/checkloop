@@ -11,24 +11,16 @@ from unittest import mock
 import pytest
 
 from checkloop import suite, process
+from helpers import SHARED_ARG_DEFAULTS
 
 
 # =============================================================================
 # Shared test helpers
 # =============================================================================
 
-_SHARED_ARG_DEFAULTS: dict[str, Any] = dict(
-    pause=0,
-    idle_timeout=process.DEFAULT_IDLE_TIMEOUT,
-    verbose=False,
-    debug=False,
-    dangerously_skip_permissions=False,
-)
-
-
 def _make_suite_args(*, dry_run: bool = True, **overrides: Any) -> argparse.Namespace:
     """Build an argparse.Namespace for _run_check_suite / _run_single_check."""
-    defaults = {**_SHARED_ARG_DEFAULTS, "dry_run": dry_run}
+    defaults = {**SHARED_ARG_DEFAULTS, "dry_run": dry_run}
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
 

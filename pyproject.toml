@@ -41,5 +41,8 @@ checkloop = "checkloop.cli:main"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.pytest.ini_options]
+pythonpath = ["tests"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/checkloop"]
