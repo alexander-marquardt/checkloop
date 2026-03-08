@@ -376,7 +376,7 @@ class TestCommitMessageInstructions:
             suite._run_check_suite(selected_checks, 1, "/tmp", args)
             prompt_used = mock_run.call_args[0][0]
             assert "commit message rules" in prompt_used
-            assert "Do not mention Claude" in prompt_used
+            assert "Do NOT mention Claude" in prompt_used
 
 
 # =============================================================================
