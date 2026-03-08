@@ -135,7 +135,7 @@ uv run checkloop --cycles 5 --converged-at-percentage 0.5
 
 ## How It Works
 
-`checkloop` is a single-module Python CLI (`src/checkloop/cli.py`) that orchestrates Claude Code as a subprocess. Here is the high-level flow:
+`checkloop` is a modular Python CLI that orchestrates Claude Code as a subprocess. Here is the high-level flow:
 
 1. **Argument resolution** — Parses CLI flags, resolves the check tier (or manual check selection), and validates the target directory.
 2. **Pre-run warning** — Displays a 5-second countdown so the user can abort. Warns if `--dangerously-skip-permissions` is (or isn't) set.
@@ -178,8 +178,15 @@ No other environment variables or config files are required. All configuration i
 
 ```
 src/checkloop/
-├── __init__.py   # Package docstring and public API summary
-└── cli.py        # All CLI logic: argument parsing, checks, Claude subprocess management
+├── __init__.py     # Public API exports (main, run_claude, CHECKS, TIERS, etc.)
+├── checks.py       # Check definitions, tier configuration, dangerous-prompt guard
+├── cli.py          # CLI argument parsing, validation, and entry point
+├── git.py          # Git operations: commits, diffs, line counting, branch detection
+├── monitoring.py   # Memory/process monitoring, orphan detection, session cleanup
+├── process.py      # Claude Code subprocess spawning, streaming, and cleanup
+├── streaming.py    # JSONL stream parsing and real-time event display
+├── suite.py        # Suite orchestration, convergence detection, pre-run warnings
+└── terminal.py     # ANSI colours, banners, status messages, duration formatting
 ```
 
 ## Development
@@ -220,7 +227,7 @@ The project has no runtime dependencies — only `pytest`, `pytest-cov`, and `my
 
 1. Fork the repo and create a feature branch.
 2. Install dev dependencies: `uv sync --dev`
-3. Make your changes in `src/checkloop/cli.py`.
+3. Make your changes in the relevant module under `src/checkloop/`.
 4. Run the full check suite:
    ```bash
    uv run pytest --cov=checkloop --cov-report=term-missing
