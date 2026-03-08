@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, cast
 from unittest import mock
 
 from checkloop import check_runner, process, suite
@@ -13,6 +13,7 @@ from checkloop.checks import CheckDef
 from checkloop.checkpoint import CheckpointData
 from checkloop.cli import DEFAULT_CONVERGENCE_THRESHOLD
 from checkloop.process import CheckResult
+from checkloop.terminal import SummaryRow
 
 # Default argument values shared across test_cli, test_cli_args, and test_suite.
 SHARED_ARG_DEFAULTS: dict[str, Any] = dict(
@@ -105,6 +106,21 @@ def patch_suite_git(
 def make_check(check_id: str, label: str = "", prompt: str = "p") -> CheckDef:
     """Build a CheckDef for use in tests."""
     return CheckDef(id=check_id, label=label or check_id, prompt=prompt)
+
+
+def make_summary_row(**overrides: Any) -> SummaryRow:
+    """Build a SummaryRow dict with sensible defaults.
+
+    Used across test_terminal classes to avoid repeating the full
+    TypedDict construction inline.
+    """
+    defaults: dict[str, Any] = dict(
+        check_id="chk", label="Check", cycle=1, exit_code=0,
+        kill_reason=None, made_changes=False, lines_changed=0,
+        change_pct=0.0, duration="0m05s",
+    )
+    defaults.update(overrides)
+    return cast(SummaryRow, defaults)
 
 
 def make_checkpoint_data(**overrides: Any) -> CheckpointData:

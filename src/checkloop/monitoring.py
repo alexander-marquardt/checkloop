@@ -22,37 +22,41 @@ logger = logging.getLogger(__name__)
 _KB_PER_MB = 1024  # ps reports RSS in kilobytes
 
 
+# --- Shared subprocess helpers ------------------------------------------------
+
+def _run_cmd_quiet(cmd: list[str]) -> subprocess.CompletedProcess[str] | None:
+    """Run a command with captured output, returning None on any launch error."""
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True)
+    except FileNotFoundError:
+        logger.debug("%s binary not found", cmd[0])
+        return None
+    except (OSError, ValueError) as exc:
+        logger.debug("%s command failed: %s", cmd[0], exc)
+        return None
+
+
+def _parse_int_lines(stdout: str) -> list[int]:
+    """Parse each non-empty line of *stdout* as an integer, skipping failures."""
+    values: list[int] = []
+    for line in stdout.strip().splitlines():
+        stripped = line.strip()
+        if stripped:
+            try:
+                values.append(int(stripped))
+            except ValueError:
+                logger.debug("Skipping non-integer line: %r", stripped)
+    return values
+
+
 # --- Memory measurement ------------------------------------------------------
 
 def _sum_rss_from_ps(*ps_args: str) -> float:
-    """Run ``ps -o rss= <ps_args>`` and return the total RSS in MB.
-
-    Parses each non-empty output line as an integer (KB), sums them, and
-    converts to MB.  Returns 0.0 on any error or when ``ps`` produces no
-    output.
-    """
-    try:
-        result = subprocess.run(
-            ["ps", "-o", "rss=", *ps_args],
-            capture_output=True, text=True,
-        )
-        if result.returncode != 0 or not result.stdout.strip():
-            return 0.0
-        total_kb = 0
-        for line in result.stdout.strip().splitlines():
-            line = line.strip()
-            if line:
-                try:
-                    total_kb += int(line)
-                except ValueError:
-                    pass
-        return total_kb / _KB_PER_MB
-    except FileNotFoundError:
-        logger.debug("ps binary not found — RSS measurement unavailable")
+    """Run ``ps -o rss= <ps_args>`` and return the total RSS in MB."""
+    result = _run_cmd_quiet(["ps", "-o", "rss=", *ps_args])
+    if result is None or result.returncode != 0 or not result.stdout.strip():
         return 0.0
-    except (OSError, ValueError) as exc:
-        logger.debug("ps RSS measurement failed (args=%s): %s", ps_args, exc)
-        return 0.0
+    return sum(_parse_int_lines(result.stdout)) / _KB_PER_MB
 
 
 def _measure_current_rss_mb() -> float:
@@ -83,33 +87,12 @@ def measure_session_rss_mb(session_id: int) -> float:
 
 # --- Process discovery --------------------------------------------------------
 
-def _parse_pgrep_output(result: subprocess.CompletedProcess[str]) -> list[int]:
-    """Extract integer PIDs from pgrep stdout."""
-    if result.returncode != 0 or not result.stdout.strip():
-        return []
-    pids: list[int] = []
-    for line in result.stdout.strip().split("\n"):
-        try:
-            pids.append(int(line.strip()))
-        except ValueError:
-            logger.debug("pgrep returned non-integer PID line: %r", line)
-    return pids
-
-
 def _run_pgrep(*args: str) -> list[int]:
     """Run pgrep with the given arguments and return parsed PIDs."""
-    try:
-        result = subprocess.run(
-            ["pgrep", *args],
-            capture_output=True, text=True,
-        )
-    except FileNotFoundError:
-        logger.debug("pgrep binary not found — process discovery unavailable")
+    result = _run_cmd_quiet(["pgrep", *args])
+    if result is None or result.returncode != 0:
         return []
-    except OSError as exc:
-        logger.debug("pgrep %s failed: %s", args[0] if args else "", exc)
-        return []
-    return _parse_pgrep_output(result)
+    return _parse_int_lines(result.stdout)
 
 
 def _find_child_pids() -> list[int]:
