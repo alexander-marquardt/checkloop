@@ -175,6 +175,18 @@ def _count_file_lines(filepath: Path) -> int:
         return 0
 
 
+def _safe_count_file_in_workdir(resolved_workdir: Path, relative_path: str) -> int:
+    """Count lines in a tracked file, returning 0 if outside workdir or unreadable."""
+    try:
+        absolute_path = (resolved_workdir / relative_path).resolve()
+        if not absolute_path.is_relative_to(resolved_workdir):
+            return 0  # skip paths that escape the workdir (path traversal guard)
+        return _count_file_lines(absolute_path)
+    except OSError as exc:
+        logger.debug("Could not read tracked file %s: %s", relative_path, exc)
+        return 0
+
+
 def _count_tracked_lines(workdir: str) -> int:
     """Count total lines across all git-tracked text files.
 
@@ -202,13 +214,7 @@ def _count_tracked_lines(workdir: str) -> int:
             continue
         relative_path = raw_path.decode("utf-8", errors="replace")
         file_count += 1
-        try:
-            absolute_path = (resolved_workdir / relative_path).resolve()
-            if not absolute_path.is_relative_to(resolved_workdir):
-                continue  # skip paths that escape the workdir (path traversal guard)
-            total_lines += _count_file_lines(absolute_path)
-        except OSError as exc:
-            logger.debug("Could not read tracked file %s: %s", relative_path, exc)
+        total_lines += _safe_count_file_in_workdir(resolved_workdir, relative_path)
     # Clamp to minimum 1 to prevent division-by-zero in convergence percentage calculations.
     total_clamped = max(total_lines, 1)
     elapsed = time.time() - start_time

@@ -254,6 +254,32 @@ def _flush_and_close_stdout(
         logger.debug("Failed to close stdout pipe: %s", exc)
 
 
+def _check_resource_limits(
+    process: subprocess.Popen[bytes],
+    check_start_time: float,
+    last_output_time: float,
+    idle_timeout: int,
+    check_timeout: int,
+    max_memory_mb: int,
+    last_memory_check: float,
+) -> tuple[str | None, float]:
+    """Check all resource limits in one pass.
+
+    Returns ``(kill_reason, last_memory_check)``.  *kill_reason* is one of
+    the ``KILL_REASON_*`` constants if a limit was exceeded, or ``None``.
+    """
+    if _check_idle_timeout(last_output_time, idle_timeout, check_start_time, process):
+        return KILL_REASON_IDLE, last_memory_check
+    if _check_hard_timeout(check_start_time, check_timeout, process):
+        return KILL_REASON_TIMEOUT, last_memory_check
+    exceeded, last_memory_check = _check_memory_limit(
+        process.pid, max_memory_mb, check_start_time, process, last_memory_check,
+    )
+    if exceeded:
+        return KILL_REASON_MEMORY, last_memory_check
+    return None, last_memory_check
+
+
 def _stream_process_output(
     process: subprocess.Popen[bytes],
     idle_timeout: int,
@@ -283,19 +309,11 @@ def _stream_process_output(
 
     try:
         while True:
-            if _check_idle_timeout(last_output_time, idle_timeout, check_start_time, process):
-                kill_reason = KILL_REASON_IDLE
-                break
-
-            if _check_hard_timeout(check_start_time, check_timeout, process):
-                kill_reason = KILL_REASON_TIMEOUT
-                break
-
-            exceeded, last_memory_check = _check_memory_limit(
-                process.pid, max_memory_mb, check_start_time, process, last_memory_check,
+            kill_reason, last_memory_check = _check_resource_limits(
+                process, check_start_time, last_output_time, idle_timeout,
+                check_timeout, max_memory_mb, last_memory_check,
             )
-            if exceeded:
-                kill_reason = KILL_REASON_MEMORY
+            if kill_reason:
                 break
 
             try:

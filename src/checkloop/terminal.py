@@ -254,20 +254,15 @@ def print_overall_summary_table(
 
     prev_lines = 0
     for cs in cycle_summaries:
-        # Colour the lines column based on trend
-        if prev_lines > 0 and cs.total_lines < prev_lines:
-            lines_colour = GREEN  # decreasing — converging
-        elif prev_lines > 0 and cs.total_lines > prev_lines:
+        # Compute delta once; use it for both colour and indicator.
+        delta = cs.total_lines - prev_lines if prev_lines > 0 else 0
+        if delta < 0:
+            lines_colour = GREEN   # decreasing — converging
+        elif delta > 0:
             lines_colour = YELLOW  # increasing — diverging
         else:
             lines_colour = BLUE
-
-        # Delta indicator
-        if prev_lines > 0 and cs.total_lines != prev_lines:
-            delta = cs.total_lines - prev_lines
-            delta_str = f" ({delta:+d})"
-        else:
-            delta_str = ""
+        delta_str = f" ({delta:+d})" if delta != 0 else ""
 
         lines_str = f"{cs.total_lines}{delta_str}"
         changed_str = f"{cs.with_changes}/{cs.total_checks}"
