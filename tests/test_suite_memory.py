@@ -88,6 +88,6 @@ class TestInvokeClaudeExceptionInRunSingleCheck:
         with mock.patch.object(check_runner, "_invoke_claude", side_effect=OSError("connection lost")), \
              mock.patch.object(check_runner, "git_head_sha", return_value="abc123"):
             outcome = check_runner._run_single_check(check_def, "/tmp", args, "[1/1]", is_git=True)
-        assert outcome["exit_code"] == -1
+        assert outcome.exit_code == -1
         out = capsys.readouterr().out
         assert "failed with error" in out
