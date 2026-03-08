@@ -249,6 +249,29 @@ def _git_commit_all(workdir: str, message: str) -> bool:
         return False
 
 
+def _git_squash_since(workdir: str, base_sha: str, message: str) -> bool:
+    """Squash all commits since *base_sha* into a single commit.
+
+    Commits any uncommitted changes first, then soft-resets to *base_sha*
+    and creates one new commit with the given message.
+
+    Returns True if a squashed commit was created.
+    """
+    try:
+        _git_commit_all(workdir, "wip")
+        current_sha = _git_head_sha(workdir)
+        if current_sha == base_sha:
+            return False
+        _git_run(workdir, "reset", "--soft", base_sha, check=True)
+        _git_run(workdir, "commit", "-m", message, check=True)
+        new_sha = _git_head_sha(workdir)
+        logger.info("Squashed to %s: %s", new_sha, message)
+        return True
+    except (subprocess.CalledProcessError, OSError) as exc:
+        logger.warning("Git squash failed: %s", exc, exc_info=True)
+        return False
+
+
 def _parse_shortstat(text: str) -> int:
     """Parse ``git diff --shortstat`` output into total lines changed."""
     insertions = deletions = 0
@@ -1312,7 +1335,6 @@ def _check_cycle_convergence(
         A ``(should_stop, change_pct)`` tuple.  *should_stop* is True when
         the loop should exit (either no changes or below threshold).
     """
-    _git_commit_all(workdir, f"Review cycle {cycle} cleanup")
     current_sha = _git_head_sha(workdir)
 
     if current_sha == base_sha:
@@ -1457,7 +1479,7 @@ def _run_check_suite(
         if num_cycles > 1:
             print(f"\n{BOLD}{CYAN}===  Cycle {cycle}/{num_cycles}  ==={RESET}")
 
-        base_sha = _git_head_sha(workdir) if convergence_enabled else None
+        base_sha = _git_head_sha(workdir) if is_git else None
         active_checks = _filter_active_checks(selected_checks, previously_changed_ids)
         changed_this_cycle: set[str] = set()
 
@@ -1471,6 +1493,11 @@ def _run_check_suite(
                 changed_this_cycle.add(check["id"])
 
         previously_changed_ids = changed_this_cycle
+
+        if is_git and base_sha and changed_this_cycle and not args.dry_run:
+            check_names = ", ".join(sorted(changed_this_cycle))
+            cycle_label = f" (cycle {cycle}/{num_cycles})" if num_cycles > 1 else ""
+            _git_squash_since(workdir, base_sha, f"checkloop{cycle_label}: {check_names}")
 
         if convergence_enabled and base_sha and not args.dry_run:
             converged, prev_change_pct = _check_cycle_convergence(

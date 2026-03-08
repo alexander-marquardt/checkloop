@@ -86,16 +86,10 @@ def _patch_suite_git(
         stack.enter_context(mock.patch.object(cli, "run_claude", return_value=run_claude_return))
         stack.enter_context(mock.patch.object(cli, "_is_git_repo", return_value=True))
         stack.enter_context(mock.patch.object(cli, "_git_head_sha", side_effect=sha_sequence))
+        stack.enter_context(mock.patch.object(cli, "_git_commit_all", return_value=True))
+        stack.enter_context(mock.patch.object(cli, "_git_squash_since", return_value=True))
         if lines_changed is not None:
-            # Return 0 for uncommitted-change probes (target="") so that
-            # no-change detection works correctly; return lines_changed for
-            # committed diffs.
-            def _lines_changed_stub(
-                _workdir: str, _base: str, target: str = "HEAD", *, _val: int = lines_changed,
-            ) -> int:
-                return 0 if target == "" else _val
-
-            stack.enter_context(mock.patch.object(cli, "_count_lines_changed", side_effect=_lines_changed_stub))
+            stack.enter_context(mock.patch.object(cli, "_count_lines_changed", return_value=lines_changed))
         if total_tracked is not None:
             stack.enter_context(mock.patch.object(cli, "_cached_total_tracked_lines", return_value=total_tracked))
         yield
@@ -821,8 +815,10 @@ class TestRunCheckSuite:
         ]
         args = _make_suite_args(dry_run=False)
         sha_sequence = [
-            "sha_r_before", "sha_r_after",    # Cycle 1 readability: changed
+            "cycle1_base",                     # Cycle 1 base_sha
+            "sha_r_before", "sha_r_after",     # Cycle 1 readability: changed
             "sha_d_before", "sha_d_before",    # Cycle 1 dry: no change
+            "cycle2_base",                     # Cycle 2 base_sha
             "sha_r2_before", "sha_r2_after",   # Cycle 2 readability: runs
         ]
         with _patch_suite_git(sha_sequence, lines_changed=10, total_tracked=1000):
@@ -839,7 +835,9 @@ class TestRunCheckSuite:
         ]
         args = _make_suite_args(dry_run=False)
         sha_sequence = [
-            "s1", "s1",  "s2", "s2",  "s3", "s3",  # Cycle 1: all no-change
+            "c1_base",                               # Cycle 1 base_sha
+            "s1", "s1",  "s2", "s2",  "s3", "s3",   # Cycle 1: all no-change
+            "c2_base",                               # Cycle 2 base_sha
             "s4", "s4",  "s5", "s5",                 # Cycle 2: bookends only
         ]
         with _patch_suite_git(sha_sequence):
@@ -858,7 +856,9 @@ class TestRunCheckSuite:
         ]
         args = _make_suite_args(dry_run=False)
         sha_sequence = [
+            "c1_base",                 # Cycle 1 base_sha
             "a1", "a2",  "b1", "b2",  # Cycle 1: both change
+            "c2_base",                 # Cycle 2 base_sha
             "c1", "c2",  "d1", "d2",  # Cycle 2: both run again
         ]
         with _patch_suite_git(sha_sequence, lines_changed=10, total_tracked=1000):
@@ -870,7 +870,7 @@ class TestRunCheckSuite:
         """After each check that makes changes, lines changed and percentage are printed."""
         passes = [{"id": "readability", "label": "Readability", "prompt": "review code"}]
         args = _make_suite_args(dry_run=False)
-        with _patch_suite_git(["sha1", "sha2"], lines_changed=42, total_tracked=5000):
+        with _patch_suite_git(["base", "sha1", "sha2"], lines_changed=42, total_tracked=5000):
             cli._run_check_suite(passes, 1, "/tmp", args)
         out = capsys.readouterr().out
         assert "42 lines changed" in out
@@ -880,7 +880,7 @@ class TestRunCheckSuite:
         """After a check with no changes, 'no changes' is printed."""
         passes = [{"id": "dry", "label": "DRY", "prompt": "check dry"}]
         args = _make_suite_args(dry_run=False)
-        with _patch_suite_git(["same", "same"]):
+        with _patch_suite_git(["base", "same", "same"]):
             cli._run_check_suite(passes, 1, "/tmp", args)
         out = capsys.readouterr().out
         assert "dry: no changes" in out
