@@ -41,6 +41,9 @@ def _summarise_tool_use(tool_name: str, tool_input: dict[str, Any]) -> str:
 def _print_assistant_event(event: dict[str, Any], elapsed_prefix: str) -> None:
     """Print text blocks from an assistant response event."""
     content = event.get("message", {}).get("content") or []
+    if not isinstance(content, list):
+        logger.debug("Unexpected content type in assistant event: %s", type(content).__name__)
+        return
     text_blocks = [
         b.get("text", "")
         for b in content
@@ -123,4 +126,6 @@ def _process_jsonl_buffer(
         except json.JSONDecodeError:
             if debug:
                 print(f"{DIM}{line_str}{RESET}")
+        except (TypeError, KeyError, AttributeError) as exc:
+            logger.debug("Failed to process JSONL event: %s (line: %.120s)", exc, line_str)
     return output_buffer

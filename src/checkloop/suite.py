@@ -87,7 +87,9 @@ def _run_single_check(
         _print_status(f"Check '{check['id']}' exited with code {exit_code}. Continuing...", YELLOW)
 
     if is_git:
-        _git_commit_all(workdir, f"checkloop: {check['id']}")
+        committed = _git_commit_all(workdir, f"checkloop: {check['id']}")
+        if not committed:
+            logger.debug("No changes to commit after check '%s'", check["id"])
     made_changes = _report_check_changes(workdir, check["id"], sha_before)
     logger.info("Check '%s' made_changes=%s", check["id"], made_changes)
     return made_changes
