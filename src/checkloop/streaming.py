@@ -152,7 +152,11 @@ def process_jsonl_buffer(
         if not line_str:
             continue
         try:
-            _print_event(json.loads(line_str), check_start_time)
+            parsed = json.loads(line_str)
+            if not isinstance(parsed, dict):
+                logger.debug("Skipping non-object JSON value: %s", type(parsed).__name__)
+                continue
+            _print_event(parsed, check_start_time)
         except json.JSONDecodeError:
             logger.debug("Skipping non-JSON line from subprocess: %.120s", line_str)
             if debug:

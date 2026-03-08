@@ -451,11 +451,13 @@ class TestProcessJsonlBufferEventErrors:
 class TestProcessJsonlBufferNonDictJson:
     """Edge cases for process_jsonl_buffer with valid JSON that isn't a dict."""
 
-    def test_json_array_does_not_crash(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """A JSON array is valid JSON but not a stream event dict."""
+    def test_json_array_skipped_without_exception(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """A JSON array is valid JSON but not a stream event dict — skipped via type check."""
         buf = bytearray(b'[1, 2, 3]\n')
         remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=False)
         assert remainder == bytearray()
+        # Verify no output was produced (the non-dict value is silently skipped)
+        assert capsys.readouterr().out == ""
 
     def test_json_number_does_not_crash(self, capsys: pytest.CaptureFixture[str]) -> None:
         """A JSON number is valid JSON but not a dict."""
@@ -478,6 +480,13 @@ class TestProcessJsonlBufferNonDictJson:
     def test_json_boolean_does_not_crash(self, capsys: pytest.CaptureFixture[str]) -> None:
         buf = bytearray(b'true\n')
         remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=False)
+
+    def test_non_dict_json_does_not_call_print_event(self) -> None:
+        """Non-dict JSON values should be skipped before reaching _print_event."""
+        buf = bytearray(b'42\n"hello"\n[1,2]\nnull\ntrue\n')
+        with unittest.mock.patch.object(streaming, "_print_event") as mock_print:
+            streaming.process_jsonl_buffer(buf, time.time(), debug=False)
+            mock_print.assert_not_called()
         assert remainder == bytearray()
 
 

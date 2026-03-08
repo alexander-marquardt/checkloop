@@ -150,15 +150,23 @@ class TestGetChangedFiles:
             files = git.get_changed_files("/tmp", "main")
         assert files == ["src/a.py"]
 
-    def test_whitespace_only_merge_base(self) -> None:
-        """Whitespace-only merge-base stdout still produces a ref for diff."""
+    def test_whitespace_only_merge_base_returns_empty(self) -> None:
+        """Whitespace-only merge-base stdout produces empty SHA, so return empty list."""
         with mock.patch.object(git, "_git_run") as mock_git:
             mock_git.side_effect = [
                 make_git_result(stdout="   \n"),
-                make_git_result(stdout="a.py\n"),
             ]
             files = git.get_changed_files("/tmp", "main")
-        assert files == ["a.py"]
+        assert files == []
+
+    def test_empty_merge_base_stdout_returns_empty(self) -> None:
+        """Empty merge-base stdout returns empty list instead of passing empty ref to git diff."""
+        with mock.patch.object(git, "_git_run") as mock_git:
+            mock_git.side_effect = [
+                make_git_result(stdout=""),
+            ]
+            files = git.get_changed_files("/tmp", "main")
+        assert files == []
 
 
 class TestBuildChangedFilesPrefix:

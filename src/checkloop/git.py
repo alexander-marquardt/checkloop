@@ -260,6 +260,9 @@ def get_changed_files(workdir: str, base_ref: str) -> list[str]:
         logger.warning("git merge-base failed for ref '%s' (rc=%d)", base_ref, merge_base.returncode)
         return []
     base_sha = merge_base.stdout.strip()
+    if not base_sha:
+        logger.warning("git merge-base returned empty SHA for ref '%s'", base_ref)
+        return []
     try:
         result = _git_run(workdir, "diff", "--name-only", base_sha, "HEAD")
     except OSError as exc:
