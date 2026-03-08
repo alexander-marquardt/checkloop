@@ -12,7 +12,7 @@ import json
 import logging
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import Any, TypeAlias
 
 from checkloop.terminal import BLUE, DIM, GREEN, RESET, format_duration
 
@@ -94,7 +94,7 @@ def _print_result_event(event: dict[str, Any], elapsed_prefix: str) -> None:
 
 
 # Type alias for event handler functions used by _print_event dispatch.
-_EventHandler = Callable[[dict[str, Any], str], None]
+_EventHandler: TypeAlias = Callable[[dict[str, Any], str], None]
 
 # Maps stream-json event types to their display handlers.
 _EVENT_TYPE_HANDLERS: dict[str, _EventHandler] = {

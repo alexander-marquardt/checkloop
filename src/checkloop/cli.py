@@ -16,11 +16,13 @@ Usage:
 
 from __future__ import annotations
 
+import argparse
 import atexit
 import logging
 import os
 import signal
 import sys
+import types
 import uuid
 from pathlib import Path
 
@@ -59,10 +61,10 @@ _RUN_ID: str = uuid.uuid4().hex[:8]
 _LOG_FORMAT = f"%(asctime)s [%(levelname)s] [run={_RUN_ID}] %(name)s: %(message)s"
 
 
-def _configure_logging(args: object) -> None:
+def _configure_logging(args: argparse.Namespace) -> None:
     """Set up logging based on --verbose / --debug flags."""
-    debug = getattr(args, "debug", False)
-    verbose = getattr(args, "verbose", False)
+    debug: bool = getattr(args, "debug", False)
+    verbose: bool = getattr(args, "verbose", False)
     if debug:
         log_level = logging.DEBUG
     elif verbose:
@@ -159,7 +161,7 @@ def _register_cleanup_handlers() -> None:
     """
     atexit.register(cleanup_all_sessions)
     for sig in (signal.SIGTERM, signal.SIGHUP):
-        def _signal_handler(signum: int, frame: object) -> None:
+        def _signal_handler(signum: int, frame: types.FrameType | None) -> None:
             logger.info("Received signal %d — exiting", signum)
             sys.exit(128 + signum)
         try:
