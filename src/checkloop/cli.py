@@ -71,6 +71,7 @@ COMMIT_MESSAGE_INSTRUCTIONS: str = (
     "\n\nIf you make any git commits, follow these commit message rules:\n"
     "- Maximum 5-10 lines\n"
     "- Do not mention Claude, AI, or any AI tools\n"
+    "- Do not add Co-Authored-By or Signed-off-by trailers\n"
     "- Provide only a high-level summary of what was cleaned up, fixed, or changed\n"
     "- Use clear, professional commit message style"
 )
@@ -229,23 +230,22 @@ def _git_head_sha(workdir: str) -> str | None:
     return sha or None  # treat empty stdout as unavailable
 
 
-def _git_commit_cycle(workdir: str, cycle: int) -> bool:
-    """Stage and commit any uncommitted changes after a review cycle.
+def _git_commit_all(workdir: str, message: str) -> bool:
+    """Stage and commit any uncommitted changes.
 
-    Returns True if a commit was created (i.e. there were changes).
+    Returns True if a commit was created (i.e. there were changes to commit).
     """
     try:
         _git_run(workdir, "add", "-A", check=True)
-        # Check for staged changes
         if _git_run(workdir, "diff", "--cached", "--quiet").returncode == 0:
-            logger.debug("No staged changes after cycle %d — nothing to commit", cycle)
-            return False  # nothing to commit
-        _git_run(workdir, "commit", "-m", f"Review cycle {cycle} cleanup", check=True)
+            logger.debug("No staged changes — nothing to commit")
+            return False
+        _git_run(workdir, "commit", "-m", message, check=True)
         new_sha = _git_head_sha(workdir)
-        logger.info("Committed changes after cycle %d (sha=%s)", cycle, new_sha)
+        logger.info("Committed: %s (sha=%s)", message, new_sha)
         return True
     except (subprocess.CalledProcessError, OSError) as exc:
-        logger.warning("Git commit failed after cycle %d: %s", cycle, exc, exc_info=True)
+        logger.warning("Git commit failed: %s", exc, exc_info=True)
         return False
 
 
@@ -1312,7 +1312,7 @@ def _check_cycle_convergence(
         A ``(should_stop, change_pct)`` tuple.  *should_stop* is True when
         the loop should exit (either no changes or below threshold).
     """
-    _git_commit_cycle(workdir, cycle)
+    _git_commit_all(workdir, f"Review cycle {cycle} cleanup")
     current_sha = _git_head_sha(workdir)
 
     if current_sha == base_sha:
@@ -1391,6 +1391,8 @@ def _run_single_check(
         logger.warning("Check '%s' exited with code %d", check["id"], exit_code)
         _print_status(f"Check '{check['id']}' exited with code {exit_code}. Continuing...", YELLOW)
 
+    if is_git:
+        _git_commit_all(workdir, f"checkloop: {check['id']}")
     made_changes = _report_check_changes(workdir, check["id"], sha_before)
     logger.info("Check '%s' made_changes=%s", check["id"], made_changes)
     return made_changes
@@ -1412,17 +1414,9 @@ def _report_check_changes(workdir: str, pass_id: str, sha_before: str | None) ->
         return True  # assume changes if not a git repo
     sha_after = _git_head_sha(workdir)
     if sha_after == sha_before:
-        # HEAD didn't move — check for uncommitted working-tree changes
-        uncommitted = _count_lines_changed(workdir, sha_before, target="")
-        if uncommitted == 0:
-            _print_status(f"  {pass_id}: no changes")
-            return False
-        logger.info("Check '%s' made uncommitted changes (%d lines)", pass_id, uncommitted)
-    # Use working-tree diff when HEAD didn't move, committed diff otherwise
-    diff_target = "" if sha_after == sha_before else "HEAD"
-    lines_changed = _count_lines_changed(workdir, sha_before, target=diff_target)
-    total = _cached_total_tracked_lines(workdir)
-    pct = (lines_changed / total) * 100 if total else 0.0
+        _print_status(f"  {pass_id}: no changes")
+        return False
+    lines_changed, pct = _compute_change_stats(workdir, sha_before)
     _print_status(f"  {pass_id}: {lines_changed} lines changed ({pct:.2f}% of codebase)")
     return True
 
