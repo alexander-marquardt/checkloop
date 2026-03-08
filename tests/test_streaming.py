@@ -485,7 +485,7 @@ class TestProcessJsonlBufferNonDictJson:
         """Non-dict JSON values should be skipped before reaching _print_event."""
         buf = bytearray(b'42\n"hello"\n[1,2]\nnull\ntrue\n')
         with unittest.mock.patch.object(streaming, "_print_event") as mock_print:
-            streaming.process_jsonl_buffer(buf, time.time(), debug=False)
+            remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=False)
             mock_print.assert_not_called()
         assert remainder == bytearray()
 
