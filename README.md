@@ -1,10 +1,10 @@
 # claudeloop
 
-**Autonomous multi-pass code review using Claude Code.**
+**Autonomous multi-check code review using Claude Code.**
 
-**Writeup:** [Autonomous Multi-Pass AI Code Review](https://alexmarquardt.com/ai-tools/claudeloop-autonomous-code-review/)
+**Writeup:** [Autonomous Multi-Check AI Code Review](https://alexmarquardt.com/ai-tools/claudeloop-autonomous-code-review/)
 
-Single-pass AI code review misses things. `claudeloop` runs dimension-specific review passes — readability, DRY, tests, security, performance, error handling, and more — in sequence, then optionally cycles through the full suite again. Each pass creates a cleaner baseline that makes the next category of issues more visible.
+Single-check AI code review misses things. `claudeloop` runs dimension-specific checks — readability, DRY, tests, security, performance, error handling, and more — in sequence, then optionally cycles through the full suite again. Each check creates a cleaner baseline that makes the next category of issues more visible.
 
 ## Install
 
@@ -21,25 +21,25 @@ uv sync
 Run with `uv run claudeloop` from the project directory. `--dir` is required:
 
 ```bash
-# Review a project (basic tier: readability, dry, tests, docs)
+# Check a project (basic tier: readability, dry, tests, docs)
 uv run claudeloop --dir ~/my-project
 
-# Use the thorough tier for deeper review
+# Use the thorough tier for deeper checks
 uv run claudeloop --dir ~/my-project --level thorough
 
-# Exhaustive review — all 17 passes, repeat twice
+# Exhaustive — all 17 checks, repeat twice
 uv run claudeloop --dir ~/my-project --level exhaustive --cycles 2
 
-# Pick specific passes manually (overrides tier)
-uv run claudeloop --dir ~/my-project --passes readability security tests
+# Pick specific checks manually (overrides tier)
+uv run claudeloop --dir ~/my-project --checks readability security tests
 
 # Preview without running
 uv run claudeloop --dir ~/my-project --dry-run
 
-# Only review files changed on this branch (vs main/master)
+# Only check files changed on this branch (vs main/master)
 uv run claudeloop --dir ~/my-project --changed-only
 
-# Only review files changed vs a specific branch
+# Only check files changed vs a specific branch
 uv run claudeloop --dir ~/my-project --changed-only develop
 
 # See what Claude is doing in detail
@@ -52,24 +52,24 @@ To make `claudeloop` available globally (without `uv run`):
 uv tool install git+https://github.com/alexander-marquardt/claudeloop.git
 ```
 
-## Review Tiers
+## Check Tiers
 
-Choose a review depth with `--level`:
+Choose a check depth with `--level`:
 
-| Tier | Passes | Description |
+| Tier | Checks | Description |
 |------|--------|-------------|
-| **basic** (default) | 6 passes | Core code quality — readability, DRY, tests, docs (plus test-fix/test-validate bookends) |
-| **thorough** | 10 passes | Adds security, performance, error handling, type safety |
-| **exhaustive** | 17 passes | Everything — includes edge cases, complexity, deps, logging, concurrency, a11y, API design |
+| **basic** (default) | 6 checks | Core code quality — readability, DRY, tests, docs (plus test-fix/test-validate bookends) |
+| **thorough** | 10 checks | Adds security, performance, error handling, type safety |
+| **exhaustive** | 17 checks | Everything — includes edge cases, complexity, deps, logging, concurrency, a11y, API design |
 
-Every tier automatically includes the `test-fix` (first) and `test-validate` (last) bookend passes to ensure the test suite is green before and after the review.
+Every tier automatically includes the `test-fix` (first) and `test-validate` (last) bookend checks to ensure the test suite is green before and after the review.
 
-Use `--passes` to pick individual passes, or `--all-passes` as a shortcut for `--level exhaustive`.
+Use `--checks` to pick individual checks, or `--all-checks` as a shortcut for `--level exhaustive`.
 
-## Review Passes
+## Available Checks
 
-| Pass | Tier | What it does |
-|------|------|-------------|
+| Check | Tier | What it does |
+|-------|------|-------------|
 | `test-fix` | bookend | Runs the existing test suite and fixes any failures in source code. Always runs first. |
 | `readability` | basic | Naming, function size, comments, formatting. No behaviour changes. |
 | `dry` | basic | Finds repeated logic, extracts helpers, consolidates constants. |
@@ -86,18 +86,18 @@ Use `--passes` to pick individual passes, or `--all-passes` as a shortcut for `-
 | `concurrency` | exhaustive | Race conditions, missing locks, async/await correctness. |
 | `accessibility` | exhaustive | Semantic HTML, ARIA, keyboard nav, colour contrast (WCAG AA). |
 | `api-design` | exhaustive | Consistent naming, HTTP methods, error formats, pagination. |
-| `test-validate` | bookend | Re-runs the full test suite after all passes. Fixes any regressions. Always runs last. |
+| `test-validate` | bookend | Re-runs the full test suite after all checks. Fixes any regressions. Always runs last. |
 
-## Why Multi-Pass Works
+## Why Multi-Check Works
 
-A single "review everything" prompt overwhelms the model. Dimension-specific passes let it focus deeply on one concern at a time. And cycling produces compounding improvements:
+A single "review everything" prompt overwhelms the model. Dimension-specific checks let it focus deeply on one concern at a time. And cycling produces compounding improvements:
 
-1. **Readability** pass renames a confusing variable and splits a long function
-2. **DRY** pass can now see that two of those smaller functions are nearly identical
-3. **Security** pass catches an injection vulnerability that was hidden inside the duplicated code
-4. **Tests** pass writes tests for the cleaned-up API surface, which is now testable
+1. **Readability** check renames a confusing variable and splits a long function
+2. **DRY** check can now see that two of those smaller functions are nearly identical
+3. **Security** check catches an injection vulnerability that was hidden inside the duplicated code
+4. **Tests** check writes tests for the cleaned-up API surface, which is now testable
 
-Each pass builds on the work of the previous ones.
+Each check builds on the work of the previous ones.
 
 ## Convergence Detection
 
@@ -111,17 +111,17 @@ uv run claudeloop --cycles 5 --converged-at-percentage 0.5
 ## Options
 
 ```
---dir, -d DIR          Project directory to review (required)
---level, -l TIER       Review depth: basic, thorough, exhaustive (default: basic)
---passes PASS [...]    Manually select passes (overrides --level)
---all-passes           Run all 17 passes (same as --level exhaustive)
+--dir, -d DIR          Project directory to check (required)
+--level, -l TIER       Check depth: basic, thorough, exhaustive (default: basic)
+--checks CHECK [...]   Manually select checks (overrides --level)
+--all-checks           Run all 17 checks (same as --level exhaustive)
 --cycles, -c N         Repeat the full suite N times (default: 1)
 --idle-timeout SECS    Kill after N seconds of silence (default: 120)
 --dry-run              Preview without running
 --verbose, -v          Show operational events, timing, and memory info
 --debug                Show all details including raw subprocess output
---pause SECS           Pause between passes (default: 2)
---changed-only [REF]   Only review files that changed vs a base ref.
+--pause SECS           Pause between checks (default: 2)
+--changed-only [REF]   Only check files that changed vs a base ref.
                        With no argument, auto-detects main/master.
                        Pass a branch or SHA to compare against.
 --dangerously-skip-permissions
@@ -137,24 +137,24 @@ uv run claudeloop --cycles 5 --converged-at-percentage 0.5
 
 `claudeloop` is a single-module Python CLI (`src/claudeloop/cli.py`) that orchestrates Claude Code as a subprocess. Here is the high-level flow:
 
-1. **Argument resolution** — Parses CLI flags, resolves the review tier (or manual pass selection), and validates the target directory.
+1. **Argument resolution** — Parses CLI flags, resolves the check tier (or manual check selection), and validates the target directory.
 2. **Pre-run warning** — Displays a 5-second countdown so the user can abort. Warns if `--dangerously-skip-permissions` is (or isn't) set.
-3. **Pass execution** — For each pass, builds a focused review prompt (with commit-message rules appended) and invokes `claude -p <prompt> --output-format stream-json --verbose` as a subprocess.
+3. **Check execution** — For each check, builds a focused prompt (with commit-message rules appended) and invokes `claude -p <prompt> --output-format stream-json --verbose` as a subprocess.
 4. **Real-time streaming** — Streams JSONL output from the subprocess, displaying tool-use events (file reads, edits, shell commands) and assistant messages with elapsed-time prefixes.
-5. **Idle timeout** — If Claude produces no output for N seconds (default 120), the process group is killed and the next pass begins.
-6. **Per-pass change detection** — After each pass, compares the git HEAD before/after to report how many lines changed. Passes that produced no changes are skipped on subsequent cycles.
+5. **Idle timeout** — If Claude produces no output for N seconds (default 120), the process group is killed and the next check begins.
+6. **Per-check change detection** — After each check, compares the git HEAD before/after to report how many lines changed. Checks that produced no changes are skipped on subsequent cycles.
 7. **Convergence detection** — After each full cycle, commits all changes and measures what percentage of total tracked lines were modified. If below the threshold, the loop exits early.
 8. **Process cleanup** — Each Claude subprocess runs in its own process group (`setsid`). On completion or timeout, the entire group is killed (SIGTERM, then SIGKILL) to prevent orphaned child processes from leaking memory.
 
-Each pass operates on the code left by the previous pass, so improvements compound: a readability pass renames variables, then the DRY pass can spot the newly-visible duplication, and so on.
+Each check operates on the code left by the previous check, so improvements compound: a readability check renames variables, then the DRY check can spot the newly-visible duplication, and so on.
 
 ### Key internal functions
 
 | Function | Role |
 |----------|------|
-| `main()` | CLI entry point — parses args, resolves passes, runs the suite |
-| `run_claude()` | Public API to run a single Claude Code review pass |
-| `_run_review_suite()` | Orchestrates all passes across all cycles |
+| `main()` | CLI entry point — parses args, resolves checks, runs the suite |
+| `run_claude()` | Public API to run a single Claude Code check |
+| `_run_check_suite()` | Orchestrates all checks across all cycles |
 | `_stream_process_output()` | Streams and parses JSONL from the Claude subprocess |
 | `_check_cycle_convergence()` | Commits changes and checks if the loop should stop |
 | `_kill_process_group()` | Terminates a subprocess and all its children |
@@ -179,7 +179,7 @@ No other environment variables or config files are required. All configuration i
 ```
 src/claudeloop/
 ├── __init__.py   # Package docstring and public API summary
-└── cli.py        # All CLI logic: argument parsing, review passes, Claude subprocess management
+└── cli.py        # All CLI logic: argument parsing, checks, Claude subprocess management
 ```
 
 ## Development
@@ -210,11 +210,11 @@ The project has no runtime dependencies — only `pytest`, `pytest-cov`, and `my
 | Problem | Solution |
 |---------|----------|
 | `claude` not found | Install Claude Code: `npm install -g @anthropic-ai/claude-code` |
-| Passes hang waiting for permission prompts | You must use `--dangerously-skip-permissions` — claudeloop cannot relay interactive prompts |
+| Checks hang waiting for permission prompts | You must use `--dangerously-skip-permissions` — claudeloop cannot relay interactive prompts |
 | "CLAUDECODE" conflict when running inside a Claude session | claudeloop automatically strips this variable; no action needed |
 | Convergence detection not working | Ensure the project directory is a git repo (`git init` if needed) |
-| High memory usage over many passes | claudeloop kills orphaned child processes between passes; use `--verbose` to monitor RSS |
-| Idle timeout kills a pass too early | Increase with `--idle-timeout 300` (or higher) |
+| High memory usage over many checks | claudeloop kills orphaned child processes between checks; use `--verbose` to monitor RSS |
+| Idle timeout kills a check too early | Increase with `--idle-timeout 300` (or higher) |
 
 ## Contributing
 

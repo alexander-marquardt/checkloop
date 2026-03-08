@@ -42,7 +42,7 @@ _SHARED_ARG_DEFAULTS: dict[str, Any] = dict(
 
 
 def _make_suite_args(*, dry_run: bool = True, **overrides: Any) -> argparse.Namespace:
-    """Build an argparse.Namespace for _run_review_suite / _run_single_pass tests."""
+    """Build an argparse.Namespace for _run_check_suite / _run_single_check."""
     defaults = {**_SHARED_ARG_DEFAULTS, "dry_run": dry_run}
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -57,8 +57,8 @@ def _make_main_mock_args(*, dry_run: bool = False, **overrides: Any) -> mock.Mag
         "dir": "/tmp",
         "cycles": 1,
         "converged_at_percentage": cli.DEFAULT_CONVERGENCE_THRESHOLD,
-        "all_passes": False,
-        "passes": ["readability"],
+        "all_checks": False,
+        "checks": ["readability"],
         "level": None,
         "dry_run": dry_run,
         "changed_only": None,
@@ -77,7 +77,7 @@ def _patch_suite_git(
     lines_changed: int | None = None,
     total_tracked: int | None = None,
 ) -> Iterator[None]:
-    """Mock common git/claude dependencies for _run_review_suite tests.
+    """Mock common git/claude dependencies for _run_check_suite.
 
     Patches run_claude, _is_git_repo, and _git_head_sha. Optionally patches
     _count_lines_changed and _cached_total_tracked_lines when provided.
@@ -102,8 +102,8 @@ def _patch_main_pipeline(
     """Mock the standard main() pipeline for exception-path tests.
 
     Patches argument parsing, directory resolution, validation, the pre-run
-    warning, and the review suite.  *suite_side_effect* is passed through
-    to ``_run_review_suite``'s mock so callers can inject exceptions.
+    warning, and the check suite.  *suite_side_effect* is passed through
+    to ``_run_check_suite``'s mock so callers can inject exceptions.
     """
     mock_args = _make_main_mock_args(**arg_overrides)
     suite_kwargs: dict[str, Any] = {}
@@ -115,7 +115,7 @@ def _patch_main_pipeline(
             stack.enter_context(mock.patch.object(cli, "_resolve_working_directory", return_value="/tmp"))
             stack.enter_context(mock.patch.object(cli, "_validate_arguments"))
             stack.enter_context(mock.patch.object(cli, "_display_pre_run_warning"))
-            stack.enter_context(mock.patch.object(cli, "_run_review_suite", **suite_kwargs))
+            stack.enter_context(mock.patch.object(cli, "_run_check_suite", **suite_kwargs))
             yield
 
 
@@ -657,9 +657,9 @@ class TestBuildArgumentParser:
     def test_defaults(self) -> None:
         ns = _parse_cli([])
         assert ns.dir == "/tmp"
-        assert ns.passes is None
+        assert ns.checks is None
         assert ns.level is None
-        assert ns.all_passes is False
+        assert ns.all_checks is False
         assert ns.cycles == 1
         assert ns.idle_timeout == cli.DEFAULT_IDLE_TIMEOUT
         assert ns.dry_run is False
@@ -679,12 +679,12 @@ class TestBuildArgumentParser:
         assert ns.dir == "/bar"
 
     def test_passes(self) -> None:
-        ns = _parse_cli(["--passes", "readability", "security"])
-        assert ns.passes == ["readability", "security"]
+        ns = _parse_cli(["--checks", "readability", "security"])
+        assert ns.checks == ["readability", "security"]
 
-    def test_all_passes(self) -> None:
-        ns = _parse_cli(["--all-passes"])
-        assert ns.all_passes is True
+    def test_all_checks(self) -> None:
+        ns = _parse_cli(["--all-checks"])
+        assert ns.all_checks is True
 
     def test_cycles(self) -> None:
         ns = _parse_cli(["--cycles", "5"])
@@ -716,7 +716,7 @@ class TestBuildArgumentParser:
 
     def test_invalid_pass_rejected(self) -> None:
         with pytest.raises(SystemExit):
-            _parse_cli(["--passes", "nonexistent"])
+            _parse_cli(["--checks", "nonexistent"])
 
 
 # =============================================================================
@@ -760,16 +760,16 @@ class TestPrintRunSummary:
 
 
 # =============================================================================
-# _run_review_suite
+# _run_check_suite
 # =============================================================================
 
-class TestRunReviewSuite:
-    """Tests for _run_review_suite() multi-pass execution."""
+class TestRunCheckSuite:
+    """Tests for _run_check_suite() multi-check execution."""
 
     def test_single_pass_single_cycle(self, capsys: pytest.CaptureFixture[str]) -> None:
         passes = [{"id": "readability", "label": "Readability", "prompt": "review code"}]
         args = _make_suite_args()
-        cli._run_review_suite(passes, 1, "/tmp", args)
+        cli._run_check_suite(passes, 1, "/tmp", args)
         out = capsys.readouterr().out
         assert "Readability" in out
         assert "DRY RUN" in out
@@ -777,7 +777,7 @@ class TestRunReviewSuite:
     def test_multi_cycle_banner(self, capsys: pytest.CaptureFixture[str]) -> None:
         passes = [{"id": "dry", "label": "DRY", "prompt": "check dry"}]
         args = _make_suite_args()
-        cli._run_review_suite(passes, 2, "/tmp", args)
+        cli._run_check_suite(passes, 2, "/tmp", args)
         out = capsys.readouterr().out
         assert "Cycle 1/2" in out
         assert "Cycle 2/2" in out
@@ -786,7 +786,7 @@ class TestRunReviewSuite:
         passes = [{"id": "evil", "label": "Evil", "prompt": "rm -rf / everything"}]
         args = _make_suite_args(dry_run=False)
         with mock.patch.object(cli, "run_claude") as mock_run:
-            cli._run_review_suite(passes, 1, "/tmp", args)
+            cli._run_check_suite(passes, 1, "/tmp", args)
             mock_run.assert_not_called()
         out = capsys.readouterr().out
         assert "dangerous" in out.lower() or "Skipping" in out
@@ -798,10 +798,10 @@ class TestRunReviewSuite:
         ]
         args = _make_suite_args(dry_run=False)
         with mock.patch.object(cli, "run_claude", return_value=1):
-            cli._run_review_suite(passes, 1, "/tmp", args)
+            cli._run_check_suite(passes, 1, "/tmp", args)
         out = capsys.readouterr().out
         assert "exited with code 1" in out
-        # Both passes should be attempted
+        # Both checks should be attempted
         assert "A" in out
         assert "B" in out
 
@@ -818,12 +818,12 @@ class TestRunReviewSuite:
             "sha_r2_before", "sha_r2_after",   # Cycle 2 readability: runs
         ]
         with _patch_suite_git(sha_sequence, lines_changed=10, total_tracked=1000):
-            cli._run_review_suite(passes, 2, "/tmp", args)
+            cli._run_check_suite(passes, 2, "/tmp", args)
         out = capsys.readouterr().out
-        assert "Skipping 1 pass(es)" in out
+        assert "Skipping 1 check(s)" in out
 
     def test_bookend_passes_always_run(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """Bookend passes (test-fix, test-validate) run even if they made no changes."""
+        """Bookend checks (test-fix, test-validate) run even if they made no changes."""
         passes = [
             {"id": "test-fix", "label": "Test Fix", "prompt": "fix tests"},
             {"id": "readability", "label": "Readability", "prompt": "review code"},
@@ -835,15 +835,15 @@ class TestRunReviewSuite:
             "s4", "s4",  "s5", "s5",                 # Cycle 2: bookends only
         ]
         with _patch_suite_git(sha_sequence):
-            cli._run_review_suite(passes, 2, "/tmp", args)
+            cli._run_check_suite(passes, 2, "/tmp", args)
         out = capsys.readouterr().out
-        assert "Skipping 1 pass(es)" in out
+        assert "Skipping 1 check(s)" in out
         assert out.count("Test Fix") == 2
         assert out.count("Test Validate") == 2
         assert out.count("Readability") == 1
 
-    def test_all_passes_active_no_skip(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """When all passes make changes, none are skipped in cycle 2."""
+    def test_all_checks_active_no_skip(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """When all checks make changes, none are skipped in cycle 2."""
         passes = [
             {"id": "readability", "label": "Readability", "prompt": "review code"},
             {"id": "dry", "label": "DRY", "prompt": "check dry"},
@@ -854,26 +854,26 @@ class TestRunReviewSuite:
             "c1", "c2",  "d1", "d2",  # Cycle 2: both run again
         ]
         with _patch_suite_git(sha_sequence, lines_changed=10, total_tracked=1000):
-            cli._run_review_suite(passes, 2, "/tmp", args)
+            cli._run_check_suite(passes, 2, "/tmp", args)
         out = capsys.readouterr().out
         assert "Skipping" not in out
 
     def test_pass_change_stats_printed(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """After each pass that makes changes, lines changed and percentage are printed."""
+        """After each check that makes changes, lines changed and percentage are printed."""
         passes = [{"id": "readability", "label": "Readability", "prompt": "review code"}]
         args = _make_suite_args(dry_run=False)
         with _patch_suite_git(["sha1", "sha2"], lines_changed=42, total_tracked=5000):
-            cli._run_review_suite(passes, 1, "/tmp", args)
+            cli._run_check_suite(passes, 1, "/tmp", args)
         out = capsys.readouterr().out
         assert "42 lines changed" in out
         assert "0.84%" in out
 
     def test_no_change_stats_printed(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """After a pass with no changes, 'no changes' is printed."""
+        """After a check with no changes, 'no changes' is printed."""
         passes = [{"id": "dry", "label": "DRY", "prompt": "check dry"}]
         args = _make_suite_args(dry_run=False)
         with _patch_suite_git(["same", "same"]):
-            cli._run_review_suite(passes, 1, "/tmp", args)
+            cli._run_check_suite(passes, 1, "/tmp", args)
         out = capsys.readouterr().out
         assert "dry: no changes" in out
 
@@ -910,11 +910,11 @@ class TestMain:
         assert "DRY RUN" in out
         assert "All done" in out
 
-    def test_all_passes_dry_run(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch("sys.argv", ["claudeloop", "--dir", ".", "--all-passes", "--dry-run", "--pause", "0"]):
+    def test_all_checks_dry_run(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with mock.patch("sys.argv", ["claudeloop", "--dir", ".", "--all-checks", "--dry-run", "--pause", "0"]):
             cli.main()
         out = capsys.readouterr().out
-        for p in cli.REVIEW_PASSES:
+        for p in cli.CHECKS:
             assert p["label"] in out
 
     def test_cycles_zero_exits(self) -> None:
@@ -930,7 +930,7 @@ class TestMain:
             assert exc_info.value.code == 1
 
     def test_specific_passes(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch("sys.argv", ["claudeloop", "--dir", ".", "--passes", "security", "perf", "--dry-run", "--pause", "0"]):
+        with mock.patch("sys.argv", ["claudeloop", "--dir", ".", "--checks", "security", "perf", "--dry-run", "--pause", "0"]):
             cli.main()
         out = capsys.readouterr().out
         assert "Security" in out
@@ -944,15 +944,15 @@ class TestMain:
 class TestConstants:
     """Tests for module-level constants and data structures."""
 
-    def test_pass_ids_match(self) -> None:
-        assert cli.PASS_IDS == [p["id"] for p in cli.REVIEW_PASSES]
+    def test_check_ids_match(self) -> None:
+        assert cli.CHECK_IDS == [p["id"] for p in cli.CHECKS]
 
     def test_default_tier_passes_are_valid(self) -> None:
-        for pass_id in cli.TIERS[cli.DEFAULT_TIER]:
-            assert pass_id in cli.PASS_IDS
+        for check_id in cli.TIERS[cli.DEFAULT_TIER]:
+            assert check_id in cli.CHECK_IDS
 
-    def test_all_passes_have_required_keys(self) -> None:
-        for p in cli.REVIEW_PASSES:
+    def test_all_checks_have_required_keys(self) -> None:
+        for p in cli.CHECKS:
             assert "id" in p
             assert "label" in p
             assert "prompt" in p
@@ -1193,7 +1193,7 @@ class TestMainNonDryRun:
     def test_non_dry_run_calls_warning(self, capsys: pytest.CaptureFixture[str]) -> None:
         with mock.patch("sys.argv", ["claudeloop", "--dir", ".", "--pause", "0"]):
             with mock.patch.object(cli, "_display_pre_run_warning") as mock_warn:
-                with mock.patch.object(cli, "_run_review_suite"):
+                with mock.patch.object(cli, "_run_check_suite"):
                     cli.main()
                 mock_warn.assert_called_once()
 
@@ -1413,20 +1413,20 @@ class TestChangedOnly:
         assert "IMPORTANT" in prefix
 
     def test_changed_prefix_prepended_to_prompt(self) -> None:
-        """When changed_files_prefix is set, it's prepended to the review prompt."""
+        """When changed_files_prefix is set, it's prepended to the check prompt."""
         passes = [{"id": "readability", "label": "Readability", "prompt": "review code"}]
         args = _make_suite_args(dry_run=False)
         args.changed_files_prefix = "ONLY THESE FILES: a.py\n\n"
         with mock.patch.object(cli, "run_claude", return_value=0) as mock_run, \
              mock.patch.object(cli, "_is_git_repo", return_value=False):
-            cli._run_review_suite(passes, 1, "/tmp", args)
+            cli._run_check_suite(passes, 1, "/tmp", args)
             prompt_used = mock_run.call_args[0][0]
             assert prompt_used.startswith("ONLY THESE FILES: a.py")
             assert "review code" in prompt_used
 
 
 class TestConvergenceInSuite:
-    """Tests for convergence detection within _run_review_suite."""
+    """Tests for convergence detection within _run_check_suite."""
 
     def test_stops_early_when_converged(self, capsys: pytest.CaptureFixture[str]) -> None:
         passes = [{"id": "readability", "label": "Readability", "prompt": "review code"}]
@@ -1434,7 +1434,7 @@ class TestConvergenceInSuite:
         with _patch_suite_git(["sha1", "sha2", "sha2", "sha3"]), \
              mock.patch.object(cli, "_git_commit_cycle", return_value=True), \
              mock.patch.object(cli, "_compute_change_stats", return_value=(1, 0.05)):
-            cli._run_review_suite(passes, 3, "/tmp", args, convergence_threshold=0.1)
+            cli._run_check_suite(passes, 3, "/tmp", args, convergence_threshold=0.1)
         out = capsys.readouterr().out
         assert "Converged" in out
 
@@ -1444,7 +1444,7 @@ class TestConvergenceInSuite:
         args = _make_suite_args(dry_run=False)
         with _patch_suite_git(["sha1"] * 10), \
              mock.patch.object(cli, "_check_cycle_convergence", return_value=(False, 5.0)):
-            cli._run_review_suite(passes, 2, "/tmp", args, convergence_threshold=0.1)
+            cli._run_check_suite(passes, 2, "/tmp", args, convergence_threshold=0.1)
         out = capsys.readouterr().out
         assert "Cycle 1/2" in out
         assert "Cycle 2/2" in out
@@ -1452,7 +1452,7 @@ class TestConvergenceInSuite:
     def test_no_convergence_without_git(self, capsys: pytest.CaptureFixture[str]) -> None:
         passes = [{"id": "dry", "label": "DRY", "prompt": "check dry"}]
         args = _make_suite_args()
-        cli._run_review_suite(passes, 2, "/tmp", args, convergence_threshold=0.1)
+        cli._run_check_suite(passes, 2, "/tmp", args, convergence_threshold=0.1)
         out = capsys.readouterr().out
         # Should run both cycles without convergence checks (dry run)
         assert "Cycle 1/2" in out
@@ -1588,7 +1588,7 @@ class TestCommitMessageInstructions:
         passes = [{"id": "readability", "label": "Readability", "prompt": "review code"}]
         args = _make_suite_args()
         with mock.patch.object(cli, "run_claude", return_value=0) as mock_run:
-            cli._run_review_suite(passes, 1, "/tmp", args)
+            cli._run_check_suite(passes, 1, "/tmp", args)
             prompt_used = mock_run.call_args[0][0]
             assert "commit message rules" in prompt_used
             assert "Do not mention Claude" in prompt_used
@@ -1962,37 +1962,37 @@ class TestValidateArguments:
         cli._validate_arguments(args)  # should not raise
 
 
-class TestResolveSelectedPasses:
-    """Tests for _resolve_selected_passes()."""
+class TestResolveSelectedChecks:
+    """Tests for _resolve_selected_checks()."""
 
     def test_level_basic(self) -> None:
-        args = argparse.Namespace(all_passes=False, passes=None, level="basic")
-        result = cli._resolve_selected_passes(args)
+        args = argparse.Namespace(all_checks=False, checks=None, level="basic")
+        result = cli._resolve_selected_checks(args)
         ids = [p["id"] for p in result]
         assert ids == cli.TIER_BASIC
 
-    def test_all_passes(self) -> None:
-        args = argparse.Namespace(all_passes=True, passes=None, level=None)
-        result = cli._resolve_selected_passes(args)
-        assert len(result) == len(cli.REVIEW_PASSES)
+    def test_all_checks(self) -> None:
+        args = argparse.Namespace(all_checks=True, checks=None, level=None)
+        result = cli._resolve_selected_checks(args)
+        assert len(result) == len(cli.CHECKS)
 
     def test_passes_override_level(self) -> None:
-        args = argparse.Namespace(all_passes=False, passes=["security"], level="exhaustive")
-        result = cli._resolve_selected_passes(args)
+        args = argparse.Namespace(all_checks=False, checks=["security"], level="exhaustive")
+        result = cli._resolve_selected_checks(args)
         assert len(result) == 1
         assert result[0]["id"] == "security"
 
 
-class TestMainEmptyPassesExit:
-    """Test that main() exits if no passes are resolved."""
+class TestMainEmptyChecksExit:
+    """Test that main() exits if no checks are resolved."""
 
     def test_empty_passes_exits(self) -> None:
-        mock_args = _make_main_mock_args(dry_run=True, passes=None, level=None)
+        mock_args = _make_main_mock_args(dry_run=True, checks=None, level=None)
         with mock.patch.object(cli, "_build_argument_parser") as mock_parser:
             mock_parser.return_value.parse_args.return_value = mock_args
             with mock.patch.object(cli, "_resolve_working_directory", return_value="/tmp"):
                 with mock.patch.object(cli, "_validate_arguments"):
-                    with mock.patch.object(cli, "_resolve_selected_passes", return_value=[]):
+                    with mock.patch.object(cli, "_resolve_selected_checks", return_value=[]):
                         with pytest.raises(SystemExit) as exc_info:
                             cli.main()
                         assert exc_info.value.code == 1
@@ -2088,7 +2088,7 @@ class TestMainVerboseLogging:
     def test_verbose_sets_info_level(self) -> None:
         with mock.patch("sys.argv", ["claudeloop", "--dir", ".", "--verbose", "--dry-run", "--pause", "0"]):
             with mock.patch("logging.basicConfig") as mock_log:
-                with mock.patch.object(cli, "_run_review_suite"):
+                with mock.patch.object(cli, "_run_check_suite"):
                     cli.main()
                 mock_log.assert_called_once()
                 assert mock_log.call_args.kwargs["level"] == logging.INFO
@@ -2096,7 +2096,7 @@ class TestMainVerboseLogging:
     def test_debug_sets_debug_level(self) -> None:
         with mock.patch("sys.argv", ["claudeloop", "--dir", ".", "--debug", "--dry-run", "--pause", "0"]):
             with mock.patch("logging.basicConfig") as mock_log:
-                with mock.patch.object(cli, "_run_review_suite"):
+                with mock.patch.object(cli, "_run_check_suite"):
                     cli.main()
                 mock_log.assert_called_once()
                 assert mock_log.call_args.kwargs["level"] == logging.DEBUG
@@ -2256,23 +2256,23 @@ class TestComputeChangeStatsEdgeCases:
 
 
 # =============================================================================
-# Edge cases: _filter_active_passes
+# Edge cases: _filter_active_checks
 # =============================================================================
 
-class TestFilterActivePassesEdgeCases:
-    """Edge case tests for _filter_active_passes()."""
+class TestFilterActiveChecksEdgeCases:
+    """Edge case tests for _filter_active_checks()."""
 
     def test_empty_pass_list(self) -> None:
-        assert cli._filter_active_passes([], None) == []
+        assert cli._filter_active_checks([], None) == []
 
     def test_empty_pass_list_with_previous(self, capsys: pytest.CaptureFixture[str]) -> None:
-        result = cli._filter_active_passes([], set())
+        result = cli._filter_active_checks([], set())
         assert result == []
 
     def test_all_skipped(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """All non-bookend passes skipped when none changed."""
+        """All non-bookend checks skipped when none changed."""
         passes = [{"id": "readability", "label": "R", "prompt": "p"}]
-        result = cli._filter_active_passes(passes, set())
+        result = cli._filter_active_checks(passes, set())
         assert result == []
         assert "Skipping 1" in capsys.readouterr().out
 
@@ -2282,7 +2282,7 @@ class TestFilterActivePassesEdgeCases:
             {"id": "readability", "label": "R", "prompt": "p"},
             {"id": "test-validate", "label": "TV", "prompt": "p"},
         ]
-        result = cli._filter_active_passes(passes, set())
+        result = cli._filter_active_checks(passes, set())
         assert len(result) == 2
         assert result[0]["id"] == "test-fix"
         assert result[1]["id"] == "test-validate"
@@ -2323,26 +2323,26 @@ class TestValidateArgumentsEdgeCases:
 
 
 # =============================================================================
-# Edge cases: _resolve_selected_passes
+# Edge cases: _resolve_selected_checks
 # =============================================================================
 
-class TestResolveSelectedPassesEdgeCases:
-    """Edge case tests for _resolve_selected_passes()."""
+class TestResolveSelectedChecksEdgeCases:
+    """Edge case tests for _resolve_selected_checks()."""
 
-    def test_all_passes_flag(self) -> None:
-        args = _make_main_mock_args(all_passes=True, passes=None, level=None)
-        result = cli._resolve_selected_passes(args)
-        assert len(result) == len(cli.REVIEW_PASSES)
+    def test_all_checks_flag(self) -> None:
+        args = _make_main_mock_args(all_checks=True, checks=None, level=None)
+        result = cli._resolve_selected_checks(args)
+        assert len(result) == len(cli.CHECKS)
 
     def test_explicit_passes_override_level(self) -> None:
-        args = _make_main_mock_args(all_passes=False, passes=["security"], level="basic")
-        result = cli._resolve_selected_passes(args)
+        args = _make_main_mock_args(all_checks=False, checks=["security"], level="basic")
+        result = cli._resolve_selected_checks(args)
         assert len(result) == 1
         assert result[0]["id"] == "security"
 
     def test_default_tier_when_nothing_specified(self) -> None:
-        args = _make_main_mock_args(all_passes=False, passes=None, level=None)
-        result = cli._resolve_selected_passes(args)
+        args = _make_main_mock_args(all_checks=False, checks=None, level=None)
+        result = cli._resolve_selected_checks(args)
         expected_ids = set(cli.TIERS[cli.DEFAULT_TIER])
         assert {p["id"] for p in result} == expected_ids
 
@@ -2470,25 +2470,25 @@ class TestCheckCycleConvergenceEdgeCases:
 
 
 # =============================================================================
-# Edge cases: _report_pass_changes
+# Edge cases: _report_check_changes
 # =============================================================================
 
-class TestReportPassChangesEdgeCases:
-    """Edge case tests for _report_pass_changes()."""
+class TestReportCheckChangesEdgeCases:
+    """Edge case tests for _report_check_changes()."""
 
     def test_no_git_repo_assumes_changes(self) -> None:
-        assert cli._report_pass_changes("/tmp", "test", None) is True
+        assert cli._report_check_changes("/tmp", "test", None) is True
 
     def test_same_sha_no_changes(self, capsys: pytest.CaptureFixture[str]) -> None:
         with mock.patch.object(cli, "_git_head_sha", return_value="sha1"):
-            result = cli._report_pass_changes("/tmp", "test", "sha1")
+            result = cli._report_check_changes("/tmp", "test", "sha1")
         assert result is False
         assert "no changes" in capsys.readouterr().out
 
     def test_different_sha_reports_changes(self, capsys: pytest.CaptureFixture[str]) -> None:
         with mock.patch.object(cli, "_git_head_sha", return_value="sha2"):
             with mock.patch.object(cli, "_compute_change_stats", return_value=(10, 0.5)):
-                result = cli._report_pass_changes("/tmp", "test", "sha1")
+                result = cli._report_check_changes("/tmp", "test", "sha1")
         assert result is True
         assert "10 lines changed" in capsys.readouterr().out
 
@@ -2855,21 +2855,21 @@ class TestBuildChangedFilesPrefixEmpty:
 
 
 # =============================================================================
-# Edge cases: _run_single_pass without changed_files_prefix attr
+# Edge cases: _run_single_check without changed_files_prefix attr
 # =============================================================================
 
-class TestRunSinglePassMissingAttr:
-    """Edge case: _run_single_pass when args lacks changed_files_prefix."""
+class TestRunSingleCheckMissingAttr:
+    """Edge case: _run_single_check when args lacks changed_files_prefix."""
 
     def test_missing_changed_files_prefix(self, capsys: pytest.CaptureFixture[str]) -> None:
         """If changed_files_prefix is not on args, defaults to empty string."""
-        review_pass = {"id": "readability", "label": "Readability", "prompt": "review code"}
+        check_def = {"id": "readability", "label": "Readability", "prompt": "review code"}
         args = _make_suite_args(dry_run=True)
         # Ensure changed_files_prefix is not set
         if hasattr(args, "changed_files_prefix"):
             delattr(args, "changed_files_prefix")
         with mock.patch.object(cli, "_is_git_repo", return_value=False):
-            result = cli._run_single_pass(review_pass, "/tmp", args, "[1/1]", is_git=False)
+            result = cli._run_single_check(check_def, "/tmp", args, "[1/1]", is_git=False)
         # Should run without error; dry_run returns True (assumes changes without git)
         assert result is True
 

@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-claudeloop — Autonomous multi-pass code review using Claude Code.
+claudeloop — Autonomous multi-check code review using Claude Code.
 
-Runs a configurable suite of review passes (readability, DRY, tests, security,
+Runs a configurable suite of focused checks (readability, DRY, tests, security,
 etc.) over an existing codebase. Point it at a directory and walk away.
 
 Usage:
     claudeloop --dir ~/my-project                        # basic tier review
     claudeloop --dir ~/my-project --level thorough       # thorough review
     claudeloop --dir ~/my-project --cycles 3             # repeat the full suite 3x
-    claudeloop --dir ~/my-project --passes readability dry tests
-    claudeloop --dir ~/my-project --all-passes --cycles 2
+    claudeloop --dir ~/my-project --checks readability dry tests
+    claudeloop --dir ~/my-project --all-checks --cycles 2
     claudeloop --dir ~/my-project --dry-run              # preview without running
 """
 
@@ -48,7 +48,7 @@ BLUE   = "\033[94m"
 
 RULE_WIDTH = 72  # character width for banner horizontal rules
 DEFAULT_IDLE_TIMEOUT = 120  # seconds before killing a silent subprocess
-DEFAULT_PAUSE_SECONDS = 2  # seconds between consecutive review passes
+DEFAULT_PAUSE_SECONDS = 2  # seconds between consecutive checks
 DEFAULT_CONVERGENCE_THRESHOLD = 0.1  # percent of total lines changed
 
 _READ_CHUNK_SIZE = 8192  # bytes per stdout read during streaming
@@ -62,6 +62,11 @@ _BASH_DISPLAY_LIMIT = 80  # max chars shown for bash commands in tool summaries
 # to refuse to start when claudeloop is invoked from within a Claude Code session.
 _SANITIZED_ENV: dict[str, str] = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
 
+FULL_CODEBASE_SCOPE: str = (
+    "Review ALL code in this project (not just recently written code). "
+)
+"""Default scope prefix prepended to every check when --changed-only is not used."""
+
 COMMIT_MESSAGE_INSTRUCTIONS: str = (
     "\n\nIf you make any git commits, follow these commit message rules:\n"
     "- Maximum 5-10 lines\n"
@@ -69,7 +74,7 @@ COMMIT_MESSAGE_INSTRUCTIONS: str = (
     "- Provide only a high-level summary of what was cleaned up, fixed, or changed\n"
     "- Use clear, professional commit message style"
 )
-"""Instructions appended to every review prompt to enforce clean commit messages."""
+"""Instructions appended to every check prompt to enforce clean commit messages."""
 
 
 def _fatal(msg: str) -> NoReturn:
@@ -142,7 +147,7 @@ def _kill_orphaned_children(pids: list[int] | None = None) -> int:
 
 
 def _log_memory_usage(label: str) -> None:
-    """Log current RSS and child process count after each pass."""
+    """Log current RSS and child process count after each check."""
     rss_mb = _measure_current_rss_mb()
     child_pids = _find_child_pids()
     logger.info("Memory [%s]: rss=%.0fMB, children=%d", label, rss_mb, len(child_pids))
@@ -322,7 +327,7 @@ def _count_tracked_lines(workdir: str) -> int:
     return total_clamped
 
 
-# Cache: resolved workdir path → total tracked line count. Avoids re-scanning per pass.
+# Cache: resolved workdir path → total tracked line count. Avoids re-scanning per check.
 _total_lines_cache: dict[str, int] = {}
 
 
@@ -438,18 +443,18 @@ def _print_status(msg: str, colour: str = DIM) -> None:
     print(f"{colour}{msg}{RESET}")
 
 
-# --- Review passes ------------------------------------------------------------
+# --- Checks -------------------------------------------------------------------
 
-# Ordered list of all available review passes.
+# Ordered list of all available checks.
 #
 # Each entry is a dict with keys:
 #   id:     Short identifier used on the CLI (e.g. "readability", "dry").
 #   label:  Human-readable name shown in banners and summaries.
-#   prompt: The full review prompt sent to Claude Code for this pass.
+#   prompt: The review prompt sent to Claude Code for this check.
 #
-# Ordering matters: bookend passes (test-fix, test-validate) are first and
-# last; the remaining passes are grouped by tier (basic -> thorough -> exhaustive).
-REVIEW_PASSES: list[dict[str, str]] = [
+# Ordering matters: bookend checks (test-fix, test-validate) are first and
+# last; the remaining checks are grouped by tier (basic -> thorough -> exhaustive).
+CHECKS: list[dict[str, str]] = [
     # --- Bookend: run first ---
     {
         "id": "test-fix",
@@ -468,15 +473,14 @@ REVIEW_PASSES: list[dict[str, str]] = [
         "id": "readability",
         "label": "Readability & Code Quality",
         "prompt": (
-            "Review ALL code in this project (not just recently written code). "
-            "Improve naming (variables, functions, classes) throughout. "
+            "Improve naming (variables, functions, classes). "
             "Break up any function that does more than one logical thing, "
             "or that requires scrolling to read in full. "
             "Prefer small, named functions where the name removes the need for a comment. "
             "If any source file has grown too large, split it into smaller, "
             "well-named modules with clear responsibilities. "
             "Add or improve inline comments where logic is non-obvious, "
-            "and ensure consistent formatting across the entire codebase. "
+            "and ensure consistent formatting. "
             "Do NOT change any behaviour — only improve clarity."
         ),
     },
@@ -484,7 +488,7 @@ REVIEW_PASSES: list[dict[str, str]] = [
         "id": "dry",
         "label": "DRY / Eliminate Repetition",
         "prompt": (
-            "Audit the entire codebase for repeated or near-repeated logic. "
+            "Find repeated or near-repeated logic. "
             "Extract shared helpers, base classes, or utility modules to eliminate "
             "duplication. Consolidate config values or magic numbers into constants. "
             "Ensure each concept has a single canonical home in the code. "
@@ -495,11 +499,10 @@ REVIEW_PASSES: list[dict[str, str]] = [
         "id": "tests",
         "label": "Write / Improve Tests",
         "prompt": (
-            "Measure and improve test coverage across the ENTIRE codebase "
-            "(not just recently written code). "
-            "Cover: happy paths, edge cases, and error conditions for all modules. "
+            "Measure and improve test coverage. "
+            "Cover: happy paths, edge cases, and error conditions. "
             "Use the testing framework already in the project (or pytest/jest if none). "
-            "Target >=90% line coverage across the whole project. "
+            "Target >=90% line coverage. "
             "Run the test suite and fix any failures before finishing. "
             "Report the final coverage figure when done."
         ),
@@ -508,9 +511,9 @@ REVIEW_PASSES: list[dict[str, str]] = [
         "id": "docs",
         "label": "Documentation",
         "prompt": (
-            "Add or improve documentation across the whole project: "
+            "Add or improve documentation: "
             "update (or create) a README section describing what was built, "
-            "add docstrings/JSDoc to all public functions and classes, "
+            "add docstrings/JSDoc to public functions and classes, "
             "and document any non-obvious environment variables or config."
         ),
     },
@@ -519,7 +522,7 @@ REVIEW_PASSES: list[dict[str, str]] = [
         "id": "security",
         "label": "Security Review",
         "prompt": (
-            "Do a security review of the entire codebase. "
+            "Do a security review. "
             "Look for: injection vulnerabilities, insecure defaults, "
             "hardcoded secrets, missing input validation, "
             "overly broad permissions, and unsafe dependencies. "
@@ -530,7 +533,7 @@ REVIEW_PASSES: list[dict[str, str]] = [
         "id": "perf",
         "label": "Performance",
         "prompt": (
-            "Review the codebase for obvious performance issues: "
+            "Review for obvious performance issues: "
             "N+1 queries, missing indexes, unnecessary re-renders, "
             "blocking I/O that could be async, large allocations in loops. "
             "Fix anything significant and add a comment explaining the optimisation."
@@ -540,8 +543,8 @@ REVIEW_PASSES: list[dict[str, str]] = [
         "id": "errors",
         "label": "Error Handling",
         "prompt": (
-            "Audit error handling across the entire codebase. "
-            "Ensure all I/O operations, network calls, and parsing steps "
+            "Audit error handling. "
+            "Ensure I/O operations, network calls, and parsing steps "
             "have proper try/except (or try/catch) with meaningful error messages. "
             "Add logging where it would help diagnose production issues."
         ),
@@ -550,7 +553,7 @@ REVIEW_PASSES: list[dict[str, str]] = [
         "id": "types",
         "label": "Type Safety",
         "prompt": (
-            "Review the entire codebase for type safety issues. "
+            "Review for type safety issues. "
             "Add or fix type annotations (Python type hints, TypeScript types, JSDoc @param/@returns). "
             "Replace uses of Any, Object, or untyped collections with precise types. "
             "Ensure function signatures, return types, and class attributes are all typed. "
@@ -563,8 +566,8 @@ REVIEW_PASSES: list[dict[str, str]] = [
         "id": "edge-cases",
         "label": "Edge Cases & Boundary Conditions",
         "prompt": (
-            "Audit the entire codebase for unhandled edge cases and boundary conditions. "
-            "Look for: off-by-one errors, empty/null/undefined inputs, integer overflow, "
+            "Look for unhandled edge cases and boundary conditions: "
+            "off-by-one errors, empty/null/undefined inputs, integer overflow, "
             "empty collections, zero-length strings, negative numbers where unsigned expected, "
             "concurrent modification, and Unicode/encoding edge cases. "
             "Fix any issues and add tests for the edge cases you find."
@@ -574,7 +577,7 @@ REVIEW_PASSES: list[dict[str, str]] = [
         "id": "complexity",
         "label": "Reduce Complexity",
         "prompt": (
-            "Review the entire codebase for excessive complexity. "
+            "Review for excessive complexity. "
             "Simplify deeply nested conditionals (flatten with early returns or guard clauses). "
             "Break apart functions with high cyclomatic complexity. "
             "Replace complex boolean expressions with named variables or helper functions. "
@@ -598,8 +601,8 @@ REVIEW_PASSES: list[dict[str, str]] = [
         "id": "logging",
         "label": "Logging & Observability",
         "prompt": (
-            "Review the codebase for logging and observability gaps. "
-            "Ensure all entry points (API routes, CLI commands, queue consumers) log "
+            "Review for logging and observability gaps. "
+            "Ensure entry points (API routes, CLI commands, queue consumers) log "
             "request/response summaries. Add structured logging with context (request IDs, "
             "user IDs, operation names) where missing. Ensure errors are logged with stack traces. "
             "Remove or downgrade noisy debug logs that would clutter production. "
@@ -610,7 +613,7 @@ REVIEW_PASSES: list[dict[str, str]] = [
         "id": "concurrency",
         "label": "Concurrency & Thread Safety",
         "prompt": (
-            "Review the entire codebase for concurrency issues. "
+            "Review for concurrency issues. "
             "Look for: race conditions, shared mutable state without synchronisation, "
             "deadlock potential, missing locks around critical sections, "
             "non-atomic read-modify-write sequences, and unsafe use of globals. "
@@ -622,9 +625,9 @@ REVIEW_PASSES: list[dict[str, str]] = [
         "id": "accessibility",
         "label": "Accessibility (a11y)",
         "prompt": (
-            "Review all UI code (HTML, JSX, templates, components) for accessibility issues. "
+            "Review UI code (HTML, JSX, templates, components) for accessibility issues. "
             "Ensure: semantic HTML elements are used instead of generic divs/spans, "
-            "all images have meaningful alt text, form inputs have associated labels, "
+            "images have meaningful alt text, form inputs have associated labels, "
             "ARIA attributes are used correctly, keyboard navigation works, "
             "colour contrast meets WCAG AA standards, and focus management is correct. "
             "If the project has no UI code, report that and skip."
@@ -634,7 +637,7 @@ REVIEW_PASSES: list[dict[str, str]] = [
         "id": "api-design",
         "label": "API Design & Consistency",
         "prompt": (
-            "Review all public APIs (REST endpoints, library interfaces, CLI commands, "
+            "Review public APIs (REST endpoints, library interfaces, CLI commands, "
             "exported functions) for consistency and usability. "
             "Check for: consistent naming conventions, predictable parameter ordering, "
             "appropriate HTTP methods and status codes, consistent error response formats, "
@@ -647,7 +650,7 @@ REVIEW_PASSES: list[dict[str, str]] = [
         "id": "test-validate",
         "label": "Validate All Tests Pass",
         "prompt": (
-            "Run the FULL test suite (including any tests written or modified during earlier passes). "
+            "Run the FULL test suite (including any tests written or modified during earlier checks). "
             "If any tests fail, diagnose whether the failure is due to a bug in the source code "
             "or a bad test. Fix the root cause — prefer fixing source code over weakening tests. "
             "Re-run until all tests pass. "
@@ -656,27 +659,27 @@ REVIEW_PASSES: list[dict[str, str]] = [
     },
 ]
 
-# All valid pass IDs, derived from REVIEW_PASSES to stay in sync.
-PASS_IDS: list[str] = [p["id"] for p in REVIEW_PASSES]
+# All valid check IDs, derived from CHECKS to stay in sync.
+CHECK_IDS: list[str] = [p["id"] for p in CHECKS]
 
-# --- Review tiers -------------------------------------------------------------
-# Tiers control which passes run at each review depth.  Each tier is a list of
-# pass IDs that includes the bookend passes (test-fix first, test-validate last)
-# plus a progressively larger set of review passes.
+# --- Check tiers --------------------------------------------------------------
+# Tiers control which checks run at each review depth.  Each tier is a list of
+# check IDs that includes the bookend checks (test-fix first, test-validate last)
+# plus a progressively larger set of checks.
 
-_BOOKEND_FIRST_PASSES: list[str] = ["test-fix"]
-_BOOKEND_LAST_PASSES: list[str] = ["test-validate"]
-_BOOKEND_IDS: set[str] = {*_BOOKEND_FIRST_PASSES, *_BOOKEND_LAST_PASSES}
+_BOOKEND_FIRST_CHECKS: list[str] = ["test-fix"]
+_BOOKEND_LAST_CHECKS: list[str] = ["test-validate"]
+_BOOKEND_IDS: set[str] = {*_BOOKEND_FIRST_CHECKS, *_BOOKEND_LAST_CHECKS}
 _CORE_BASIC: list[str] = ["readability", "dry", "tests", "docs"]
 _CORE_THOROUGH: list[str] = ["security", "perf", "errors", "types"]
 _CORE_EXHAUSTIVE: list[str] = ["edge-cases", "complexity", "deps", "logging", "concurrency", "accessibility", "api-design"]
 
 # Public tier lists — used by --level and exposed for programmatic access.
-TIER_BASIC: list[str] = _BOOKEND_FIRST_PASSES + _CORE_BASIC + _BOOKEND_LAST_PASSES
-TIER_THOROUGH: list[str] = _BOOKEND_FIRST_PASSES + _CORE_BASIC + _CORE_THOROUGH + _BOOKEND_LAST_PASSES
-TIER_EXHAUSTIVE: list[str] = PASS_IDS  # all passes (already ordered correctly)
+TIER_BASIC: list[str] = _BOOKEND_FIRST_CHECKS + _CORE_BASIC + _BOOKEND_LAST_CHECKS
+TIER_THOROUGH: list[str] = _BOOKEND_FIRST_CHECKS + _CORE_BASIC + _CORE_THOROUGH + _BOOKEND_LAST_CHECKS
+TIER_EXHAUSTIVE: list[str] = CHECK_IDS  # all checks (already ordered correctly)
 
-# Maps tier name (used by --level) to the list of pass IDs for that tier.
+# Maps tier name (used by --level) to the list of check IDs for that tier.
 TIERS: dict[str, list[str]] = {
     "basic": TIER_BASIC,
     "thorough": TIER_THOROUGH,
@@ -685,7 +688,7 @@ TIERS: dict[str, list[str]] = {
 DEFAULT_TIER: str = "basic"
 
 # --- Dangerous-prompt guard ---------------------------------------------------
-# Safety net: reject review prompts that contain destructive keywords.
+# Safety net: reject check prompts that contain destructive keywords.
 # These are checked with word-boundary-aware regexes (see _compile_danger_patterns).
 
 _DANGEROUS_PROMPT_KEYWORDS: list[str] = [
@@ -801,7 +804,7 @@ def _print_system_event(event: dict[str, Any], elapsed_prefix: str) -> None:
 
 
 def _print_result_event(event: dict[str, Any], elapsed_prefix: str) -> None:
-    """Print the final result summary from a completed pass."""
+    """Print the final result summary from a completed check."""
     result_text = event.get("result", "")
     if result_text:
         print(f"\n{elapsed_prefix}{GREEN}--- Result ---{RESET}")
@@ -843,7 +846,7 @@ def _process_jsonl_buffer(
 
     Args:
         output_buffer: Mutable byte buffer containing raw subprocess output.
-        pass_start_time: Wall-clock time when the current pass started
+        pass_start_time: Wall-clock time when the current check started
             (used for elapsed-time prefixes).
         debug: If True, print lines that fail JSON parsing (raw output).
 
@@ -888,7 +891,7 @@ def _spawn_claude_process(
     Using a dedicated process group (via ``os.setsid``) ensures that
     ``_kill_process_group`` can terminate the claude process **and** any
     children it spawns (language servers, tool runners, etc.), preventing
-    orphaned processes from accumulating memory across many passes.
+    orphaned processes from accumulating memory across many checks.
     """
     logger.info("Spawning subprocess: %s (cwd=%s)", cmd[:3], workdir)
     try:
@@ -1072,15 +1075,15 @@ def run_claude(
     idle_timeout: int = DEFAULT_IDLE_TIMEOUT,
     debug: bool = False,
 ) -> int:
-    """Run a single Claude Code review pass.
+    """Run a single Claude Code check.
 
     Uses ``--output-format stream-json`` so progress events stream in real time.
     There is no hard timeout — the process runs as long as it produces output.
     It is only killed after *idle_timeout* seconds of silence.
 
     Args:
-        prompt: The review prompt to send to Claude Code.
-        workdir: Absolute path to the project directory to review.
+        prompt: The check prompt to send to Claude Code.
+        workdir: Absolute path to the project directory to check.
         skip_permissions: Pass ``--dangerously-skip-permissions`` to Claude Code.
         dry_run: If True, print what would run without invoking Claude.
         idle_timeout: Kill the subprocess after this many seconds of no output.
@@ -1127,15 +1130,15 @@ def _execute_claude_process(
         # survive after the main process exits.
         _kill_process_group(process)
 
-    return _report_pass_exit_status(process, pass_start_time)
+    return _report_check_exit_status(process, pass_start_time)
 
 
-def _report_pass_exit_status(process: subprocess.Popen[bytes], pass_start_time: float) -> int:
-    """Log and display the exit status of a completed pass.
+def _report_check_exit_status(process: subprocess.Popen[bytes], pass_start_time: float) -> int:
+    """Log and display the exit status of a completed check.
 
     Args:
         process: The completed Claude subprocess.
-        pass_start_time: Wall-clock time when the pass started.
+        pass_start_time: Wall-clock time when the check started.
 
     Returns:
         The subprocess exit code (0 on success, -1 if never set).
@@ -1147,9 +1150,9 @@ def _report_pass_exit_status(process: subprocess.Popen[bytes], pass_start_time: 
         exit_code = -1
     status_colour = GREEN if exit_code == 0 else YELLOW
     status_text = "completed" if exit_code == 0 else f"exited with code {exit_code}"
-    logger.info("Pass %s (exit_code=%d, elapsed=%s)", status_text, exit_code, elapsed)
-    _print_status(f"  Pass {status_text} in {elapsed}", status_colour)
-    _log_memory_usage("after pass")
+    logger.info("Check %s (exit_code=%d, elapsed=%s)", status_text, exit_code, elapsed)
+    _print_status(f"  Check {status_text} in {elapsed}", status_colour)
+    _log_memory_usage("after check")
     return exit_code
 
 
@@ -1159,44 +1162,44 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     """Create and configure the CLI argument parser."""
     tier_names = ", ".join(TIERS)
     parser = argparse.ArgumentParser(
-        description="Autonomous multi-pass code review using Claude Code.",
+        description="Autonomous multi-check code review using Claude Code.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="\n".join([
-            "Review tiers:",
+            "Check tiers:",
             f"  basic       {', '.join(TIER_BASIC)}",
             f"  thorough    basic + {', '.join(p for p in TIER_THOROUGH if p not in TIER_BASIC)}",
             f"  exhaustive  thorough + {', '.join(p for p in TIER_EXHAUSTIVE if p not in TIER_THOROUGH)}",
             "",
-            "All available passes (use with --passes to override tier):",
-            *(f"  {p['id']:14s}  {p['label']}" for p in REVIEW_PASSES),
+            "All available checks (use with --checks to override tier):",
+            *(f"  {p['id']:14s}  {p['label']}" for p in CHECKS),
             "",
             "Examples:",
             "  claudeloop --dir .                                  # basic tier (default)",
             "  claudeloop --dir ~/proj --level thorough            # thorough tier",
             "  claudeloop --dir ~/proj --level exhaustive --cycles 2",
-            "  claudeloop --dir ~/proj --passes readability security",
-            "  claudeloop --dir ~/proj --all-passes                # same as --level exhaustive",
+            "  claudeloop --dir ~/proj --checks readability security",
+            "  claudeloop --dir ~/proj --all-checks                # same as --level exhaustive",
             "  claudeloop --dir ~/proj --dry-run",
         ]),
     )
 
     parser.add_argument(
         "--dir", "-d", required=True,
-        help="Project directory to review",
+        help="Project directory to check",
     )
     parser.add_argument(
         "--level", "-l", choices=list(TIERS), default=None,
         metavar="TIER",
-        help=f"Review depth: {tier_names} (default: basic)",
+        help=f"Check depth: {tier_names} (default: basic)",
     )
     parser.add_argument(
-        "--passes", nargs="+", choices=PASS_IDS, default=None,
-        metavar="PASS",
-        help="Manually select passes (overrides --level)",
+        "--checks", nargs="+", choices=CHECK_IDS, default=None,
+        metavar="CHECK",
+        help="Manually select checks (overrides --level)",
     )
     parser.add_argument(
-        "--all-passes", action="store_true",
-        help="Run every available review pass (same as --level exhaustive)",
+        "--all-checks", action="store_true",
+        help="Run every available check (same as --level exhaustive)",
     )
     parser.add_argument(
         "--cycles", "-c", type=int, default=1, metavar="N",
@@ -1204,7 +1207,7 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--idle-timeout", type=int, default=DEFAULT_IDLE_TIMEOUT, metavar="SECS",
-        help=f"Kill a pass after this many seconds of silence (default: {DEFAULT_IDLE_TIMEOUT})",
+        help=f"Kill a check after this many seconds of silence (default: {DEFAULT_IDLE_TIMEOUT})",
     )
     parser.add_argument(
         "--dry-run", action="store_true",
@@ -1220,7 +1223,7 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--pause", type=int, default=DEFAULT_PAUSE_SECONDS, metavar="SECS",
-        help=f"Seconds to pause between passes (default: {DEFAULT_PAUSE_SECONDS})",
+        help=f"Seconds to pause between checks (default: {DEFAULT_PAUSE_SECONDS})",
     )
     parser.add_argument(
         "--dangerously-skip-permissions", action="store_true",
@@ -1229,7 +1232,7 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--changed-only", nargs="?", const="auto", default=None, metavar="REF",
         help=(
-            "Only review files that changed compared to a base ref. "
+            "Only check files that changed compared to a base ref. "
             "With no argument, auto-detects main/master. "
             "Pass a branch or SHA to compare against (e.g. --changed-only develop)."
         ),
@@ -1249,30 +1252,30 @@ def _build_argument_parser() -> argparse.ArgumentParser:
 
 def _print_run_summary(
     workdir: str,
-    selected_passes: list[dict[str, str]],
+    selected_checks: list[dict[str, str]],
     num_cycles: int,
     total_steps: int,
     idle_timeout: int,
     dry_run: bool,
     convergence_threshold: float = 0.0,
 ) -> None:
-    """Print a summary of the configured review run before starting.
+    """Print a summary of the configured check run before starting.
 
     Args:
         workdir: Resolved absolute path to the project directory.
-        selected_passes: List of pass dicts (each with "id", "label", "prompt").
-        num_cycles: Maximum number of times to repeat the full pass suite.
-        total_steps: ``len(selected_passes) * num_cycles``.
-        idle_timeout: Per-pass idle timeout in seconds.
+        selected_checks: List of check dicts (each with "id", "label", "prompt").
+        num_cycles: Maximum number of times to repeat the full check suite.
+        total_steps: ``len(selected_checks) * num_cycles``.
+        idle_timeout: Per-check idle timeout in seconds.
         dry_run: Whether this is a preview-only run.
         convergence_threshold: Stop cycling when change percentage falls below
             this value (0 disables convergence detection).
     """
     print(f"\n{BOLD}claudeloop{RESET}")
     print(f"  Directory    : {workdir}")
-    print(f"  Passes       : {', '.join(p['id'] for p in selected_passes)}")
+    print(f"  Checks       : {', '.join(p['id'] for p in selected_checks)}")
     print(f"  Cycles       : {num_cycles} (max)")
-    print(f"  Total steps  : {total_steps}  ({len(selected_passes)} passes x {num_cycles} cycle{'s' if num_cycles != 1 else ''}) max")
+    print(f"  Total steps  : {total_steps}  ({len(selected_checks)} checks x {num_cycles} cycle{'s' if num_cycles != 1 else ''}) max")
     print(f"  Idle timeout : {idle_timeout}s (no hard limit)")
     if convergence_threshold > 0:
         print(f"  Convergence  : stop when < {convergence_threshold}% of lines change")
@@ -1287,7 +1290,7 @@ def _check_cycle_convergence(
     convergence_threshold: float,
     prev_change_pct: float | None,
 ) -> tuple[bool, float | None]:
-    """Commit changes and check whether the review loop has converged.
+    """Commit changes and check whether the check loop has converged.
 
     Commits all staged changes, then compares the percentage of total
     tracked lines modified against *convergence_threshold*.  Also warns
@@ -1333,41 +1336,41 @@ def _check_cycle_convergence(
     return False, change_pct
 
 
-def _run_single_pass(
-    review_pass: dict[str, str],
+def _run_single_check(
+    check: dict[str, str],
     workdir: str,
     args: argparse.Namespace,
     step_label: str,
     *,
     is_git: bool = False,
 ) -> bool:
-    """Execute a single review pass.
+    """Execute a single check.
 
     Builds the prompt (with commit-message instructions appended), checks
     for dangerous keywords, snapshots the git state, invokes Claude Code,
     and reports what changed.
 
     Args:
-        review_pass: Dict with "id", "label", and "prompt" keys.
+        check: Dict with "id", "label", and "prompt" keys.
         workdir: Resolved absolute path to the project directory.
         args: Parsed CLI arguments (used for skip_permissions, dry_run, etc.).
         step_label: Display string like ``"[2/6] (cycle 1/3)"``.
         is_git: Whether *workdir* is a git repo (avoids redundant checks).
 
     Returns:
-        True if the pass made changes (or if change detection is unavailable).
+        True if the check made changes (or if change detection is unavailable).
     """
-    logger.info("Pass started: id=%s, label=%s, step=%s", review_pass["id"], review_pass["label"], step_label)
-    _print_banner(f"{step_label} {review_pass['label']}", CYAN)
+    logger.info("Check started: id=%s, label=%s, step=%s", check["id"], check["label"], step_label)
+    _print_banner(f"{step_label} {check['label']}", CYAN)
 
-    # main() attaches changed_files_prefix to args when --changed-only is used;
-    # it restricts the review to only the files that differ from the base ref.
-    changed_files_prefix = getattr(args, "changed_files_prefix", "")
-    prompt = changed_files_prefix + review_pass["prompt"] + COMMIT_MESSAGE_INSTRUCTIONS
+    # Scope prefix: either the --changed-only file list, or the default
+    # "review ALL code" instruction for full-codebase checks.
+    scope_prefix = getattr(args, "changed_files_prefix", "") or FULL_CODEBASE_SCOPE
+    prompt = scope_prefix + check["prompt"] + COMMIT_MESSAGE_INSTRUCTIONS
 
     if _looks_dangerous(prompt):
-        logger.warning("Skipping pass '%s' — dangerous keywords detected in prompt", review_pass["id"])
-        _print_status(f"Skipping '{review_pass['id']}' — dangerous keywords detected.", YELLOW)
+        logger.warning("Skipping check '%s' — dangerous keywords detected in prompt", check["id"])
+        _print_status(f"Skipping '{check['id']}' — dangerous keywords detected.", YELLOW)
         return False
 
     # Snapshot git state to detect changes
@@ -1382,25 +1385,25 @@ def _run_single_pass(
         debug=getattr(args, "debug", False),
     )
     if exit_code != 0:
-        logger.warning("Pass '%s' exited with code %d", review_pass["id"], exit_code)
-        _print_status(f"Pass '{review_pass['id']}' exited with code {exit_code}. Continuing...", YELLOW)
+        logger.warning("Check '%s' exited with code %d", check["id"], exit_code)
+        _print_status(f"Check '{check['id']}' exited with code {exit_code}. Continuing...", YELLOW)
 
-    made_changes = _report_pass_changes(workdir, review_pass["id"], sha_before)
-    logger.info("Pass '%s' made_changes=%s", review_pass["id"], made_changes)
+    made_changes = _report_check_changes(workdir, check["id"], sha_before)
+    logger.info("Check '%s' made_changes=%s", check["id"], made_changes)
     return made_changes
 
 
-def _report_pass_changes(workdir: str, pass_id: str, sha_before: str | None) -> bool:
-    """Compare git state before/after a pass, print stats, and return whether changes were made.
+def _report_check_changes(workdir: str, pass_id: str, sha_before: str | None) -> bool:
+    """Compare git state before/after a check, print stats, and return whether changes were made.
 
     Args:
         workdir: Resolved absolute path to the project directory.
-        pass_id: Short identifier of the pass (e.g. ``"readability"``).
-        sha_before: Git HEAD SHA recorded before the pass ran, or None if
+        pass_id: Short identifier of the check (e.g. ``"readability"``).
+        sha_before: Git HEAD SHA recorded before the check ran, or None if
             the project is not a git repo.
 
     Returns:
-        True if the pass made changes (or if not a git repo).
+        True if the check made changes (or if not a git repo).
     """
     if sha_before is None:
         return True  # assume changes if not a git repo
@@ -1413,35 +1416,35 @@ def _report_pass_changes(workdir: str, pass_id: str, sha_before: str | None) -> 
     return True
 
 
-def _run_review_suite(
-    selected_passes: list[dict[str, str]],
+def _run_check_suite(
+    selected_checks: list[dict[str, str]],
     num_cycles: int,
     workdir: str,
     args: argparse.Namespace,
     convergence_threshold: float = 0.0,
 ) -> None:
-    """Execute all review passes across all cycles.
+    """Execute all checks across all cycles.
 
     When *convergence_threshold* > 0 and the project is a git repo, a commit
     is created after each cycle and the percentage of lines changed is compared
     to the threshold.  If changes fall below the threshold the loop stops early.
 
-    On cycle 2+, passes that made no changes in the previous cycle are skipped.
-    Bookend passes (test-fix, test-validate) always run on every cycle.
+    On cycle 2+, checks that made no changes in the previous cycle are skipped.
+    Bookend checks (test-fix, test-validate) always run on every cycle.
 
     Args:
-        selected_passes: Ordered list of pass dicts to run each cycle.
+        selected_checks: Ordered list of check dicts to run each cycle.
         num_cycles: Maximum number of full cycles to execute.
         workdir: Resolved absolute path to the project directory.
         args: Parsed CLI arguments (pause, dry_run, idle_timeout, etc.).
         convergence_threshold: Stop when change percentage falls below this
             value.  Set to 0 to disable convergence detection.
     """
-    # Perf: check once instead of spawning a git subprocess on every pass.
+    # Perf: check once instead of spawning a git subprocess on every check.
     is_git = _is_git_repo(workdir)
     convergence_enabled = convergence_threshold > 0 and is_git
     prev_change_pct: float | None = None
-    # Tracks which passes made changes last cycle; None means "run all" (first cycle).
+    # Tracks which checks made changes last cycle; None means "run all" (first cycle).
     previously_changed_ids: set[str] | None = None
 
     for cycle in range(1, num_cycles + 1):
@@ -1450,17 +1453,17 @@ def _run_review_suite(
             print(f"\n{BOLD}{CYAN}===  Cycle {cycle}/{num_cycles}  ==={RESET}")
 
         base_sha = _git_head_sha(workdir) if convergence_enabled else None
-        active_passes = _filter_active_passes(selected_passes, previously_changed_ids)
+        active_checks = _filter_active_checks(selected_checks, previously_changed_ids)
         changed_this_cycle: set[str] = set()
 
-        for i, review_pass in enumerate(active_passes, 1):
+        for i, check in enumerate(active_checks, 1):
             time.sleep(args.pause)
             cycle_suffix = f" (cycle {cycle}/{num_cycles})" if num_cycles > 1 else ""
-            step_label = f"[{i}/{len(active_passes)}]{cycle_suffix}"
+            step_label = f"[{i}/{len(active_checks)}]{cycle_suffix}"
 
-            made_changes = _run_single_pass(review_pass, workdir, args, step_label, is_git=is_git)
+            made_changes = _run_single_check(check, workdir, args, step_label, is_git=is_git)
             if made_changes:
-                changed_this_cycle.add(review_pass["id"])
+                changed_this_cycle.add(check["id"])
 
         previously_changed_ids = changed_this_cycle
 
@@ -1472,30 +1475,30 @@ def _run_review_suite(
                 break
 
 
-def _filter_active_passes(
-    selected_passes: list[dict[str, str]],
+def _filter_active_checks(
+    selected_checks: list[dict[str, str]],
     previously_changed_ids: set[str] | None,
 ) -> list[dict[str, str]]:
-    """Return passes to run this cycle, skipping those that were no-ops last cycle.
+    """Return checks to run this cycle, skipping those that were no-ops last cycle.
 
-    On the first cycle (*previously_changed_ids* is None), all passes run.
-    Bookend passes always run regardless of prior activity.
+    On the first cycle (*previously_changed_ids* is None), all checks run.
+    Bookend checks always run regardless of prior activity.
     """
     if previously_changed_ids is None:
-        return selected_passes
+        return selected_checks
 
-    active_passes = [
-        p for p in selected_passes
+    active_checks = [
+        p for p in selected_checks
         if p["id"] in previously_changed_ids or p["id"] in _BOOKEND_IDS
     ]
     skipped_ids = [
-        p["id"] for p in selected_passes
+        p["id"] for p in selected_checks
         if p["id"] not in previously_changed_ids and p["id"] not in _BOOKEND_IDS
     ]
     if skipped_ids:
-        logger.info("Skipping %d no-op pass(es) from last cycle: %s", len(skipped_ids), skipped_ids)
-        _print_status(f"Skipping {len(skipped_ids)} pass(es) that made no changes last cycle.")
-    return active_passes
+        logger.info("Skipping %d no-op check(s) from last cycle: %s", len(skipped_ids), skipped_ids)
+        _print_status(f"Skipping {len(skipped_ids)} check(s) that made no changes last cycle.")
+    return active_checks
 
 
 def _build_permission_warning(skip_permissions: bool) -> tuple[str, str, list[str], str]:
@@ -1521,7 +1524,7 @@ def _build_permission_warning(skip_permissions: bool) -> tuple[str, str, list[st
         [
             "Claude Code requires interactive permission prompts to write files,",
             "but claudeloop cannot relay those prompts (stdin is disconnected).",
-            "Passes that modify code will likely FAIL or HANG.",
+            "Checks that modify code will likely FAIL or HANG.",
             "",
             "Re-run with:",
             f"  {BOLD}claudeloop --dangerously-skip-permissions ...{RESET}{YELLOW}",
@@ -1534,7 +1537,7 @@ def _display_pre_run_warning(skip_permissions: bool) -> None:
     """Show a warning about permissions and count down before starting.
 
     With ``--dangerously-skip-permissions``, warns that all actions will run
-    without approval.  Without it, warns that passes will likely hang because
+    without approval.  Without it, warns that checks will likely hang because
     claudeloop cannot relay interactive permission prompts.  Either way, the
     user has 5 seconds to Ctrl+C before the suite begins.
     """
@@ -1594,16 +1597,16 @@ def _resolve_changed_files_prefix(args: argparse.Namespace, workdir: str) -> str
     return _build_changed_files_prefix(changed_files)
 
 
-def _resolve_selected_passes(args: argparse.Namespace) -> list[dict[str, str]]:
-    """Determine which review passes to run based on CLI arguments."""
-    if args.all_passes:
-        selected_ids = set(PASS_IDS)
-    elif args.passes:
-        selected_ids = set(args.passes)
+def _resolve_selected_checks(args: argparse.Namespace) -> list[dict[str, str]]:
+    """Determine which checks to run based on CLI arguments."""
+    if args.all_checks:
+        selected_ids = set(CHECK_IDS)
+    elif args.checks:
+        selected_ids = set(args.checks)
     else:
         selected_ids = set(TIERS[args.level or DEFAULT_TIER])
-    selected = [p for p in REVIEW_PASSES if p["id"] in selected_ids]
-    logger.info("Selected %d passes: %s", len(selected), [p["id"] for p in selected])
+    selected = [p for p in CHECKS if p["id"] in selected_ids]
+    logger.info("Selected %d checks: %s", len(selected), [p["id"] for p in selected])
     return selected
 
 
@@ -1623,20 +1626,20 @@ def _configure_logging(args: argparse.Namespace) -> None:
 
 
 def _run_suite_with_error_handling(
-    selected_passes: list[dict[str, str]],
+    selected_checks: list[dict[str, str]],
     num_cycles: int,
     workdir: str,
     args: argparse.Namespace,
     convergence_threshold: float,
 ) -> None:
-    """Run the review suite, handling interrupts and unexpected errors.
+    """Run the check suite, handling interrupts and unexpected errors.
 
-    Wraps ``_run_review_suite`` with KeyboardInterrupt handling (exits 130),
+    Wraps ``_run_check_suite`` with KeyboardInterrupt handling (exits 130),
     missing-tool detection, and a catch-all that logs the traceback before
     re-raising.  Prints a final timing banner on success.
 
     Args:
-        selected_passes: Ordered list of pass dicts to run each cycle.
+        selected_checks: Ordered list of check dicts to run each cycle.
         num_cycles: Maximum number of full cycles.
         workdir: Resolved absolute path to the project directory.
         args: Parsed CLI arguments.
@@ -1644,7 +1647,7 @@ def _run_suite_with_error_handling(
     """
     suite_start_time = time.time()
     try:
-        _run_review_suite(selected_passes, num_cycles, workdir, args, convergence_threshold)
+        _run_check_suite(selected_checks, num_cycles, workdir, args, convergence_threshold)
     except KeyboardInterrupt:
         elapsed = _format_duration(time.time() - suite_start_time)
         _print_status(f"\nInterrupted after {elapsed}. Partial results may have been applied.", YELLOW)
@@ -1653,7 +1656,7 @@ def _run_suite_with_error_handling(
         logger.error("Required external tool not found: %s", exc, exc_info=True)
         _fatal(f"Required tool not found: {exc}. Ensure git and claude are installed.")
     except Exception:
-        logger.exception("Unexpected error during review suite")
+        logger.exception("Unexpected error during check suite")
         elapsed = _format_duration(time.time() - suite_start_time)
         _print_status(f"\nUnexpected error after {elapsed}. Partial results may have been applied.", RED)
         raise
@@ -1663,11 +1666,11 @@ def _run_suite_with_error_handling(
 
 
 def main() -> None:
-    """CLI entry point: parse arguments and run the configured review suite.
+    """CLI entry point: parse arguments and run the configured check suite.
 
     This is the function invoked by the ``claudeloop`` console script defined
-    in ``pyproject.toml``.  It parses CLI flags, resolves the review tier and
-    pass list, displays a pre-run summary, then delegates to the review loop.
+    in ``pyproject.toml``.  It parses CLI flags, resolves the check tier and
+    check list, displays a pre-run summary, then delegates to the check loop.
     """
     args = _build_argument_parser().parse_args()
     _configure_logging(args)
@@ -1677,19 +1680,19 @@ def main() -> None:
 
     args.changed_files_prefix = _resolve_changed_files_prefix(args, workdir)
 
-    selected_passes = _resolve_selected_passes(args)
-    if not selected_passes:
-        _fatal("No review passes selected. Check your --passes or --level arguments.")
+    selected_checks = _resolve_selected_checks(args)
+    if not selected_checks:
+        _fatal("No checks selected. Check your --checks or --level arguments.")
     num_cycles = args.cycles
-    total_steps = len(selected_passes) * num_cycles
+    total_steps = len(selected_checks) * num_cycles
     convergence_threshold = args.converged_at_percentage
 
-    _print_run_summary(workdir, selected_passes, num_cycles, total_steps, args.idle_timeout, args.dry_run, convergence_threshold)
+    _print_run_summary(workdir, selected_checks, num_cycles, total_steps, args.idle_timeout, args.dry_run, convergence_threshold)
 
     logger.info(
-        "Suite started: workdir=%s, passes=[%s], cycles=%d, idle_timeout=%d, convergence=%.2f%%",
+        "Suite started: workdir=%s, checks=[%s], cycles=%d, idle_timeout=%d, convergence=%.2f%%",
         workdir,
-        ", ".join(p["id"] for p in selected_passes),
+        ", ".join(p["id"] for p in selected_checks),
         num_cycles,
         args.idle_timeout,
         convergence_threshold,
@@ -1698,7 +1701,7 @@ def main() -> None:
     if not args.dry_run:
         _display_pre_run_warning(args.dangerously_skip_permissions)
 
-    _run_suite_with_error_handling(selected_passes, num_cycles, workdir, args, convergence_threshold)
+    _run_suite_with_error_handling(selected_checks, num_cycles, workdir, args, convergence_threshold)
 
 
 if __name__ == "__main__":  # pragma: no cover
