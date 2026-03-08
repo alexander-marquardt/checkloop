@@ -186,6 +186,45 @@ def _check_cycle_convergence(
 
 # --- Suite orchestration ------------------------------------------------------
 
+def _run_single_cycle(
+    active_checks: list[CheckDef],
+    workdir: str,
+    args: argparse.Namespace,
+    cycle: int,
+    num_cycles: int,
+    *,
+    is_git: bool,
+) -> set[str]:
+    """Execute all checks for one cycle, returning IDs of checks that made changes."""
+    changed_this_cycle: set[str] = set()
+    for i, check in enumerate(active_checks, 1):
+        # Only pause between checks, not before the first one in each cycle.
+        if i > 1:
+            time.sleep(args.pause)
+        cycle_suffix = f" (cycle {cycle}/{num_cycles})" if num_cycles > 1 else ""
+        step_label = f"[{i}/{len(active_checks)}]{cycle_suffix}"
+
+        made_changes = _run_single_check(check, workdir, args, step_label, is_git=is_git)
+        if made_changes:
+            changed_this_cycle.add(check["id"])
+    return changed_this_cycle
+
+
+def _squash_cycle_commits(
+    active_checks: list[CheckDef],
+    changed_ids: set[str],
+    workdir: str,
+    base_sha: str,
+) -> None:
+    """Squash all commits from a cycle into one with a descriptive message."""
+    changed_labels = [
+        check["label"] for check in active_checks
+        if check["id"] in changed_ids
+    ]
+    squash_summary = "; ".join(changed_labels)
+    _git_squash_since(workdir, base_sha, squash_summary)
+
+
 def _run_check_suite(
     selected_checks: list[CheckDef],
     num_cycles: int,
@@ -202,7 +241,6 @@ def _run_check_suite(
     On cycle 2+, checks that made no changes in the previous cycle are skipped.
     Bookend checks (test-fix, test-validate) always run on every cycle.
     """
-    # Perf: check once instead of spawning a git subprocess on every check.
     is_git = _is_git_repo(workdir)
     convergence_enabled = convergence_threshold > 0 and is_git
     prev_change_pct: float | None = None
@@ -216,30 +254,15 @@ def _run_check_suite(
 
         base_sha = _git_head_sha(workdir) if is_git else None
         active_checks = _filter_active_checks(selected_checks, previously_changed_ids)
-        changed_this_cycle: set[str] = set()
 
-        for i, check in enumerate(active_checks, 1):
-            # Perf: only pause between checks, not before the first one in each cycle.
-            if i > 1:
-                time.sleep(args.pause)
-            cycle_suffix = f" (cycle {cycle}/{num_cycles})" if num_cycles > 1 else ""
-            step_label = f"[{i}/{len(active_checks)}]{cycle_suffix}"
-
-            made_changes = _run_single_check(check, workdir, args, step_label, is_git=is_git)
-            if made_changes:
-                changed_this_cycle.add(check["id"])
-
+        changed_this_cycle = _run_single_cycle(
+            active_checks, workdir, args, cycle, num_cycles, is_git=is_git,
+        )
         previously_changed_ids = changed_this_cycle
 
         should_squash = is_git and base_sha and changed_this_cycle and not args.dry_run
         if should_squash:
-            # Build a descriptive squash message from the labels of checks that made changes.
-            changed_labels = [
-                check["label"] for check in active_checks
-                if check["id"] in changed_this_cycle
-            ]
-            squash_summary = "; ".join(changed_labels)
-            _git_squash_since(workdir, base_sha, squash_summary)
+            _squash_cycle_commits(active_checks, changed_this_cycle, workdir, base_sha)
 
         should_check_convergence = convergence_enabled and base_sha and not args.dry_run
         if should_check_convergence:
