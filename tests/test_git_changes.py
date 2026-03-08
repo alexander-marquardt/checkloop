@@ -58,6 +58,13 @@ class TestComputeChangeStatsEdgeCases:
         assert lines == 1000
         assert pct == 100.0
 
+    def test_exception_returns_zero(self) -> None:
+        """When _count_lines_changed raises, compute_change_stats returns (0, 0.0)."""
+        with mock.patch.object(git, "_count_lines_changed", side_effect=RuntimeError("git broke")):
+            lines, pct = git.compute_change_stats("/tmp", "abc123")
+        assert lines == 0
+        assert pct == 0.0
+
 
 class TestDetectDefaultBranch:
     """Tests for detect_default_branch()."""

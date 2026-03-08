@@ -66,3 +66,28 @@ class TestMemoryKillFeedbackLoop:
             check_runner._run_memory_fix("/tmp", args, is_git=False)
         out = capsys.readouterr().out
         assert "did not complete cleanly" in out
+
+    def test_memory_fix_exception_is_caught(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """When _invoke_claude raises inside _run_memory_fix, the exception is caught and logged."""
+        args = make_suite_args(dry_run=False, max_memory_mb=4096)
+
+        with mock.patch.object(check_runner, "_invoke_claude", side_effect=RuntimeError("boom")):
+            check_runner._run_memory_fix("/tmp", args, is_git=False)
+        out = capsys.readouterr().out
+        assert "Memory-fix follow-up failed" in out
+
+
+class TestInvokeClaudeExceptionInRunSingleCheck:
+    """Tests for _run_single_check when _invoke_claude raises an unexpected exception."""
+
+    def test_invoke_claude_exception_returns_error_outcome(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """When _invoke_claude raises, _run_single_check catches it and returns exit_code=-1."""
+        check_def = CheckDef(id="readability", label="Readability", prompt="review code")
+        args = make_suite_args(dry_run=False)
+
+        with mock.patch.object(check_runner, "_invoke_claude", side_effect=OSError("connection lost")), \
+             mock.patch.object(check_runner, "git_head_sha", return_value="abc123"):
+            outcome = check_runner._run_single_check(check_def, "/tmp", args, "[1/1]", is_git=True)
+        assert outcome["exit_code"] == -1
+        out = capsys.readouterr().out
+        assert "failed with error" in out
