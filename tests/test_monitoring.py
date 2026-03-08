@@ -134,3 +134,25 @@ class TestLogMemoryUsage:
         out = capsys.readouterr().out
         assert "Warning" in out
         assert "Killed" not in out
+
+
+class TestSweepPreviousSessions:
+    """Tests for _sweep_previous_sessions() straggler cleanup."""
+
+    def test_kills_stragglers_and_keeps_active_sessions(self, capsys: pytest.CaptureFixture[str]) -> None:
+        monitoring._previous_session_ids[:] = [100, 200]
+        with mock.patch.object(monitoring, "_find_session_pids", side_effect=[[111], []]):
+            with mock.patch.object(monitoring, "_kill_pids") as mock_kill:
+                monitoring._sweep_previous_sessions()
+                mock_kill.assert_called_once_with([111])
+        # Session 100 had stragglers so it stays; session 200 is cleared.
+        assert monitoring._previous_session_ids == [100]
+        out = capsys.readouterr().out
+        assert "straggler" in out
+        monitoring._previous_session_ids.clear()
+
+    def test_no_stragglers_clears_all_sessions(self) -> None:
+        monitoring._previous_session_ids[:] = [300, 400]
+        with mock.patch.object(monitoring, "_find_session_pids", return_value=[]):
+            monitoring._sweep_previous_sessions()
+        assert monitoring._previous_session_ids == []

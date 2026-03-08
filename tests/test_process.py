@@ -290,6 +290,23 @@ class TestStreamProcessOutput:
         result = process._stream_process_output(mock_proc, idle_timeout=120, debug=False)
         assert isinstance(result, float)
 
+    def test_output_buffer_truncated_on_overflow(self) -> None:
+        """Buffer is cleared when it exceeds _MAX_BUFFER_SIZE during streaming."""
+        mock_proc = mock.MagicMock()
+        big_chunk = b"x" * (process._MAX_BUFFER_SIZE + 1)
+        mock_stdout = mock.MagicMock()
+        mock_stdout.read1 = mock.MagicMock(side_effect=[big_chunk, b""])
+        mock_proc.stdout = mock_stdout
+        mock_proc.stderr = io.BytesIO(b"")
+        mock_proc.poll.side_effect = [None, None, 0]
+
+        with mock.patch("select.select", side_effect=[
+            ([mock_stdout], [], []),
+            ([mock_stdout], [], []),
+        ]):
+            with mock.patch.object(process, "_process_jsonl_buffer", side_effect=lambda buf, *a: buf):
+                process._stream_process_output(mock_proc, idle_timeout=120, debug=False)
+
 
 class TestStreamProcessOutputExceptions:
     """Tests for exception paths in _stream_process_output()."""
@@ -373,6 +390,22 @@ class TestDrainRemainingStdout:
         assert result == bytearray(b"existing")
 
 
+class TestDrainBufferOverflow:
+    """Tests for _drain_remaining_stdout() buffer overflow truncation."""
+
+    def test_drain_truncates_on_overflow(self) -> None:
+        mock_stdout = mock.MagicMock()
+        mock_stdout.fileno.return_value = 99
+        # Return a large chunk that exceeds _MAX_BUFFER_SIZE, then EOF.
+        big_chunk = b"x" * (process._MAX_BUFFER_SIZE + 1)
+        with mock.patch("os.read", side_effect=[big_chunk, b""]):
+            with mock.patch.object(process, "_process_jsonl_buffer", side_effect=lambda buf, *a: buf):
+                result = process._drain_remaining_stdout(
+                    mock_stdout, bytearray(), time.time(), debug=False,
+                )
+        assert result == bytearray()
+
+
 class TestReadStdoutChunk:
     """Tests for _read_stdout_chunk() read strategy selection."""
 
@@ -439,3 +472,19 @@ class TestKillProcessGroup:
                         raise OSError("no such process")
                 mock_killpg.side_effect = killpg_side_effect
                 process._kill_process_group(mock_proc)
+
+
+class TestKillSessionStragglers:
+    """Tests for _kill_session_stragglers() post-group-kill cleanup."""
+
+    def test_kills_stragglers_when_found(self) -> None:
+        with mock.patch.object(process, "_find_session_pids", return_value=[111, 222]):
+            with mock.patch.object(process, "_kill_pids") as mock_kill:
+                process._kill_session_stragglers(42)
+                mock_kill.assert_called_once_with([111, 222])
+
+    def test_no_op_when_no_stragglers(self) -> None:
+        with mock.patch.object(process, "_find_session_pids", return_value=[]):
+            with mock.patch.object(process, "_kill_pids") as mock_kill:
+                process._kill_session_stragglers(42)
+                mock_kill.assert_not_called()
