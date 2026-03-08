@@ -223,7 +223,7 @@ CHECKS: list[dict[str, str]] = [
 ]
 
 # All valid check IDs, derived from CHECKS to stay in sync.
-CHECK_IDS: list[str] = [p["id"] for p in CHECKS]
+CHECK_IDS: list[str] = [check["id"] for check in CHECKS]
 
 
 # --- Check tiers --------------------------------------------------------------

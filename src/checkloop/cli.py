@@ -58,11 +58,11 @@ def _build_argument_parser() -> argparse.ArgumentParser:
         epilog="\n".join([
             "Check tiers:",
             f"  basic       {', '.join(TIER_BASIC)}",
-            f"  thorough    basic + {', '.join(p for p in TIER_THOROUGH if p not in TIER_BASIC)}",
-            f"  exhaustive  thorough + {', '.join(p for p in TIER_EXHAUSTIVE if p not in TIER_THOROUGH)}",
+            f"  thorough    basic + {', '.join(cid for cid in TIER_THOROUGH if cid not in TIER_BASIC)}",
+            f"  exhaustive  thorough + {', '.join(cid for cid in TIER_EXHAUSTIVE if cid not in TIER_THOROUGH)}",
             "",
             "All available checks (use with --checks to override tier):",
-            *(f"  {p['id']:14s}  {p['label']}" for p in CHECKS),
+            *(f"  {check['id']:14s}  {check['label']}" for check in CHECKS),
             "",
             "Examples:",
             "  checkloop --dir .                                  # basic tier (default)",
@@ -155,7 +155,7 @@ def _print_run_summary(
     """Print a summary of the configured check run before starting."""
     print(f"\n{BOLD}checkloop{RESET}")
     print(f"  Directory    : {workdir}")
-    print(f"  Checks       : {', '.join(p['id'] for p in selected_checks)}")
+    print(f"  Checks       : {', '.join(check['id'] for check in selected_checks)}")
     print(f"  Cycles       : {num_cycles} (max)")
     print(f"  Total steps  : {total_steps}  ({len(selected_checks)} checks x {num_cycles} cycle{'s' if num_cycles != 1 else ''}) max")
     print(f"  Idle timeout : {idle_timeout}s (no hard limit)")
@@ -215,8 +215,8 @@ def _resolve_selected_checks(args: argparse.Namespace) -> list[dict[str, str]]:
         selected_ids = set(args.checks)
     else:
         selected_ids = set(TIERS[args.level or DEFAULT_TIER])
-    selected = [p for p in CHECKS if p["id"] in selected_ids]
-    logger.info("Selected %d checks: %s", len(selected), [p["id"] for p in selected])
+    selected = [check for check in CHECKS if check["id"] in selected_ids]
+    logger.info("Selected %d checks: %s", len(selected), [check["id"] for check in selected])
     return selected
 
 
@@ -264,7 +264,7 @@ def main() -> None:
     logger.info(
         "Suite started: workdir=%s, checks=[%s], cycles=%d, idle_timeout=%d, convergence=%.2f%%",
         workdir,
-        ", ".join(p["id"] for p in selected_checks),
+        ", ".join(check["id"] for check in selected_checks),
         num_cycles,
         args.idle_timeout,
         convergence_threshold,

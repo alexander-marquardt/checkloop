@@ -121,12 +121,12 @@ def _filter_active_checks(
         return selected_checks
 
     active_checks = [
-        p for p in selected_checks
-        if p["id"] in previously_changed_ids or p["id"] in _BOOKEND_IDS
+        check for check in selected_checks
+        if check["id"] in previously_changed_ids or check["id"] in _BOOKEND_IDS
     ]
     skipped_ids = [
-        p["id"] for p in selected_checks
-        if p["id"] not in previously_changed_ids and p["id"] not in _BOOKEND_IDS
+        check["id"] for check in selected_checks
+        if check["id"] not in previously_changed_ids and check["id"] not in _BOOKEND_IDS
     ]
     if skipped_ids:
         logger.info("Skipping %d no-op check(s) from last cycle: %s", len(skipped_ids), skipped_ids)

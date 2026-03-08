@@ -148,8 +148,8 @@ class TestPrintRunSummary:
     """Tests for _print_run_summary() pre-run output."""
 
     def test_normal_summary(self, capsys: pytest.CaptureFixture[str]) -> None:
-        passes = [{"id": "readability", "label": "Readability"}]
-        cli._print_run_summary("/tmp", passes, 2, 2, 120, False)
+        selected_checks = [{"id": "readability", "label": "Readability"}]
+        cli._print_run_summary("/tmp", selected_checks, 2, 2, 120, False)
         out = capsys.readouterr().out
         assert "checkloop" in out
         assert "/tmp" in out
@@ -157,20 +157,20 @@ class TestPrintRunSummary:
         assert "2" in out
 
     def test_dry_run_summary(self, capsys: pytest.CaptureFixture[str]) -> None:
-        passes = [{"id": "tests", "label": "Tests"}]
-        cli._print_run_summary("/tmp", passes, 1, 1, 120, True)
+        selected_checks = [{"id": "tests", "label": "Tests"}]
+        cli._print_run_summary("/tmp", selected_checks, 1, 1, 120, True)
         out = capsys.readouterr().out
         assert "DRY RUN" in out
 
     def test_single_cycle_no_plural(self, capsys: pytest.CaptureFixture[str]) -> None:
-        passes = [{"id": "dry", "label": "DRY"}]
-        cli._print_run_summary("/dir", passes, 1, 1, 60, False)
+        selected_checks = [{"id": "dry", "label": "DRY"}]
+        cli._print_run_summary("/dir", selected_checks, 1, 1, 60, False)
         out = capsys.readouterr().out
         assert "1 cycle)" in out
 
     def test_multiple_cycles_plural(self, capsys: pytest.CaptureFixture[str]) -> None:
-        passes = [{"id": "dry", "label": "DRY"}]
-        cli._print_run_summary("/dir", passes, 3, 3, 60, False)
+        selected_checks = [{"id": "dry", "label": "DRY"}]
+        cli._print_run_summary("/dir", selected_checks, 3, 3, 60, False)
         out = capsys.readouterr().out
         assert "cycles)" in out
 
@@ -180,15 +180,15 @@ class TestPrintRunSummary:
         assert "Total steps  : 0" in out
 
     def test_convergence_threshold_displayed(self, capsys: pytest.CaptureFixture[str]) -> None:
-        passes = [{"id": "dry", "label": "DRY"}]
-        cli._print_run_summary("/dir", passes, 1, 1, 60, False, convergence_threshold=0.5)
+        selected_checks = [{"id": "dry", "label": "DRY"}]
+        cli._print_run_summary("/dir", selected_checks, 1, 1, 60, False, convergence_threshold=0.5)
         out = capsys.readouterr().out
         assert "0.5%" in out
         assert "Convergence" in out
 
     def test_zero_convergence_not_displayed(self, capsys: pytest.CaptureFixture[str]) -> None:
-        passes = [{"id": "dry", "label": "DRY"}]
-        cli._print_run_summary("/dir", passes, 1, 1, 60, False, convergence_threshold=0.0)
+        selected_checks = [{"id": "dry", "label": "DRY"}]
+        cli._print_run_summary("/dir", selected_checks, 1, 1, 60, False, convergence_threshold=0.0)
         out = capsys.readouterr().out
         assert "Convergence" not in out
 
@@ -449,8 +449,8 @@ class TestMain:
         with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--all-checks", "--dry-run", "--pause", "0"]):
             cli.main()
         out = capsys.readouterr().out
-        for p in checks.CHECKS:
-            assert p["label"] in out
+        for check in checks.CHECKS:
+            assert check["label"] in out
 
     def test_cycles_zero_exits(self) -> None:
         with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--cycles", "0"]):
