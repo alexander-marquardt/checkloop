@@ -11,7 +11,7 @@ import pytest
 
 from checkloop import cli, suite, process, checks
 from checkloop.checks import CheckDef
-from helpers import make_mock_cli_args, make_suite_args
+from tests.helpers import make_mock_cli_args, make_suite_args
 
 
 # =============================================================================

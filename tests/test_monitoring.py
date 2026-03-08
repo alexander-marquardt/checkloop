@@ -9,7 +9,7 @@ from unittest import mock
 import pytest
 
 from checkloop import monitoring
-from helpers import make_git_result
+from tests.helpers import make_git_result
 
 
 class TestMeasureCurrentRssMb:

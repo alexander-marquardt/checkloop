@@ -42,11 +42,10 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
-pythonpath = ["tests"]
 
 [tool.mypy]
 strict = true
-mypy_path = "tests"
+mypy_path = "src"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/checkloop"]

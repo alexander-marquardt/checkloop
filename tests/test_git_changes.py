@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 from checkloop import git
-from helpers import make_git_result
+from tests.helpers import make_git_result
 
 
 class TestComputeChangeStats:

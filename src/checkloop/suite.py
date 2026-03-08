@@ -18,7 +18,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from checkloop.check_runner import CheckOutcome, _run_single_check
+from checkloop.check_runner import CheckOutcome as CheckOutcome, _run_single_check
 from checkloop.checkpoint import (
     CheckpointData,
     build_checkpoint,

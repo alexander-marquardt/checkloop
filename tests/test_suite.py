@@ -11,7 +11,7 @@ import pytest
 from checkloop import check_runner, checkpoint, suite
 from checkloop.checks import CheckDef
 from checkloop.process import CheckResult
-from helpers import make_check, make_checkpoint_data, make_suite_args, patch_suite_git
+from tests.helpers import make_check, make_checkpoint_data, make_suite_args, patch_suite_git
 
 
 # =============================================================================

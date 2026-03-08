@@ -11,7 +11,7 @@ import pytest
 
 from checkloop import cli, suite, checks
 from checkloop.checks import CheckDef
-from helpers import make_checkpoint_data, make_mock_cli_args
+from tests.helpers import make_checkpoint_data, make_mock_cli_args
 
 
 # =============================================================================

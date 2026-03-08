@@ -21,7 +21,7 @@ from checkloop.checkpoint import (
     _is_strict_number,
     _is_string_list,
 )
-from helpers import make_checkpoint_data
+from tests.helpers import make_checkpoint_data
 
 
 # =============================================================================

@@ -12,7 +12,7 @@ import pytest
 
 from checkloop import checkpoint
 from checkloop.checkpoint import CheckpointData
-from helpers import make_checkpoint_data
+from tests.helpers import make_checkpoint_data
 
 
 # =============================================================================

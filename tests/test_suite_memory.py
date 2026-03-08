@@ -9,7 +9,7 @@ import pytest
 from checkloop import check_runner, process, suite
 from checkloop.checks import CheckDef
 from checkloop.process import CheckResult
-from helpers import make_suite_args
+from tests.helpers import make_suite_args
 
 
 class TestMemoryKillFeedbackLoop:
