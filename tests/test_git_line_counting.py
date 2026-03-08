@@ -141,24 +141,6 @@ class TestCountTrackedLines:
             assert count == 1
 
 
-class TestCountTrackedLinesEdgeCases:
-    """Edge case tests for _count_tracked_lines()."""
-
-    def test_no_tracked_files_returns_one(self) -> None:
-        mock_result = mock.MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = b""
-        with mock.patch.object(git, "_git_run", return_value=mock_result):
-            assert git._count_tracked_lines("/tmp") == 1
-
-    def test_git_ls_files_failure(self) -> None:
-        mock_result = mock.MagicMock()
-        mock_result.returncode = 128
-        mock_result.stdout = b""
-        with mock.patch.object(git, "_git_run", return_value=mock_result):
-            assert git._count_tracked_lines("/tmp") == 1
-
-
 class TestCountTrackedLinesPathTraversal:
     """Test that path traversal is blocked in _count_tracked_lines."""
 

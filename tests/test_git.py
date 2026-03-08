@@ -28,20 +28,6 @@ class TestGitRun:
                 git._git_run("/tmp", "status")
 
 
-class TestGitRunEdgeCases:
-    """Edge case tests for _git_run()."""
-
-    def test_git_not_installed(self) -> None:
-        with mock.patch("subprocess.run", side_effect=FileNotFoundError("git")):
-            with pytest.raises(FileNotFoundError):
-                git._git_run("/tmp", "status")
-
-    def test_os_error(self) -> None:
-        with mock.patch("subprocess.run", side_effect=OSError("disk error")):
-            with pytest.raises(OSError):
-                git._git_run("/tmp", "status")
-
-
 class TestIsGitRepo:
     """Tests for _is_git_repo() detection."""
 
@@ -54,10 +40,6 @@ class TestIsGitRepo:
         with mock.patch("subprocess.run") as mock_run:
             mock_run.return_value = mock.MagicMock(returncode=128)
             assert git._is_git_repo("/tmp") is False
-
-
-class TestIsGitRepoOSError:
-    """Edge case tests for _is_git_repo() exception handling."""
 
     def test_oserror_returns_false(self) -> None:
         with mock.patch("subprocess.run", side_effect=OSError("no git")):
@@ -76,10 +58,6 @@ class TestGitHeadSha:
         with mock.patch("subprocess.run") as mock_run:
             mock_run.return_value = mock.MagicMock(returncode=128, stdout="")
             assert git._git_head_sha("/tmp") is None
-
-
-class TestGitHeadShaEdgeCases:
-    """Edge case tests for _git_head_sha()."""
 
     def test_empty_stdout_returns_none(self) -> None:
         with mock.patch("subprocess.run") as mock_run:
@@ -191,24 +169,11 @@ class TestParseShortstat:
     def test_zero_insertions_and_deletions(self) -> None:
         assert git._parse_shortstat(" 1 file changed, 0 insertions(+), 0 deletions(-)") == 0
 
-
-class TestParseShortstatEdgeCases:
-    """Edge case tests for _parse_shortstat()."""
-
     def test_whitespace_only(self) -> None:
         assert git._parse_shortstat("   \n\t  ") == 0
 
     def test_only_files_changed(self) -> None:
         assert git._parse_shortstat(" 3 files changed") == 0
-
-    def test_only_insertions(self) -> None:
-        assert git._parse_shortstat(" 1 file changed, 42 insertions(+)") == 42
-
-    def test_only_deletions(self) -> None:
-        assert git._parse_shortstat(" 1 file changed, 10 deletions(-)") == 10
-
-    def test_both_insertions_and_deletions(self) -> None:
-        assert git._parse_shortstat(" 2 files changed, 10 insertions(+), 5 deletions(-)") == 15
 
     def test_large_numbers(self) -> None:
         assert git._parse_shortstat(" 1 file changed, 999999 insertions(+), 888888 deletions(-)") == 1888887

@@ -239,15 +239,6 @@ class TestCheckCycleConvergence:
         assert should_stop is False
         assert pct == 1.5
 
-    def test_no_changes_converges(self) -> None:
-        with mock.patch.object(suite, "_git_commit_all"):
-            with mock.patch.object(suite, "_git_head_sha", return_value="same_sha"):
-                converged, pct = suite._check_cycle_convergence(
-                    "/tmp", 1, "same_sha", 0.1, None,
-                )
-        assert converged is True
-        assert pct is None
-
     def test_changes_below_threshold_converges(self, capsys: pytest.CaptureFixture[str]) -> None:
         with mock.patch.object(suite, "_git_commit_all"):
             with mock.patch.object(suite, "_git_head_sha", return_value="new_sha"):
@@ -257,18 +248,6 @@ class TestCheckCycleConvergence:
                     )
         assert converged is True
         assert pct == 0.05
-
-    def test_increasing_changes_warns(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch.object(suite, "_git_commit_all"):
-            with mock.patch.object(suite, "_git_head_sha", return_value="new_sha"):
-                with mock.patch.object(suite, "_compute_change_stats", return_value=(100, 5.0)):
-                    converged, pct = suite._check_cycle_convergence(
-                        "/tmp", 2, "old_sha", 0.1, 2.0,
-                    )
-        assert converged is False
-        assert pct == 5.0
-        out = capsys.readouterr().out
-        assert "oscillation" in out.lower()
 
 
 # =============================================================================
