@@ -144,6 +144,13 @@ class TestGitSquashSince:
             result = git._git_squash_since("/tmp", "base_sha", "msg")
         assert result is False
 
+    def test_squash_returns_false_when_head_sha_is_none(self) -> None:
+        """If _git_head_sha returns None after wip commit, squash bails out."""
+        with mock.patch.object(git, "_git_commit_all", return_value=True):
+            with mock.patch.object(git, "_git_head_sha", return_value=None):
+                result = git._git_squash_since("/tmp", "base_sha_123", "squash msg")
+        assert result is False
+
 
 class TestParseShortstat:
     """Tests for _parse_shortstat() diff output parsing."""

@@ -114,7 +114,7 @@ def _git_squash_since(workdir: str, base_sha: str, message: str) -> bool:
     try:
         _git_commit_all(workdir, "wip")
         current_sha = _git_head_sha(workdir)
-        if current_sha == base_sha:
+        if current_sha is None or current_sha == base_sha:
             return False
         _git_run(workdir, "reset", "--soft", base_sha, check=True)
         _git_run(workdir, "commit", "-m", message, check=True)

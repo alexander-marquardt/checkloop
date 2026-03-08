@@ -143,6 +143,26 @@ class TestGetChangedFiles:
             ]
             assert git._get_changed_files("/tmp", "main") == []
 
+    def test_diff_output_with_blank_lines_filtered(self) -> None:
+        """Blank lines in diff output are filtered out."""
+        with mock.patch.object(git, "_git_run") as mock_git:
+            mock_git.side_effect = [
+                mock.MagicMock(returncode=0, stdout="abc123"),
+                mock.MagicMock(returncode=0, stdout="\n\nsrc/a.py\n\n\n"),
+            ]
+            files = git._get_changed_files("/tmp", "main")
+        assert files == ["src/a.py"]
+
+    def test_whitespace_only_merge_base(self) -> None:
+        """Whitespace-only merge-base stdout still produces a ref for diff."""
+        with mock.patch.object(git, "_git_run") as mock_git:
+            mock_git.side_effect = [
+                mock.MagicMock(returncode=0, stdout="   \n"),
+                mock.MagicMock(returncode=0, stdout="a.py\n"),
+            ]
+            files = git._get_changed_files("/tmp", "main")
+        assert files == ["a.py"]
+
 
 class TestBuildChangedFilesPrefix:
     """Tests for _build_changed_files_prefix()."""

@@ -156,3 +156,36 @@ class TestSweepPreviousSessions:
         with mock.patch.object(monitoring, "_find_session_pids", return_value=[]):
             monitoring._sweep_previous_sessions()
         assert monitoring._previous_session_ids == []
+
+
+class TestKillPidsEdgeCases:
+    """Edge case tests for _kill_pids()."""
+
+    def test_empty_list_returns_zero(self) -> None:
+        assert monitoring._kill_pids([]) == 0
+
+    def test_mixed_alive_and_dead(self) -> None:
+        def kill_side_effect(pid: int, sig: signal.Signals) -> None:
+            if pid == 200:
+                raise OSError("No such process")
+
+        with mock.patch("os.kill", side_effect=kill_side_effect):
+            killed = monitoring._kill_pids([100, 200, 300])
+        assert killed == 2
+
+
+class TestFindSessionPidsEdgeCases:
+    """Edge case tests for _find_session_pids()."""
+
+    def test_excludes_own_pid(self) -> None:
+        my_pid = monitoring.os.getpid()
+        with mock.patch.object(monitoring, "_run_pgrep", return_value=[my_pid, 999]):
+            result = monitoring._find_session_pids(42)
+        assert my_pid not in result
+        assert result == [999]
+
+    def test_only_own_pid_returns_empty(self) -> None:
+        my_pid = monitoring.os.getpid()
+        with mock.patch.object(monitoring, "_run_pgrep", return_value=[my_pid]):
+            result = monitoring._find_session_pids(42)
+        assert result == []

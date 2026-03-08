@@ -228,6 +228,18 @@ class TestPrintEventEdgeCases:
         streaming._print_event(event, time.time())
         assert capsys.readouterr().out.strip() == ""
 
+    def test_assistant_content_is_string_not_list(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Content should be a list; a string is silently ignored."""
+        event: dict[str, Any] = {"type": "assistant", "message": {"content": "plain text"}}
+        streaming._print_event(event, time.time())
+        assert capsys.readouterr().out.strip() == ""
+
+    def test_assistant_content_contains_non_dict_items(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Non-dict items in content list are safely skipped."""
+        event: dict[str, Any] = {"type": "assistant", "message": {"content": ["string", 42, None, {"type": "text", "text": "real"}]}}
+        streaming._print_event(event, time.time())
+        assert "real" in capsys.readouterr().out
+
     def test_result_with_non_string_result(self, capsys: pytest.CaptureFixture[str]) -> None:
         event: dict[str, Any] = {"type": "result", "result": 42}
         streaming._print_event(event, time.time())

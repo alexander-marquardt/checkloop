@@ -101,6 +101,9 @@ def _report_check_changes(workdir: str, pass_id: str, sha_before: str | None) ->
     if sha_before is None:
         return True  # assume changes if not a git repo
     sha_after = _git_head_sha(workdir)
+    if sha_after is None:
+        logger.warning("Could not read HEAD SHA after check '%s' — assuming changes were made", pass_id)
+        return True
     if sha_after == sha_before:
         _print_status(f"  {pass_id}: no changes")
         return False
@@ -152,6 +155,10 @@ def _check_cycle_convergence(
     the loop should exit (either no changes or below threshold).
     """
     current_sha = _git_head_sha(workdir)
+
+    if current_sha is None:
+        logger.warning("Cycle %d: could not read HEAD SHA — skipping convergence check", cycle)
+        return False, prev_change_pct
 
     if current_sha == base_sha:
         logger.info("Cycle %d: no changes detected — converged", cycle)

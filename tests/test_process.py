@@ -36,6 +36,47 @@ class TestBuildClaudeCommand:
         cmd = process._build_claude_command("review code", skip_permissions=False)
         assert "--dangerously-skip-permissions" not in cmd
 
+    def test_empty_prompt(self) -> None:
+        cmd = process._build_claude_command("", skip_permissions=False)
+        assert "-p" in cmd
+        assert "" in cmd
+
+    def test_prompt_with_special_characters(self) -> None:
+        cmd = process._build_claude_command("review 'code' with \"quotes\" & $vars", skip_permissions=False)
+        assert "review 'code' with \"quotes\" & $vars" in cmd
+
+
+class TestCheckIdleTimeout:
+    """Tests for _check_idle_timeout() boundary conditions."""
+
+    def test_not_expired(self) -> None:
+        mock_proc = mock.MagicMock()
+        with mock.patch("time.time", return_value=100.0):
+            result = process._check_idle_timeout(
+                last_output_time=90.0, idle_timeout=120,
+                pass_start_time=80.0, process=mock_proc,
+            )
+        assert result is False
+
+    def test_exactly_at_threshold_does_not_trigger(self) -> None:
+        """Idle timeout uses strict > comparison, so exactly at threshold doesn't trigger."""
+        mock_proc = mock.MagicMock()
+        with mock.patch("time.time", return_value=220.0):
+            result = process._check_idle_timeout(
+                last_output_time=100.0, idle_timeout=120,
+                pass_start_time=80.0, process=mock_proc,
+            )
+        assert result is False
+
+    def test_one_second_over_threshold(self) -> None:
+        mock_proc = mock.MagicMock()
+        with mock.patch("time.time", return_value=221.0):
+            result = process._check_idle_timeout(
+                last_output_time=100.0, idle_timeout=120,
+                pass_start_time=80.0, process=mock_proc,
+            )
+        assert result is True
+
 
 class TestSpawnClaudeProcess:
     """Tests for _spawn_claude_process() subprocess creation."""

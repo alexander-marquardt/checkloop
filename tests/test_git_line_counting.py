@@ -48,7 +48,37 @@ class TestCountFileLines:
         content = b"x" * (git._BINARY_CHECK_SIZE + 10)
         content = content[:git._BINARY_CHECK_SIZE + 5] + b"\0" + content[git._BINARY_CHECK_SIZE + 6:]
         f.write_bytes(content)
+        # Returns 0 because there are no newlines, not because binary detection
+        # caught the null byte (binary check only examines the first 8KB header).
         assert git._count_file_lines(f) == 0
+
+    def test_null_byte_beyond_header_with_newlines(self, tmp_path: Path) -> None:
+        """A file with null bytes only after the 8KB header is treated as text.
+
+        Binary detection only checks the first _BINARY_CHECK_SIZE bytes.
+        Newlines after a late null byte are still counted — this is an accepted
+        limitation for performance (avoids scanning the entire file for nulls).
+        """
+        f = tmp_path / "late_null_with_newlines.bin"
+        # Ensure the text header is exactly _BINARY_CHECK_SIZE bytes so the
+        # null byte falls outside the binary-detection window.
+        header = b"x" * (git._BINARY_CHECK_SIZE - 1) + b"\n"
+        tail = b"\0\nmore\n"  # null byte then newlines
+        f.write_bytes(header + tail)
+        result = git._count_file_lines(f)
+        # Counts all newlines including those after the null byte
+        assert result > 0
+
+    def test_file_exactly_header_size(self, tmp_path: Path) -> None:
+        f = tmp_path / "exact.txt"
+        f.write_bytes(b"a\n" * (git._BINARY_CHECK_SIZE // 2))
+        assert git._count_file_lines(f) == git._BINARY_CHECK_SIZE // 2
+
+    def test_file_one_byte_over_header_size(self, tmp_path: Path) -> None:
+        f = tmp_path / "one_over.txt"
+        content = b"x" * git._BINARY_CHECK_SIZE + b"\n"
+        f.write_bytes(content)
+        assert git._count_file_lines(f) == 1
 
 
 class TestCountFileLinesReadError:

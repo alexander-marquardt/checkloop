@@ -337,6 +337,30 @@ class TestReportCheckChanges:
         assert result is True
         assert "10 lines changed" in capsys.readouterr().out
 
+    def test_sha_after_none_assumes_changes(self) -> None:
+        """When _git_head_sha returns None after a check, assume changes were made."""
+        with mock.patch.object(suite, "_git_head_sha", return_value=None):
+            result = suite._report_check_changes("/tmp", "test", "sha1")
+        assert result is True
+
+
+# =============================================================================
+# _check_cycle_convergence — None SHA edge case
+# =============================================================================
+
+class TestCheckCycleConvergenceNoneSha:
+    """Tests for _check_cycle_convergence when HEAD SHA is unavailable."""
+
+    def test_current_sha_none_skips_convergence(self) -> None:
+        """If _git_head_sha returns None, convergence check is skipped."""
+        with mock.patch.object(suite, "_git_head_sha", return_value=None):
+            should_stop, pct = suite._check_cycle_convergence(
+                "/tmp", cycle=1, base_sha="abc123",
+                convergence_threshold=0.1, prev_change_pct=None,
+            )
+        assert should_stop is False
+        assert pct is None
+
 
 # =============================================================================
 # Commit message instructions
