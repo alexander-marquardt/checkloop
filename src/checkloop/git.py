@@ -59,9 +59,9 @@ def _git_run(
             check=check,
             timeout=_GIT_CMD_TIMEOUT,
         )
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
         logger.error("git %s timed out after %ds (cwd=%s)", args[0] if args else "", _GIT_CMD_TIMEOUT, workdir)
-        raise OSError(f"git {args[0] if args else ''} timed out after {_GIT_CMD_TIMEOUT}s")
+        raise OSError(f"git {args[0] if args else ''} timed out after {_GIT_CMD_TIMEOUT}s") from exc
     except FileNotFoundError:
         logger.error("git binary not found — is git installed?")
         raise
