@@ -122,14 +122,21 @@ def _kill_orphaned_children(pids: list[int] | None = None) -> int:
     return killed
 
 
+# Session IDs (claude PIDs) from previous checks. Used by _log_memory_usage
+# as a fallback to catch processes that somehow survived _kill_process_group.
+_previous_session_ids: list[int] = []
+
+
 def _log_memory_usage(label: str) -> None:
-    """Log current RSS and child process count after each check."""
+    """Log current RSS and kill any surviving processes after each check."""
     rss_mb = _measure_current_rss_mb()
     child_pids = _find_child_pids()
     logger.info("Memory [%s]: rss=%.0fMB, children=%d", label, rss_mb, len(child_pids))
     _print_status(f"  Memory: {rss_mb:.0f}MB RSS, {len(child_pids)} child processes", DIM)
     if child_pids:
         _warn_and_kill_orphan_processes(child_pids)
+    # Also sweep for stragglers from previous sessions that escaped cleanup.
+    _sweep_previous_sessions()
 
 
 def _warn_and_kill_orphan_processes(child_pids: list[int]) -> None:
@@ -139,6 +146,23 @@ def _warn_and_kill_orphan_processes(child_pids: list[int]) -> None:
     killed = _kill_orphaned_children(child_pids)
     if killed:
         _print_status(f"  Killed {killed} orphaned process(es).", YELLOW)
+
+
+def _sweep_previous_sessions() -> None:
+    """Kill any surviving processes from sessions of previous checks."""
+    still_active: list[int] = []
+    for sid in _previous_session_ids:
+        stragglers = _find_session_pids(sid)
+        if stragglers:
+            logger.warning("Session %d still has %d straggler(s): %s", sid, len(stragglers), stragglers)
+            _print_status(f"  Warning: {len(stragglers)} straggler(s) from session {sid} — killing.", YELLOW)
+            for pid in stragglers:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+            still_active.append(sid)
+    _previous_session_ids[:] = still_active
 
 
 # --- Claude command construction ----------------------------------------------
@@ -213,6 +237,9 @@ def _drain_remaining_stdout(
                 break
             output_buffer.extend(remaining)
             output_buffer = _process_jsonl_buffer(output_buffer, pass_start_time, debug)
+            if len(output_buffer) > _MAX_BUFFER_SIZE:
+                logger.warning("Drain buffer exceeded %d bytes — truncating", _MAX_BUFFER_SIZE)
+                output_buffer.clear()
     except OSError as exc:
         logger.debug("Failed to drain remaining stdout: %s", exc)
     return output_buffer
@@ -420,6 +447,8 @@ def _execute_claude_process(
     Returns the subprocess exit code (0 on success, -1 if it never set one).
     """
     process = _spawn_claude_process(cmd, workdir)
+    # Track session ID so _sweep_previous_sessions can catch stragglers later.
+    _previous_session_ids.append(process.pid)
     try:
         pass_start_time = _stream_process_output(process, idle_timeout, debug)
 
