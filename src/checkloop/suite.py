@@ -49,6 +49,7 @@ from checkloop.terminal import (
     fatal,
     format_duration,
     print_banner,
+    print_overall_summary_table,
     print_run_summary_table,
     print_status,
 )
@@ -178,7 +179,7 @@ def _run_single_check(
     if is_git:
         committed = git_commit_all(
             workdir,
-            f"checkloop: commit uncommitted changes left by '{check['id']}' check",
+            f"Commit uncommitted changes left by '{check['id']}' check",
         )
         if not committed:
             logger.debug("No uncommitted changes left after check '%s'", check["id"])
@@ -233,7 +234,7 @@ def _run_memory_fix(
         print_status("Memory-fix check completed.", GREEN)
 
     if is_git:
-        committed = git_commit_all(workdir, "checkloop: commit uncommitted changes left by memory-fix check")
+        committed = git_commit_all(workdir, "Commit uncommitted changes left by memory-fix check")
         if committed:
             print_status("  Committed memory-fix changes.", GREEN)
 
@@ -498,6 +499,7 @@ def _run_check_suite(
         logger.info("Cycle %d/%d completed: %d/%d checks made changes (%s)",
                      cycle, num_cycles, len(changed_this_cycle), len(active_checks),
                      ", ".join(sorted(changed_this_cycle)) or "none")
+        _print_cycle_summary(cycle_outcomes, cycle, num_cycles)
         state.previously_changed_ids = changed_this_cycle
 
         if convergence_enabled and base_sha is not None and not args.dry_run:
@@ -514,8 +516,27 @@ def _run_check_suite(
 
 # --- Post-run summary ---------------------------------------------------------
 
+def _print_cycle_summary(
+    cycle_outcomes: list[CheckOutcome], cycle: int, num_cycles: int,
+) -> None:
+    """Print a per-cycle summary table after each cycle completes.
+
+    Only prints when running multiple cycles — single-cycle runs get
+    the final "Run Summary" instead to avoid redundant output.
+    """
+    if not cycle_outcomes or num_cycles <= 1:
+        return
+    summary_dicts = [o.to_summary_dict() for o in cycle_outcomes]
+    cycle_duration = format_duration(sum(o.duration_seconds for o in cycle_outcomes))
+    print_run_summary_table(
+        summary_dicts, cycle_duration,
+        banner_title=f"Cycle {cycle}/{num_cycles} Summary",
+        banner_colour=CYAN,
+    )
+
+
 def _print_summary(outcomes: list[CheckOutcome], total_elapsed: str) -> None:
-    """Print and log the post-run summary table if there are any outcomes to show."""
+    """Print and log the overall summary table if there are any outcomes to show."""
     if not outcomes:
         return
     summary_dicts = [o.to_summary_dict() for o in outcomes]
@@ -533,7 +554,16 @@ def _print_summary(outcomes: list[CheckOutcome], total_elapsed: str) -> None:
             o.check_id, o.cycle, o.exit_code, o.kill_reason,
             o.made_changes, o.lines_changed, o.duration_seconds,
         )
-    print_run_summary_table(summary_dicts, total_elapsed, stats=stats)
+    # For multi-cycle runs, show the cross-cycle overview table.
+    # For single-cycle runs, just show the per-check detail table.
+    num_cycles = len({o.cycle for o in outcomes})
+    if num_cycles > 1:
+        print_overall_summary_table(summary_dicts, total_elapsed)
+    else:
+        print_run_summary_table(
+            summary_dicts, total_elapsed, stats=stats,
+            banner_title="Run Summary", banner_colour=CYAN,
+        )
 
 
 # --- Error-handling wrapper ---------------------------------------------------

@@ -118,12 +118,15 @@ def print_run_summary_table(
     results: list[SummaryRow],
     total_elapsed: str,
     stats: SummaryStats | None = None,
+    *,
+    banner_title: str = "Run Summary",
+    banner_colour: str = CYAN,
 ) -> None:
-    """Print a post-run summary table showing per-check outcomes."""
+    """Print a summary table showing per-check outcomes."""
     if not results:
         return
 
-    print_banner("Run Summary", CYAN)
+    print_banner(banner_title, banner_colour)
 
     if stats is None:
         stats = compute_summary_stats(results)
@@ -160,4 +163,114 @@ def print_run_summary_table(
     print(f"  Total lines  : {total_lines}")
     print(f"  With changes : {checks_with_changes}/{total_checks}")
     print(f"  Elapsed      : {total_elapsed}")
+    print()
+
+
+class CycleSummary(NamedTuple):
+    """Aggregate statistics for a single cycle, used in the overall summary."""
+
+    cycle: int
+    total_checks: int
+    succeeded: int
+    failed: int
+    killed: int
+    total_lines: int
+    with_changes: int
+    duration: str
+
+
+def compute_cycle_summaries(results: list[SummaryRow]) -> list[CycleSummary]:
+    """Group summary rows by cycle and compute per-cycle aggregates."""
+    cycles_seen: dict[int, list[SummaryRow]] = {}
+    for r in results:
+        cycles_seen.setdefault(r["cycle"], []).append(r)
+
+    summaries: list[CycleSummary] = []
+    for cycle_num in sorted(cycles_seen):
+        rows = cycles_seen[cycle_num]
+        stats = compute_summary_stats(rows)
+        total_duration = sum(
+            _parse_duration(r["duration"]) for r in rows
+        )
+        summaries.append(CycleSummary(
+            cycle=cycle_num,
+            total_checks=len(rows),
+            succeeded=stats.succeeded,
+            failed=stats.failed,
+            killed=stats.killed,
+            total_lines=stats.total_lines,
+            with_changes=stats.with_changes,
+            duration=format_duration(total_duration),
+        ))
+    return summaries
+
+
+def _parse_duration(duration_str: str) -> float:
+    """Parse a duration string like '2m30s' or '1h02m30s' back to seconds."""
+    total = 0.0
+    import re
+    match = re.match(r"(?:(\d+)h)?(\d+)m(\d+)s", duration_str)
+    if match:
+        hours = int(match.group(1) or 0)
+        minutes = int(match.group(2))
+        seconds = int(match.group(3))
+        total = hours * 3600 + minutes * 60 + seconds
+    return total
+
+
+def print_overall_summary_table(
+    results: list[SummaryRow],
+    total_elapsed: str,
+) -> None:
+    """Print a cross-cycle overview table in BLUE showing per-cycle aggregates."""
+    cycle_summaries = compute_cycle_summaries(results)
+    if not cycle_summaries:
+        return
+
+    print_banner("Overall Summary", BLUE)
+
+    # Header
+    print(f"  {BLUE}{'Cycle':>5s}  {'Checks':>6s}  {'OK':>4s}  {'Fail':>4s}  {'Kill':>4s}  "
+          f"{'Lines':>7s}  {'Changed':>7s}  {'Duration':>8s}{RESET}")
+    print(f"  {BLUE}{'─' * 5}  {'─' * 6}  {'─' * 4}  {'─' * 4}  {'─' * 4}  "
+          f"{'─' * 7}  {'─' * 7}  {'─' * 8}{RESET}")
+
+    prev_lines = 0
+    for cs in cycle_summaries:
+        # Colour the lines column based on trend
+        if prev_lines > 0 and cs.total_lines < prev_lines:
+            lines_colour = GREEN  # decreasing — converging
+        elif prev_lines > 0 and cs.total_lines > prev_lines:
+            lines_colour = YELLOW  # increasing — diverging
+        else:
+            lines_colour = BLUE
+
+        # Delta indicator
+        if prev_lines > 0 and cs.total_lines != prev_lines:
+            delta = cs.total_lines - prev_lines
+            delta_str = f" ({delta:+d})"
+        else:
+            delta_str = ""
+
+        lines_str = f"{cs.total_lines}{delta_str}"
+        changed_str = f"{cs.with_changes}/{cs.total_checks}"
+
+        # Row colour based on failures
+        row_colour = RED if cs.failed > 0 else BLUE
+
+        print(f"  {row_colour}{cs.cycle:>5d}  {cs.total_checks:>6d}  {cs.succeeded:>4d}  "
+              f"{cs.failed:>4d}  {cs.killed:>4d}{RESET}  "
+              f"{lines_colour}{lines_str:>7s}{RESET}  "
+              f"{row_colour}{changed_str:>7s}  {cs.duration:>8s}{RESET}")
+
+        prev_lines = cs.total_lines
+
+    # Footer
+    total_stats = compute_summary_stats(results)
+    print()
+    print(f"  {BLUE}Total cycles : {len(cycle_summaries)}{RESET}")
+    print(f"  {BLUE}Total checks : {len(results)}  "
+          f"({total_stats.succeeded} ok, {total_stats.failed} failed, {total_stats.killed} killed){RESET}")
+    print(f"  {BLUE}Total lines  : {total_stats.total_lines}{RESET}")
+    print(f"  {BLUE}Elapsed      : {total_elapsed}{RESET}")
     print()
