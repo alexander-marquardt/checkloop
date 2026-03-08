@@ -1,24 +1,17 @@
-"""Comprehensive tests for checkloop.cli — targeting >=90% line coverage."""
+"""Tests for checkloop.cli — argument parsing, validation, and main entry point."""
 
 from __future__ import annotations
 
 import argparse
 import contextlib
-import io
-import json
 import logging
-import os
-import signal
-import subprocess
-import sys
-import time
 from pathlib import Path
 from typing import Any, Iterator
 from unittest import mock
 
 import pytest
 
-from checkloop import cli
+from checkloop import cli, suite, process, checks, git
 
 
 # =============================================================================
@@ -34,18 +27,11 @@ def _parse_cli(args: list[str]) -> argparse.Namespace:
 
 _SHARED_ARG_DEFAULTS: dict[str, Any] = dict(
     pause=0,
-    idle_timeout=cli.DEFAULT_IDLE_TIMEOUT,
+    idle_timeout=process.DEFAULT_IDLE_TIMEOUT,
     verbose=False,
     debug=False,
     dangerously_skip_permissions=False,
 )
-
-
-def _make_suite_args(*, dry_run: bool = True, **overrides: Any) -> argparse.Namespace:
-    """Build an argparse.Namespace for _run_check_suite / _run_single_check."""
-    defaults = {**_SHARED_ARG_DEFAULTS, "dry_run": dry_run}
-    defaults.update(overrides)
-    return argparse.Namespace(**defaults)
 
 
 def _make_main_mock_args(*, dry_run: bool = False, **overrides: Any) -> mock.MagicMock:
@@ -70,43 +56,12 @@ def _make_main_mock_args(*, dry_run: bool = False, **overrides: Any) -> mock.Mag
 
 
 @contextlib.contextmanager
-def _patch_suite_git(
-    sha_sequence: list[str],
-    *,
-    run_claude_return: int = 0,
-    lines_changed: int | None = None,
-    total_tracked: int | None = None,
-) -> Iterator[None]:
-    """Mock common git/claude dependencies for _run_check_suite.
-
-    Patches run_claude, _is_git_repo, and _git_head_sha. Optionally patches
-    _count_lines_changed and _cached_total_tracked_lines when provided.
-    """
-    with contextlib.ExitStack() as stack:
-        stack.enter_context(mock.patch.object(cli, "run_claude", return_value=run_claude_return))
-        stack.enter_context(mock.patch.object(cli, "_is_git_repo", return_value=True))
-        stack.enter_context(mock.patch.object(cli, "_git_head_sha", side_effect=sha_sequence))
-        stack.enter_context(mock.patch.object(cli, "_git_commit_all", return_value=True))
-        stack.enter_context(mock.patch.object(cli, "_git_squash_since", return_value=True))
-        if lines_changed is not None:
-            stack.enter_context(mock.patch.object(cli, "_count_lines_changed", return_value=lines_changed))
-        if total_tracked is not None:
-            stack.enter_context(mock.patch.object(cli, "_cached_total_tracked_lines", return_value=total_tracked))
-        yield
-
-
-@contextlib.contextmanager
 def _patch_main_pipeline(
     *,
     suite_side_effect: type[BaseException] | BaseException | None = None,
     **arg_overrides: Any,
 ) -> Iterator[None]:
-    """Mock the standard main() pipeline for exception-path tests.
-
-    Patches argument parsing, directory resolution, validation, the pre-run
-    warning, and the check suite.  *suite_side_effect* is passed through
-    to ``_run_check_suite``'s mock so callers can inject exceptions.
-    """
+    """Mock the standard main() pipeline for exception-path tests."""
     mock_args = _make_main_mock_args(**arg_overrides)
     suite_kwargs: dict[str, Any] = {}
     if suite_side_effect is not None:
@@ -116,537 +71,9 @@ def _patch_main_pipeline(
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch.object(cli, "_resolve_working_directory", return_value="/tmp"))
             stack.enter_context(mock.patch.object(cli, "_validate_arguments"))
-            stack.enter_context(mock.patch.object(cli, "_display_pre_run_warning"))
-            stack.enter_context(mock.patch.object(cli, "_run_check_suite", **suite_kwargs))
+            stack.enter_context(mock.patch.object(suite, "_display_pre_run_warning"))
+            stack.enter_context(mock.patch.object(suite, "_run_check_suite", **suite_kwargs))
             yield
-
-
-# =============================================================================
-# banner / log
-# =============================================================================
-
-class TestPrintBanner:
-    """Tests for the _print_banner() terminal output helper."""
-
-    def test_default_colour(self, capsys: pytest.CaptureFixture[str]) -> None:
-        cli._print_banner("Hello")
-        out = capsys.readouterr().out
-        assert "Hello" in out
-        assert cli.CYAN in out
-        assert cli.BOLD in out
-        assert cli.RESET in out
-
-    def test_custom_colour(self, capsys: pytest.CaptureFixture[str]) -> None:
-        cli._print_banner("Title", cli.GREEN)
-        out = capsys.readouterr().out
-        assert cli.GREEN in out
-        assert "Title" in out
-
-
-class TestPrintStatus:
-    """Tests for the _print_status() terminal output helper."""
-
-    def test_default_dim(self, capsys: pytest.CaptureFixture[str]) -> None:
-        cli._print_status("info")
-        out = capsys.readouterr().out
-        assert "info" in out
-        assert cli.DIM in out
-
-    def test_custom_colour(self, capsys: pytest.CaptureFixture[str]) -> None:
-        cli._print_status("warn", cli.YELLOW)
-        out = capsys.readouterr().out
-        assert cli.YELLOW in out
-
-
-# =============================================================================
-# _format_duration
-# =============================================================================
-
-class TestFormatDuration:
-    """Tests for _format_duration() time formatting."""
-
-    def test_zero(self) -> None:
-        assert cli._format_duration(0) == "0m00s"
-
-    def test_seconds_only(self) -> None:
-        assert cli._format_duration(45) == "0m45s"
-
-    def test_minutes_and_seconds(self) -> None:
-        assert cli._format_duration(125) == "2m05s"
-
-    def test_exactly_one_hour(self) -> None:
-        assert cli._format_duration(3600) == "1h00m00s"
-
-    def test_hours_minutes_seconds(self) -> None:
-        assert cli._format_duration(3661) == "1h01m01s"
-
-    def test_large_value(self) -> None:
-        assert cli._format_duration(7384) == "2h03m04s"
-
-    def test_very_large_value(self) -> None:
-        assert cli._format_duration(360000) == "100h00m00s"
-
-    def test_just_under_one_hour(self) -> None:
-        assert cli._format_duration(3599) == "59m59s"
-
-    def test_negative_clamped_to_zero(self) -> None:
-        assert cli._format_duration(-5) == "0m00s"
-
-    def test_negative_large_clamped_to_zero(self) -> None:
-        assert cli._format_duration(-9999) == "0m00s"
-
-    def test_fractional_seconds(self) -> None:
-        assert cli._format_duration(0.9) == "0m00s"
-
-    def test_fractional_just_under_minute(self) -> None:
-        assert cli._format_duration(59.999) == "0m59s"
-
-
-# =============================================================================
-# _looks_dangerous
-# =============================================================================
-
-class TestLooksDangerous:
-    """Tests for the _looks_dangerous() prompt safety guard."""
-
-    def test_safe_prompt(self) -> None:
-        assert cli._looks_dangerous("Review all code for quality") is False
-
-    def test_rm_rf_root(self) -> None:
-        assert cli._looks_dangerous("rm -rf /") is True
-
-    def test_case_insensitive(self) -> None:
-        assert cli._looks_dangerous("DROP DATABASE users") is True
-
-    def test_drop_table(self) -> None:
-        assert cli._looks_dangerous("drop table foo") is True
-
-    def test_sudo_rm(self) -> None:
-        assert cli._looks_dangerous("sudo rm something") is True
-
-    def test_fork_bomb(self) -> None:
-        assert cli._looks_dangerous(":(){:|:&};:") is True
-
-    def test_dd_dev_zero(self) -> None:
-        assert cli._looks_dangerous("dd if=/dev/zero of=/dev/sda") is True
-
-    def test_chmod_777_root(self) -> None:
-        assert cli._looks_dangerous("chmod 777 /") is True
-
-    def test_delete_all_files(self) -> None:
-        assert cli._looks_dangerous("delete all files now") is True
-        assert cli._looks_dangerous("delete all records") is False  # only "delete all files" matches
-
-    def test_truncate_table(self) -> None:
-        assert cli._looks_dangerous("truncate table users") is True
-        assert cli._looks_dangerous("truncate the string") is False  # bare "truncate" no longer matches
-
-    def test_format_keyword(self) -> None:
-        assert cli._looks_dangerous("format c: drive") is True
-        assert cli._looks_dangerous("format /dev/sda") is True
-
-    def test_wipe(self) -> None:
-        assert cli._looks_dangerous("wipe disk now") is True
-        assert cli._looks_dangerous("wipe drive") is True
-        assert cli._looks_dangerous("wipe partition") is True
-        assert cli._looks_dangerous("wipe the cache") is False  # bare "wipe" no longer matches
-
-    def test_etc_passwd(self) -> None:
-        assert cli._looks_dangerous("cat /etc/passwd") is True
-
-    def test_embedded_safe_word(self) -> None:
-        # "mkfs" as a standalone word should match, but not as a substring
-        assert cli._looks_dangerous("run mkfs on disk") is True
-        assert cli._looks_dangerous("format the code") is False
-
-    def test_format_dev(self) -> None:
-        assert cli._looks_dangerous("format /dev/sda") is True
-
-    def test_dd_of_dev(self) -> None:
-        assert cli._looks_dangerous("dd of=/dev/sda bs=1M") is True
-
-    def test_empty_string(self) -> None:
-        assert cli._looks_dangerous("") is False
-
-    def test_whitespace_only(self) -> None:
-        assert cli._looks_dangerous("   \t\n  ") is False
-
-    def test_unicode_prompt(self) -> None:
-        assert cli._looks_dangerous("レビューコード 🔍") is False
-
-
-# =============================================================================
-# _summarise_tool_use
-# =============================================================================
-
-class TestSummariseToolUse:
-    """Tests for _summarise_tool_use() tool event formatting."""
-
-    def test_read_file_path(self) -> None:
-        result = cli._summarise_tool_use("Read", {"file_path": "/tmp/foo.py"})
-        assert "/tmp/foo.py" in result
-
-    def test_edit_file_path(self) -> None:
-        result = cli._summarise_tool_use("Edit", {"file_path": "/a/b.txt"})
-        assert "/a/b.txt" in result
-
-    def test_write_file_path(self) -> None:
-        result = cli._summarise_tool_use("write_file", {"file_path": "/x.py"})
-        assert "/x.py" in result
-
-    def test_bash_short_command(self) -> None:
-        result = cli._summarise_tool_use("Bash", {"command": "ls -la"})
-        assert "$ ls -la" in result
-
-    def test_bash_long_command_truncated(self) -> None:
-        long_cmd = "x" * 100
-        result = cli._summarise_tool_use("Bash", {"command": long_cmd})
-        assert result.endswith("...")
-        assert len(result) < len(long_cmd) + 10
-
-    def test_glob_pattern(self) -> None:
-        result = cli._summarise_tool_use("Glob", {"pattern": "**/*.py"})
-        assert "**/*.py" in result
-
-    def test_grep_pattern(self) -> None:
-        result = cli._summarise_tool_use("Grep", {"pattern": "TODO"})
-        assert "/TODO/" in result
-
-    def test_unknown_tool(self) -> None:
-        result = cli._summarise_tool_use("SomeTool", {"arg": "val"})
-        assert result == ""
-
-    def test_file_path_tool_without_file_path_key(self) -> None:
-        result = cli._summarise_tool_use("Read", {"other": "val"})
-        assert result == ""
-
-    def test_bash_without_command(self) -> None:
-        result = cli._summarise_tool_use("Bash", {})
-        assert result == ""
-
-    def test_lowercase_bash(self) -> None:
-        result = cli._summarise_tool_use("bash", {"command": "echo hi"})
-        assert "$ echo hi" in result
-
-    def test_lowercase_grep(self) -> None:
-        result = cli._summarise_tool_use("grep", {"pattern": "foo"})
-        assert "/foo/" in result
-
-    def test_lowercase_glob(self) -> None:
-        result = cli._summarise_tool_use("glob", {"pattern": "*.md"})
-        assert "*.md" in result
-
-    def test_empty_tool_name(self) -> None:
-        result = cli._summarise_tool_use("", {"file_path": "/a.py"})
-        assert result == ""
-
-    def test_empty_command(self) -> None:
-        result = cli._summarise_tool_use("Bash", {"command": ""})
-        assert "$ " in result
-
-    def test_bash_command_at_display_limit(self) -> None:
-        cmd = "x" * cli._BASH_DISPLAY_LIMIT
-        result = cli._summarise_tool_use("Bash", {"command": cmd})
-        assert "..." not in result
-        assert cmd in result
-
-    def test_bash_command_over_display_limit(self) -> None:
-        cmd = "x" * (cli._BASH_DISPLAY_LIMIT + 1)
-        result = cli._summarise_tool_use("Bash", {"command": cmd})
-        assert result.endswith("...")
-
-
-# =============================================================================
-# _print_event
-# =============================================================================
-
-class TestPrintEvent:
-    """Tests for _print_event() stream-json event rendering."""
-
-    def _now(self) -> float:
-        return time.time()
-
-    def test_assistant_text(self, capsys: pytest.CaptureFixture[str]) -> None:
-        event = {
-            "type": "assistant",
-            "message": {"content": [{"type": "text", "text": "Found issue"}]},
-        }
-        cli._print_event(event, self._now())
-        assert "Found issue" in capsys.readouterr().out
-
-    def test_assistant_empty_text(self, capsys: pytest.CaptureFixture[str]) -> None:
-        event = {
-            "type": "assistant",
-            "message": {"content": [{"type": "text", "text": "   "}]},
-        }
-        cli._print_event(event, self._now())
-        assert capsys.readouterr().out.strip() == ""
-
-    def test_assistant_non_text_block(self, capsys: pytest.CaptureFixture[str]) -> None:
-        event = {
-            "type": "assistant",
-            "message": {"content": [{"type": "image", "url": "x"}]},
-        }
-        cli._print_event(event, self._now())
-        assert capsys.readouterr().out.strip() == ""
-
-    def test_tool_use_event(self, capsys: pytest.CaptureFixture[str]) -> None:
-        event = {"type": "tool_use", "tool": "Read", "input": {"file_path": "/a.py"}}
-        cli._print_event(event, self._now())
-        out = capsys.readouterr().out
-        assert "[Read]" in out
-        assert "/a.py" in out
-
-    def test_tool_use_name_fallback(self, capsys: pytest.CaptureFixture[str]) -> None:
-        event = {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}
-        cli._print_event(event, self._now())
-        out = capsys.readouterr().out
-        assert "[Bash]" in out
-
-    def test_system_event(self, capsys: pytest.CaptureFixture[str]) -> None:
-        event = {"type": "system", "message": "Initialising..."}
-        cli._print_event(event, self._now())
-        assert "Initialising..." in capsys.readouterr().out
-
-    def test_system_event_empty(self, capsys: pytest.CaptureFixture[str]) -> None:
-        event = {"type": "system", "message": ""}
-        cli._print_event(event, self._now())
-        assert capsys.readouterr().out.strip() == ""
-
-    def test_result_event(self, capsys: pytest.CaptureFixture[str]) -> None:
-        event = {"type": "result", "result": "All good"}
-        cli._print_event(event, self._now())
-        out = capsys.readouterr().out
-        assert "Result" in out
-        assert "All good" in out
-
-    def test_result_event_empty(self, capsys: pytest.CaptureFixture[str]) -> None:
-        event = {"type": "result", "result": ""}
-        cli._print_event(event, self._now())
-        assert capsys.readouterr().out.strip() == ""
-
-    def test_unknown_event_type(self, capsys: pytest.CaptureFixture[str]) -> None:
-        event = {"type": "unknown_type"}
-        cli._print_event(event, self._now())
-        assert capsys.readouterr().out.strip() == ""
-
-    def test_missing_type(self, capsys: pytest.CaptureFixture[str]) -> None:
-        event = {"data": "something"}
-        cli._print_event(event, self._now())
-        assert capsys.readouterr().out.strip() == ""
-
-    def test_tool_use_with_none_input(self, capsys: pytest.CaptureFixture[str]) -> None:
-        event = {"type": "tool_use", "tool": "Read", "input": None}
-        cli._print_event(event, self._now())
-        out = capsys.readouterr().out
-        assert "[Read]" in out
-
-    def test_assistant_empty_content_list(self, capsys: pytest.CaptureFixture[str]) -> None:
-        event = {"type": "assistant", "message": {"content": []}}
-        cli._print_event(event, self._now())
-        assert capsys.readouterr().out.strip() == ""
-
-    def test_assistant_missing_message(self, capsys: pytest.CaptureFixture[str]) -> None:
-        event = {"type": "assistant"}
-        cli._print_event(event, self._now())
-        assert capsys.readouterr().out.strip() == ""
-
-    def test_tool_use_missing_both_tool_and_name(self, capsys: pytest.CaptureFixture[str]) -> None:
-        event = {"type": "tool_use", "input": {"file_path": "/a.py"}}
-        cli._print_event(event, self._now())
-        out = capsys.readouterr().out
-        assert "[unknown]" in out
-
-
-# =============================================================================
-# _process_jsonl_buffer (JSONL line processing)
-# =============================================================================
-
-class TestProcessJsonlBuffer:
-    """Tests for _process_jsonl_buffer() JSONL buffer processing."""
-
-    def test_complete_line(self, capsys: pytest.CaptureFixture[str]) -> None:
-        event = json.dumps({"type": "system", "message": "hello"})
-        buf = bytearray((event + "\n").encode())
-        remainder = cli._process_jsonl_buffer(buf, time.time(), debug=False)
-        assert remainder == bytearray()
-        assert "hello" in capsys.readouterr().out
-
-    def test_partial_line_returned(self) -> None:
-        buf = bytearray(b"partial")
-        remainder = cli._process_jsonl_buffer(buf, time.time(), debug=False)
-        assert remainder == bytearray(b"partial")
-
-    def test_multiple_lines(self, capsys: pytest.CaptureFixture[str]) -> None:
-        e1 = json.dumps({"type": "system", "message": "one"})
-        e2 = json.dumps({"type": "system", "message": "two"})
-        buf = bytearray(f"{e1}\n{e2}\n".encode())
-        remainder = cli._process_jsonl_buffer(buf, time.time(), debug=False)
-        assert remainder == bytearray()
-        out = capsys.readouterr().out
-        assert "one" in out
-        assert "two" in out
-
-    def test_invalid_json_debug(self, capsys: pytest.CaptureFixture[str]) -> None:
-        buf = bytearray(b"not json\n")
-        remainder = cli._process_jsonl_buffer(buf, time.time(), debug=True)
-        assert remainder == bytearray()
-        assert "not json" in capsys.readouterr().out
-
-    def test_invalid_json_not_debug(self, capsys: pytest.CaptureFixture[str]) -> None:
-        buf = bytearray(b"not json\n")
-        remainder = cli._process_jsonl_buffer(buf, time.time(), debug=False)
-        assert remainder == bytearray()
-        # Should NOT print non-JSON when debug is False
-        assert "not json" not in capsys.readouterr().out
-
-    def test_empty_line_skipped(self, capsys: pytest.CaptureFixture[str]) -> None:
-        buf = bytearray(b"\n\n")
-        remainder = cli._process_jsonl_buffer(buf, time.time(), debug=False)
-        assert remainder == bytearray()
-        assert capsys.readouterr().out == ""
-
-    def test_line_with_remainder(self) -> None:
-        event = json.dumps({"type": "system", "message": "x"})
-        buf = bytearray(f"{event}\npartial".encode())
-        remainder = cli._process_jsonl_buffer(buf, time.time(), debug=False)
-        assert remainder == bytearray(b"partial")
-
-    def test_empty_buffer(self) -> None:
-        buf = bytearray(b"")
-        remainder = cli._process_jsonl_buffer(buf, time.time(), debug=False)
-        assert remainder == bytearray(b"")
-
-    def test_whitespace_only_lines(self, capsys: pytest.CaptureFixture[str]) -> None:
-        buf = bytearray(b"   \n\t\n")
-        remainder = cli._process_jsonl_buffer(buf, time.time(), debug=False)
-        assert remainder == bytearray()
-        assert capsys.readouterr().out == ""
-
-    def test_unicode_content(self, capsys: pytest.CaptureFixture[str]) -> None:
-        event = json.dumps({"type": "system", "message": "こんにちは 🎉"})
-        buf = bytearray((event + "\n").encode("utf-8"))
-        remainder = cli._process_jsonl_buffer(buf, time.time(), debug=False)
-        assert remainder == bytearray()
-        assert "こんにちは" in capsys.readouterr().out
-
-
-# =============================================================================
-# _build_claude_command
-# =============================================================================
-
-class TestBuildClaudeCommand:
-    """Tests for _build_claude_command() CLI argument assembly."""
-
-    def test_with_skip_permissions(self) -> None:
-        cmd = cli._build_claude_command("review code", skip_permissions=True)
-        assert cmd[0] == "claude"
-        assert "--dangerously-skip-permissions" in cmd
-        assert "-p" in cmd
-        assert "review code" in cmd
-        assert "--output-format" in cmd
-        assert "stream-json" in cmd
-        assert "--verbose" in cmd
-
-    def test_without_skip_permissions(self) -> None:
-        cmd = cli._build_claude_command("review code", skip_permissions=False)
-        assert "--dangerously-skip-permissions" not in cmd
-        assert "review code" in cmd
-
-    def test_default_skip_permissions_is_false(self) -> None:
-        """skip_permissions defaults to False (safe by default)."""
-        cmd = cli._build_claude_command("review code", skip_permissions=False)
-        assert "--dangerously-skip-permissions" not in cmd
-
-
-# =============================================================================
-# _spawn_claude_process
-# =============================================================================
-
-class TestSpawnClaudeProcess:
-    """Tests for _spawn_claude_process() subprocess creation."""
-
-    def test_file_not_found_exits(self) -> None:
-        with mock.patch("subprocess.Popen", side_effect=FileNotFoundError):
-            with pytest.raises(SystemExit) as exc_info:
-                cli._spawn_claude_process(["claude", "-p", "hi"], "/tmp")
-            assert exc_info.value.code == 1
-
-    def test_strips_claudecode_env(self) -> None:
-        with mock.patch.dict(os.environ, {"CLAUDECODE": "1", "HOME": "/home"}):
-            with mock.patch("subprocess.Popen") as mock_popen:
-                mock_popen.return_value = mock.MagicMock()
-                cli._spawn_claude_process(["claude"], "/tmp")
-                call_kwargs = mock_popen.call_args
-                env = call_kwargs.kwargs.get("env") or call_kwargs[1].get("env")
-                assert "CLAUDECODE" not in env
-
-    def test_passes_cwd_and_pipes(self) -> None:
-        with mock.patch("subprocess.Popen") as mock_popen:
-            mock_popen.return_value = mock.MagicMock()
-            cli._spawn_claude_process(["claude"], "/mydir")
-            call_kwargs = mock_popen.call_args
-            assert call_kwargs.kwargs["cwd"] == "/mydir"
-            assert call_kwargs.kwargs["stdout"] == subprocess.PIPE
-            assert call_kwargs.kwargs["stderr"] == subprocess.DEVNULL
-            assert call_kwargs.kwargs["stdin"] == subprocess.DEVNULL
-
-
-# =============================================================================
-# run_claude
-# =============================================================================
-
-class TestRunClaude:
-    """Tests for the public run_claude() function."""
-
-    def test_dry_run(self, capsys: pytest.CaptureFixture[str]) -> None:
-        code = cli.run_claude("prompt", "/tmp", dry_run=True)
-        assert code == 0
-        out = capsys.readouterr().out
-        assert "DRY RUN" in out
-
-    def test_normal_run(self, capsys: pytest.CaptureFixture[str]) -> None:
-        mock_proc = mock.MagicMock()
-        mock_proc.stdout = io.BytesIO(b'')
-        mock_proc.stderr = io.BytesIO(b'')
-        mock_proc.poll.return_value = 0
-        mock_proc.wait.return_value = None
-        mock_proc.returncode = 0
-
-        with mock.patch.object(cli, "_spawn_claude_process", return_value=mock_proc):
-            with mock.patch.object(cli, "_stream_process_output", return_value=time.time()):
-                code = cli.run_claude("prompt", "/tmp", dry_run=False)
-        assert code == 0
-
-    def test_dry_run_short_prompt_no_ellipsis(self, capsys: pytest.CaptureFixture[str]) -> None:
-        code = cli.run_claude("short", "/tmp", dry_run=True)
-        assert code == 0
-        out = capsys.readouterr().out
-        assert "short" in out
-        assert "short..." not in out
-
-    def test_dry_run_long_prompt_truncated(self, capsys: pytest.CaptureFixture[str]) -> None:
-        long_prompt = "x" * 200
-        code = cli.run_claude(long_prompt, "/tmp", dry_run=True)
-        assert code == 0
-        out = capsys.readouterr().out
-        assert "..." in out
-
-    def test_dry_run_empty_prompt(self, capsys: pytest.CaptureFixture[str]) -> None:
-        code = cli.run_claude("", "/tmp", dry_run=True)
-        assert code == 0
-
-    def test_nonzero_exit(self, capsys: pytest.CaptureFixture[str]) -> None:
-        mock_proc = mock.MagicMock()
-        mock_proc.returncode = 1
-
-        with mock.patch.object(cli, "_spawn_claude_process", return_value=mock_proc):
-            with mock.patch.object(cli, "_stream_process_output", return_value=time.time()):
-                mock_proc.wait.return_value = None
-                code = cli.run_claude("prompt", "/tmp", dry_run=False)
-        assert code == 1
-        out = capsys.readouterr().out
-        assert "exited with code 1" in out
 
 
 # =============================================================================
@@ -663,10 +90,10 @@ class TestBuildArgumentParser:
         assert ns.level is None
         assert ns.all_checks is False
         assert ns.cycles == 1
-        assert ns.idle_timeout == cli.DEFAULT_IDLE_TIMEOUT
+        assert ns.idle_timeout == process.DEFAULT_IDLE_TIMEOUT
         assert ns.dry_run is False
         assert ns.verbose is False
-        assert ns.pause == cli.DEFAULT_PAUSE_SECONDS
+        assert ns.pause == process.DEFAULT_PAUSE_SECONDS
 
     def test_dir_is_required(self) -> None:
         with pytest.raises(SystemExit):
@@ -760,130 +187,238 @@ class TestPrintRunSummary:
         out = capsys.readouterr().out
         assert "Total steps  : 0" in out
 
+    def test_convergence_threshold_displayed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        passes = [{"id": "dry", "label": "DRY"}]
+        cli._print_run_summary("/dir", passes, 1, 1, 60, False, convergence_threshold=0.5)
+        out = capsys.readouterr().out
+        assert "0.5%" in out
+        assert "Convergence" in out
+
+    def test_zero_convergence_not_displayed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        passes = [{"id": "dry", "label": "DRY"}]
+        cli._print_run_summary("/dir", passes, 1, 1, 60, False, convergence_threshold=0.0)
+        out = capsys.readouterr().out
+        assert "Convergence" not in out
+
 
 # =============================================================================
-# _run_check_suite
+# _validate_arguments
 # =============================================================================
 
-class TestRunCheckSuite:
-    """Tests for _run_check_suite() multi-check execution."""
+class TestValidateArguments:
+    """Tests for _validate_arguments()."""
 
-    def test_single_pass_single_cycle(self, capsys: pytest.CaptureFixture[str]) -> None:
-        passes = [{"id": "readability", "label": "Readability", "prompt": "review code"}]
-        args = _make_suite_args()
-        cli._run_check_suite(passes, 1, "/tmp", args)
-        out = capsys.readouterr().out
-        assert "Readability" in out
-        assert "DRY RUN" in out
+    def test_cycles_zero_exits(self) -> None:
+        args = argparse.Namespace(idle_timeout=120, pause=0, cycles=0, converged_at_percentage=0.1)
+        with pytest.raises(SystemExit) as exc_info:
+            cli._validate_arguments(args)
+        assert exc_info.value.code == 1
 
-    def test_multi_cycle_banner(self, capsys: pytest.CaptureFixture[str]) -> None:
-        passes = [{"id": "dry", "label": "DRY", "prompt": "check dry"}]
-        args = _make_suite_args()
-        cli._run_check_suite(passes, 2, "/tmp", args)
-        out = capsys.readouterr().out
-        assert "Cycle 1/2" in out
-        assert "Cycle 2/2" in out
+    def test_negative_cycles_exits(self) -> None:
+        args = argparse.Namespace(idle_timeout=120, pause=0, cycles=-5, converged_at_percentage=0.1)
+        with pytest.raises(SystemExit) as exc_info:
+            cli._validate_arguments(args)
+        assert exc_info.value.code == 1
 
-    def test_dangerous_prompt_skipped(self, capsys: pytest.CaptureFixture[str]) -> None:
-        passes = [{"id": "evil", "label": "Evil", "prompt": "rm -rf / everything"}]
-        args = _make_suite_args(dry_run=False)
-        with mock.patch.object(cli, "run_claude") as mock_run:
-            cli._run_check_suite(passes, 1, "/tmp", args)
-            mock_run.assert_not_called()
-        out = capsys.readouterr().out
-        assert "dangerous" in out.lower() or "Skipping" in out
+    def test_negative_convergence_exits(self) -> None:
+        args = argparse.Namespace(idle_timeout=120, pause=0, cycles=1, converged_at_percentage=-0.5)
+        with pytest.raises(SystemExit) as exc_info:
+            cli._validate_arguments(args)
+        assert exc_info.value.code == 1
 
-    def test_nonzero_exit_continues(self, capsys: pytest.CaptureFixture[str]) -> None:
-        passes = [
-            {"id": "a", "label": "A", "prompt": "do a"},
-            {"id": "b", "label": "B", "prompt": "do b"},
-        ]
-        args = _make_suite_args(dry_run=False)
-        with mock.patch.object(cli, "run_claude", return_value=1):
-            cli._run_check_suite(passes, 1, "/tmp", args)
-        out = capsys.readouterr().out
-        assert "exited with code 1" in out
-        # Both checks should be attempted
-        assert "A" in out
-        assert "B" in out
+    def test_valid_arguments_no_exit(self) -> None:
+        args = argparse.Namespace(idle_timeout=1, pause=0, cycles=1, converged_at_percentage=0.0)
+        cli._validate_arguments(args)  # should not raise
 
-    def test_noop_passes_skipped_on_cycle2(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """Passes that made no changes in cycle 1 are skipped in cycle 2."""
-        passes = [
-            {"id": "readability", "label": "Readability", "prompt": "review code"},
-            {"id": "dry", "label": "DRY", "prompt": "check dry"},
-        ]
-        args = _make_suite_args(dry_run=False)
-        sha_sequence = [
-            "cycle1_base",                     # Cycle 1 base_sha
-            "sha_r_before", "sha_r_after",     # Cycle 1 readability: changed
-            "sha_d_before", "sha_d_before",    # Cycle 1 dry: no change
-            "cycle2_base",                     # Cycle 2 base_sha
-            "sha_r2_before", "sha_r2_after",   # Cycle 2 readability: runs
-        ]
-        with _patch_suite_git(sha_sequence, lines_changed=10, total_tracked=1000):
-            cli._run_check_suite(passes, 2, "/tmp", args)
-        out = capsys.readouterr().out
-        assert "Skipping 1 check(s)" in out
 
-    def test_bookend_passes_always_run(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """Bookend checks (test-fix, test-validate) run even if they made no changes."""
-        passes = [
-            {"id": "test-fix", "label": "Test Fix", "prompt": "fix tests"},
-            {"id": "readability", "label": "Readability", "prompt": "review code"},
-            {"id": "test-validate", "label": "Test Validate", "prompt": "validate tests"},
-        ]
-        args = _make_suite_args(dry_run=False)
-        sha_sequence = [
-            "c1_base",                               # Cycle 1 base_sha
-            "s1", "s1",  "s2", "s2",  "s3", "s3",   # Cycle 1: all no-change
-            "c2_base",                               # Cycle 2 base_sha
-            "s4", "s4",  "s5", "s5",                 # Cycle 2: bookends only
-        ]
-        with _patch_suite_git(sha_sequence):
-            cli._run_check_suite(passes, 2, "/tmp", args)
-        out = capsys.readouterr().out
-        assert "Skipping 1 check(s)" in out
-        assert out.count("Test Fix") == 2
-        assert out.count("Test Validate") == 2
-        assert out.count("Readability") == 1
+class TestValidateArgumentsEdgeCases:
+    """Edge case tests for _validate_arguments()."""
 
-    def test_all_checks_active_no_skip(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """When all checks make changes, none are skipped in cycle 2."""
-        passes = [
-            {"id": "readability", "label": "Readability", "prompt": "review code"},
-            {"id": "dry", "label": "DRY", "prompt": "check dry"},
-        ]
-        args = _make_suite_args(dry_run=False)
-        sha_sequence = [
-            "c1_base",                 # Cycle 1 base_sha
-            "a1", "a2",  "b1", "b2",  # Cycle 1: both change
-            "c2_base",                 # Cycle 2 base_sha
-            "c1", "c2",  "d1", "d2",  # Cycle 2: both run again
-        ]
-        with _patch_suite_git(sha_sequence, lines_changed=10, total_tracked=1000):
-            cli._run_check_suite(passes, 2, "/tmp", args)
-        out = capsys.readouterr().out
-        assert "Skipping" not in out
+    def test_converged_at_percentage_over_100_exits(self) -> None:
+        args = _make_main_mock_args(converged_at_percentage=101.0)
+        with pytest.raises(SystemExit) as exc_info:
+            cli._validate_arguments(args)
+        assert exc_info.value.code == 1
 
-    def test_pass_change_stats_printed(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """After each check that makes changes, lines changed and percentage are printed."""
-        passes = [{"id": "readability", "label": "Readability", "prompt": "review code"}]
-        args = _make_suite_args(dry_run=False)
-        with _patch_suite_git(["base", "sha1", "sha2"], lines_changed=42, total_tracked=5000):
-            cli._run_check_suite(passes, 1, "/tmp", args)
-        out = capsys.readouterr().out
-        assert "42 lines changed" in out
-        assert "0.84%" in out
+    def test_converged_at_zero_is_valid(self) -> None:
+        args = _make_main_mock_args(converged_at_percentage=0.0)
+        cli._validate_arguments(args)
 
-    def test_no_change_stats_printed(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """After a check with no changes, 'no changes' is printed."""
-        passes = [{"id": "dry", "label": "DRY", "prompt": "check dry"}]
-        args = _make_suite_args(dry_run=False)
-        with _patch_suite_git(["base", "same", "same"]):
-            cli._run_check_suite(passes, 1, "/tmp", args)
+    def test_converged_at_100_is_valid(self) -> None:
+        args = _make_main_mock_args(converged_at_percentage=100.0)
+        cli._validate_arguments(args)
+
+    def test_idle_timeout_exactly_one(self) -> None:
+        args = _make_main_mock_args(idle_timeout=1)
+        cli._validate_arguments(args)
+
+    def test_pause_zero_is_valid(self) -> None:
+        args = _make_main_mock_args(pause=0)
+        cli._validate_arguments(args)
+
+    def test_cycles_exactly_one(self) -> None:
+        args = _make_main_mock_args(cycles=1)
+        cli._validate_arguments(args)
+
+
+# =============================================================================
+# _resolve_selected_checks
+# =============================================================================
+
+class TestResolveSelectedChecks:
+    """Tests for _resolve_selected_checks()."""
+
+    def test_level_basic(self) -> None:
+        args = argparse.Namespace(all_checks=False, checks=None, level="basic")
+        result = cli._resolve_selected_checks(args)
+        ids = [p["id"] for p in result]
+        assert ids == checks.TIER_BASIC
+
+    def test_all_checks(self) -> None:
+        args = argparse.Namespace(all_checks=True, checks=None, level=None)
+        result = cli._resolve_selected_checks(args)
+        assert len(result) == len(checks.CHECKS)
+
+    def test_passes_override_level(self) -> None:
+        args = argparse.Namespace(all_checks=False, checks=["security"], level="exhaustive")
+        result = cli._resolve_selected_checks(args)
+        assert len(result) == 1
+        assert result[0]["id"] == "security"
+
+    def test_all_checks_flag(self) -> None:
+        args = _make_main_mock_args(all_checks=True, checks=None, level=None)
+        result = cli._resolve_selected_checks(args)
+        assert len(result) == len(checks.CHECKS)
+
+    def test_explicit_passes_override_level(self) -> None:
+        args = _make_main_mock_args(all_checks=False, checks=["security"], level="basic")
+        result = cli._resolve_selected_checks(args)
+        assert len(result) == 1
+        assert result[0]["id"] == "security"
+
+    def test_default_tier_when_nothing_specified(self) -> None:
+        args = _make_main_mock_args(all_checks=False, checks=None, level=None)
+        result = cli._resolve_selected_checks(args)
+        expected_ids = set(checks.TIERS[checks.DEFAULT_TIER])
+        assert {p["id"] for p in result} == expected_ids
+
+
+# =============================================================================
+# _resolve_working_directory
+# =============================================================================
+
+class TestResolveWorkingDirectory:
+    """Tests for _resolve_working_directory()."""
+
+    def test_oserror_calls_fatal(self) -> None:
+        with mock.patch.object(Path, "resolve", side_effect=OSError("bad path")):
+            with pytest.raises(SystemExit):
+                cli._resolve_working_directory("/nonexistent/\x00path")
+
+
+# =============================================================================
+# _resolve_changed_files_prefix
+# =============================================================================
+
+class TestResolveChangedFilesPrefix:
+    """Tests for _resolve_changed_files_prefix()."""
+
+    def test_changed_only_none_returns_empty(self) -> None:
+        args = argparse.Namespace(changed_only=None)
+        result = cli._resolve_changed_files_prefix(args, "/tmp")
+        assert result == ""
+
+    def test_not_git_repo_exits(self) -> None:
+        args = argparse.Namespace(changed_only="auto")
+        with mock.patch.object(cli, "_is_git_repo", return_value=False):
+            with pytest.raises(SystemExit) as exc_info:
+                cli._resolve_changed_files_prefix(args, "/tmp")
+            assert exc_info.value.code == 1
+
+    def test_no_changed_files_exits(self) -> None:
+        args = argparse.Namespace(changed_only="main")
+        with mock.patch.object(cli, "_is_git_repo", return_value=True), \
+             mock.patch.object(cli, "_get_changed_files", return_value=[]):
+            with pytest.raises(SystemExit) as exc_info:
+                cli._resolve_changed_files_prefix(args, "/tmp")
+            assert exc_info.value.code == 1
+
+    def test_returns_prefix_with_changed_files(self, capsys: pytest.CaptureFixture[str]) -> None:
+        args = argparse.Namespace(changed_only="main")
+        with mock.patch.object(cli, "_is_git_repo", return_value=True), \
+             mock.patch.object(cli, "_get_changed_files", return_value=["a.py", "b.py"]):
+            result = cli._resolve_changed_files_prefix(args, "/tmp")
+        assert "a.py" in result
+        assert "b.py" in result
         out = capsys.readouterr().out
-        assert "dry: no changes" in out
+        assert "2 changed file(s)" in out
+
+
+# =============================================================================
+# --converged-at-percentage and --changed-only CLI args
+# =============================================================================
+
+class TestConvergedAtPercentageArg:
+    """Tests for --converged-at-percentage CLI argument."""
+
+    def test_default(self) -> None:
+        ns = _parse_cli(["--dir", "/tmp"])
+        assert ns.converged_at_percentage == cli.DEFAULT_CONVERGENCE_THRESHOLD
+
+    def test_custom_value(self) -> None:
+        ns = _parse_cli(["--dir", "/tmp", "--converged-at-percentage", "0.5"])
+        assert ns.converged_at_percentage == 0.5
+
+    def test_zero_disables(self) -> None:
+        ns = _parse_cli(["--dir", "/tmp", "--converged-at-percentage", "0"])
+        assert ns.converged_at_percentage == 0.0
+
+
+class TestChangedOnly:
+    """Tests for --changed-only flag."""
+
+    def test_changed_only_default_is_none(self) -> None:
+        ns = _parse_cli(["--dir", "/tmp"])
+        assert ns.changed_only is None
+
+    def test_changed_only_no_arg_sets_auto(self) -> None:
+        ns = _parse_cli(["--dir", "/tmp", "--changed-only"])
+        assert ns.changed_only == "auto"
+
+    def test_changed_only_with_ref(self) -> None:
+        ns = _parse_cli(["--dir", "/tmp", "--changed-only", "develop"])
+        assert ns.changed_only == "develop"
+
+
+# =============================================================================
+# _configure_logging
+# =============================================================================
+
+class TestConfigureLogging:
+    """Tests for _configure_logging()."""
+
+    def test_default_level_is_warning(self) -> None:
+        args = argparse.Namespace(verbose=False, debug=False)
+        with mock.patch("logging.basicConfig") as mock_log:
+            cli._configure_logging(args)
+            mock_log.assert_called_once()
+            assert mock_log.call_args.kwargs["level"] == logging.WARNING
+
+    def test_verbose_sets_info_level(self) -> None:
+        with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--verbose", "--dry-run", "--pause", "0"]):
+            with mock.patch("logging.basicConfig") as mock_log:
+                with mock.patch.object(suite, "_run_check_suite"):
+                    cli.main()
+                mock_log.assert_called_once()
+                assert mock_log.call_args.kwargs["level"] == logging.INFO
+
+    def test_debug_sets_debug_level(self) -> None:
+        with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--debug", "--dry-run", "--pause", "0"]):
+            with mock.patch("logging.basicConfig") as mock_log:
+                with mock.patch.object(suite, "_run_check_suite"):
+                    cli.main()
+                mock_log.assert_called_once()
+                assert mock_log.call_args.kwargs["level"] == logging.DEBUG
 
 
 # =============================================================================
@@ -922,7 +457,7 @@ class TestMain:
         with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--all-checks", "--dry-run", "--pause", "0"]):
             cli.main()
         out = capsys.readouterr().out
-        for p in cli.CHECKS:
+        for p in checks.CHECKS:
             assert p["label"] in out
 
     def test_cycles_zero_exits(self) -> None:
@@ -945,263 +480,13 @@ class TestMain:
         assert "Performance" in out
 
 
-# =============================================================================
-# Module-level constants
-# =============================================================================
-
-class TestConstants:
-    """Tests for module-level constants and data structures."""
-
-    def test_check_ids_match(self) -> None:
-        assert cli.CHECK_IDS == [p["id"] for p in cli.CHECKS]
-
-    def test_default_tier_passes_are_valid(self) -> None:
-        for check_id in cli.TIERS[cli.DEFAULT_TIER]:
-            assert check_id in cli.CHECK_IDS
-
-    def test_all_checks_have_required_keys(self) -> None:
-        for p in cli.CHECKS:
-            assert "id" in p
-            assert "label" in p
-            assert "prompt" in p
-
-    def test_file_path_tools_set(self) -> None:
-        assert "read" in cli._FILE_PATH_TOOL_NAMES
-        assert "edit" in cli._FILE_PATH_TOOL_NAMES
-        assert "write" in cli._FILE_PATH_TOOL_NAMES
-
-
-# =============================================================================
-# _stream_process_output (integration-ish, with mocked process)
-# =============================================================================
-
-class TestStreamProcessOutput:
-    """Tests for _stream_process_output() with mocked subprocesses."""
-
-    def test_process_exits_immediately(self, capsys: pytest.CaptureFixture[str]) -> None:
-        mock_proc = mock.MagicMock()
-        event = json.dumps({"type": "system", "message": "done"})
-        mock_proc.stdout = io.BytesIO(f"{event}\n".encode())
-        mock_proc.stderr = io.BytesIO(b"")
-        mock_proc.poll.return_value = 0
-        # select.select should indicate data ready
-        with mock.patch("select.select", return_value=([mock_proc.stdout], [], [])):
-            start = cli._stream_process_output(mock_proc, idle_timeout=120, debug=False)
-        assert isinstance(start, float)
-        out = capsys.readouterr().out
-        assert "done" in out
-
-    def test_idle_timeout_kills(self, capsys: pytest.CaptureFixture[str]) -> None:
-        mock_proc = mock.MagicMock()
-        mock_proc.stdout = mock.MagicMock()
-        mock_proc.stderr = io.BytesIO(b"")
-        mock_proc.poll.return_value = None
-        mock_proc.pid = 12345
-
-        # select never returns data → triggers idle timeout
-        with mock.patch("select.select", return_value=([], [], [])):
-            with mock.patch("time.time") as mock_time:
-                # First call: start time, second: last_output_time, third: now (idle check).
-                # Extra values cover internal time.time() calls from the logging module.
-                mock_time.side_effect = [
-                    100.0,   # pass_start_time
-                    100.0,   # last_output_time
-                    250.0,   # now > last_output_time + idle_timeout
-                ] + [250.0] * 10
-                # stdout.read should return b"" for the finally block
-                mock_proc.stdout.read.return_value = b""
-                with mock.patch("os.getpgid", return_value=12345):
-                    with mock.patch("os.killpg"):
-                        cli._stream_process_output(mock_proc, idle_timeout=120, debug=False)
-        out = capsys.readouterr().out
-        assert "Idle" in out
-
-    def test_read1_used_when_available(self, capsys: pytest.CaptureFixture[str]) -> None:
-        mock_proc = mock.MagicMock()
-        event = json.dumps({"type": "system", "message": "hi"})
-        data = f"{event}\n".encode()
-
-        mock_stdout = mock.MagicMock()
-        mock_stdout.read1 = mock.MagicMock(side_effect=[data, b""])
-        mock_stdout.read = mock.MagicMock(return_value=b"")
-        mock_proc.stdout = mock_stdout
-        mock_proc.stderr = io.BytesIO(b"")
-        mock_proc.poll.side_effect = [None, None, 0]
-
-        with mock.patch("select.select", side_effect=[
-            ([mock_stdout], [], []),
-            ([mock_stdout], [], []),
-        ]):
-            cli._stream_process_output(mock_proc, idle_timeout=120, debug=False)
-        mock_stdout.read1.assert_called()
-
-    def test_os_read_fallback(self, capsys: pytest.CaptureFixture[str]) -> None:
-        mock_proc = mock.MagicMock()
-        event = json.dumps({"type": "system", "message": "yo"})
-        data = f"{event}\n".encode()
-
-        # Stdout without read1 attribute
-        mock_stdout = mock.MagicMock(spec=["fileno", "read", "close"])
-        mock_stdout.fileno.return_value = 99
-        mock_stdout.read.return_value = b""
-        mock_proc.stdout = mock_stdout
-        mock_proc.stderr = io.BytesIO(b"")
-        mock_proc.poll.side_effect = [None, 0]
-
-        with mock.patch("select.select", return_value=([mock_stdout], [], [])):
-            with mock.patch("os.read", side_effect=[data, b""]):
-                cli._stream_process_output(mock_proc, idle_timeout=120, debug=False)
-        out = capsys.readouterr().out
-        assert "yo" in out
-
-    def test_process_exits_while_not_ready(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """When select returns no ready fds but process has exited, drain remaining stdout."""
-        mock_proc = mock.MagicMock()
-        event = json.dumps({"type": "system", "message": "final"})
-        data = f"{event}\n".encode()
-
-        mock_stdout = mock.MagicMock()
-        mock_stdout.fileno.return_value = 99
-        mock_stdout.read.return_value = b""
-        mock_proc.stdout = mock_stdout
-        mock_proc.stderr = io.BytesIO(b"")
-        # First poll: not ready + process still running, second: not ready + process exited
-        mock_proc.poll.side_effect = [None, 0]
-
-        with mock.patch("select.select", return_value=([], [], [])):
-            with mock.patch("os.read", side_effect=[data, b""]):
-                cli._stream_process_output(mock_proc, idle_timeout=120, debug=False)
-        out = capsys.readouterr().out
-        assert "final" in out
-
-
-# =============================================================================
-# _drain_remaining_stdout
-# =============================================================================
-
-class TestDrainRemainingStdout:
-    """Tests for _drain_remaining_stdout() post-exit data collection."""
-
-    def test_drains_data(self, capsys: pytest.CaptureFixture[str]) -> None:
-        event = json.dumps({"type": "system", "message": "leftover"})
-        data = f"{event}\n".encode()
-
-        mock_stdout = mock.MagicMock()
-        mock_stdout.fileno.return_value = 99
-
-        with mock.patch("os.read", side_effect=[data, b""]):
-            result = cli._drain_remaining_stdout(
-                mock_stdout, bytearray(), time.time(), debug=False,
-            )
-        assert result == bytearray()
-        out = capsys.readouterr().out
-        assert "leftover" in out
-
-    def test_drains_multiple_chunks(self, capsys: pytest.CaptureFixture[str]) -> None:
-        e1 = json.dumps({"type": "system", "message": "chunk1"})
-        e2 = json.dumps({"type": "system", "message": "chunk2"})
-
-        mock_stdout = mock.MagicMock()
-        mock_stdout.fileno.return_value = 99
-
-        with mock.patch("os.read", side_effect=[f"{e1}\n".encode(), f"{e2}\n".encode(), b""]):
-            cli._drain_remaining_stdout(
-                mock_stdout, bytearray(), time.time(), debug=False,
-            )
-        out = capsys.readouterr().out
-        assert "chunk1" in out
-        assert "chunk2" in out
-
-    def test_empty_stdout(self) -> None:
-        mock_stdout = mock.MagicMock()
-        mock_stdout.fileno.return_value = 99
-
-        with mock.patch("os.read", return_value=b""):
-            result = cli._drain_remaining_stdout(
-                mock_stdout, bytearray(), time.time(), debug=False,
-            )
-        assert result == bytearray()
-
-
-# =============================================================================
-# _display_pre_run_warning
-# =============================================================================
-
-class TestDisplayPreRunWarning:
-    """Tests for _display_pre_run_warning() permission warnings."""
-
-    def test_skip_permissions_true(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch("time.sleep"):
-            cli._display_pre_run_warning(skip_permissions=True)
-        out = capsys.readouterr().out
-        assert "dangerously-skip-permissions is ENABLED" in out
-        assert f"Starting in {cli._PRE_RUN_WARNING_DELAY} seconds" in out
-
-    def test_skip_permissions_false(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch("time.sleep"):
-            cli._display_pre_run_warning(skip_permissions=False)
-        out = capsys.readouterr().out
-        assert "Running without --dangerously-skip-permissions" in out
-        assert "Re-run with" in out
-        assert "Continuing anyway" in out
-
-    def test_keyboard_interrupt_exits(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch("time.sleep", side_effect=KeyboardInterrupt):
-            with pytest.raises(SystemExit) as exc_info:
-                cli._display_pre_run_warning(skip_permissions=True)
-            assert exc_info.value.code == 0
-        out = capsys.readouterr().out
-        assert "Aborted" in out
-
-
-# =============================================================================
-# _fatal
-# =============================================================================
-
-class TestFatal:
-    """Tests for the _fatal() error-and-exit helper."""
-
-    def test_prints_and_exits(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with pytest.raises(SystemExit) as exc_info:
-            cli._fatal("something went wrong")
-        assert exc_info.value.code == 1
-        out = capsys.readouterr().out
-        assert "something went wrong" in out
-
-
-# =============================================================================
-# _read_stdout_chunk
-# =============================================================================
-
-class TestReadStdoutChunk:
-    """Tests for _read_stdout_chunk() read strategy selection."""
-
-    def test_uses_read1_when_available(self) -> None:
-        mock_stdout = mock.MagicMock()
-        mock_stdout.read1.return_value = b"data"
-        result = cli._read_stdout_chunk(mock_stdout)
-        assert result == b"data"
-        mock_stdout.read1.assert_called_once_with(cli._READ_CHUNK_SIZE)
-
-    def test_falls_back_to_os_read(self) -> None:
-        mock_stdout = mock.MagicMock(spec=["fileno"])
-        mock_stdout.fileno.return_value = 42
-        with mock.patch("os.read", return_value=b"fallback"):
-            result = cli._read_stdout_chunk(mock_stdout)
-        assert result == b"fallback"
-
-
-# =============================================================================
-# main with non-dry-run (covers _display_pre_run_warning call)
-# =============================================================================
-
 class TestMainNonDryRun:
     """Tests for main() in non-dry-run mode (with mocked internals)."""
 
     def test_non_dry_run_calls_warning(self, capsys: pytest.CaptureFixture[str]) -> None:
         with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--pause", "0"]):
             with mock.patch.object(cli, "_display_pre_run_warning") as mock_warn:
-                with mock.patch.object(cli, "_run_check_suite"):
+                with mock.patch.object(cli, "_run_suite_with_error_handling"):
                     cli.main()
                 mock_warn.assert_called_once()
 
@@ -1211,784 +496,6 @@ class TestMainNonDryRun:
         out = capsys.readouterr().out
         assert "security" in out
         assert "All done" in out
-
-
-# =============================================================================
-# Git helpers (convergence)
-# =============================================================================
-
-class TestParseShortstat:
-    """Tests for _parse_shortstat() diff output parsing."""
-
-    def test_insertions_and_deletions(self) -> None:
-        text = " 3 files changed, 20 insertions(+), 10 deletions(-)"
-        assert cli._parse_shortstat(text) == 30
-
-    def test_insertions_only(self) -> None:
-        text = " 1 file changed, 5 insertions(+)"
-        assert cli._parse_shortstat(text) == 5
-
-    def test_deletions_only(self) -> None:
-        text = " 2 files changed, 8 deletions(-)"
-        assert cli._parse_shortstat(text) == 8
-
-    def test_empty_string(self) -> None:
-        assert cli._parse_shortstat("") == 0
-
-    def test_no_match(self) -> None:
-        assert cli._parse_shortstat("nothing here") == 0
-
-    def test_zero_insertions_and_deletions(self) -> None:
-        assert cli._parse_shortstat(" 1 file changed, 0 insertions(+), 0 deletions(-)") == 0
-
-
-class TestIsGitRepo:
-    """Tests for _is_git_repo() detection."""
-
-    def test_true_when_git_succeeds(self) -> None:
-        with mock.patch("subprocess.run") as mock_run:
-            mock_run.return_value = mock.MagicMock(returncode=0)
-            assert cli._is_git_repo("/tmp") is True
-
-    def test_false_when_git_fails(self) -> None:
-        with mock.patch("subprocess.run") as mock_run:
-            mock_run.return_value = mock.MagicMock(returncode=128)
-            assert cli._is_git_repo("/tmp") is False
-
-
-class TestGitHeadSha:
-    """Tests for _git_head_sha() SHA retrieval."""
-
-    def test_returns_sha(self) -> None:
-        with mock.patch("subprocess.run") as mock_run:
-            mock_run.return_value = mock.MagicMock(returncode=0, stdout="abc123\n")
-            assert cli._git_head_sha("/tmp") == "abc123"
-
-    def test_returns_none_on_failure(self) -> None:
-        with mock.patch("subprocess.run") as mock_run:
-            mock_run.return_value = mock.MagicMock(returncode=128, stdout="")
-            assert cli._git_head_sha("/tmp") is None
-
-
-class TestGitCommitCycle:
-    """Tests for _git_commit_all() post-cycle commit."""
-
-    def test_commits_when_changes_exist(self) -> None:
-        with mock.patch("subprocess.run") as mock_run:
-            # git add succeeds, git diff --cached shows changes, git commit succeeds,
-            # then git rev-parse HEAD returns the new commit SHA for logging
-            mock_run.side_effect = [
-                mock.MagicMock(returncode=0),  # git add
-                mock.MagicMock(returncode=1),  # git diff --cached --quiet (changes exist)
-                mock.MagicMock(returncode=0),  # git commit
-                mock.MagicMock(returncode=0, stdout="abc123\n"),  # git rev-parse HEAD
-            ]
-            assert cli._git_commit_all("/tmp", "test commit") is True
-
-    def test_no_commit_when_clean(self) -> None:
-        with mock.patch("subprocess.run") as mock_run:
-            mock_run.side_effect = [
-                mock.MagicMock(returncode=0),  # git add
-                mock.MagicMock(returncode=0),  # git diff --cached --quiet (no changes)
-            ]
-            assert cli._git_commit_all("/tmp", "test commit") is False
-
-    def test_returns_false_on_error(self) -> None:
-        with mock.patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, "git")):
-            assert cli._git_commit_all("/tmp", "test commit") is False
-
-
-class TestComputeChangeStats:
-    """Tests for _compute_change_stats() convergence metric."""
-
-    def test_calculates_lines_and_percentage(self) -> None:
-        resolved = str(Path("/tmp").resolve())
-        cli._total_lines_cache.pop(resolved, None)
-        with mock.patch("subprocess.run") as mock_run:
-            mock_run.side_effect = [
-                mock.MagicMock(returncode=0, stdout=" 2 files changed, 10 insertions(+), 5 deletions(-)"),
-                mock.MagicMock(returncode=0, stdout=b"file1.py\0file2.py\0"),
-            ]
-            file_content = b"line\n" * 1000
-            mock_open = mock.mock_open(read_data=file_content)
-            with mock.patch("builtins.open", mock_open):
-                lines, pct = cli._compute_change_stats("/tmp", "abc123")
-                assert lines == 15
-                assert 0 < pct < 100
-        cli._total_lines_cache.pop(resolved, None)
-
-    def test_zero_when_no_changes(self) -> None:
-        with mock.patch("subprocess.run") as mock_run:
-            mock_run.return_value = mock.MagicMock(returncode=0, stdout="")
-            lines, pct = cli._compute_change_stats("/tmp", "abc123")
-            assert lines == 0
-            assert pct == 0.0
-
-    def test_failed_git_diff_returns_zero(self) -> None:
-        with mock.patch.object(cli, "_git_run") as mock_git:
-            mock_git.return_value = mock.Mock(returncode=1, stderr="error")
-            lines, pct = cli._compute_change_stats("/tmp", "abc123")
-            assert lines == 0
-            assert pct == 0.0
-
-    def test_cache_hit_skips_line_count(self) -> None:
-        """Branch: _total_lines_cache already has the key, so _count_tracked_lines is not called."""
-        resolved = str(Path("/tmp").resolve())
-        cli._total_lines_cache[resolved] = 500
-        try:
-            with mock.patch("subprocess.run") as mock_run:
-                mock_run.return_value = mock.MagicMock(
-                    returncode=0,
-                    stdout=" 1 file changed, 10 insertions(+)",
-                )
-                with mock.patch.object(cli, "_count_tracked_lines") as mock_count:
-                    lines, pct = cli._compute_change_stats("/tmp", "abc123")
-                    mock_count.assert_not_called()
-                    assert lines == 10
-                    assert pct == (10 / 500) * 100
-        finally:
-            cli._total_lines_cache.pop(resolved, None)
-
-
-class TestConvergedAtPercentageArg:
-    """Tests for --converged-at-percentage CLI argument."""
-
-    def test_default(self) -> None:
-        ns = _parse_cli(["--dir", "/tmp"])
-        assert ns.converged_at_percentage == cli.DEFAULT_CONVERGENCE_THRESHOLD
-
-    def test_custom_value(self) -> None:
-        ns = _parse_cli(["--dir", "/tmp", "--converged-at-percentage", "0.5"])
-        assert ns.converged_at_percentage == 0.5
-
-    def test_zero_disables(self) -> None:
-        ns = _parse_cli(["--dir", "/tmp", "--converged-at-percentage", "0"])
-        assert ns.converged_at_percentage == 0.0
-
-
-class TestChangedOnly:
-    """Tests for --changed-only flag and related helpers."""
-
-    def test_changed_only_default_is_none(self) -> None:
-        ns = _parse_cli(["--dir", "/tmp"])
-        assert ns.changed_only is None
-
-    def test_changed_only_no_arg_sets_auto(self) -> None:
-        ns = _parse_cli(["--dir", "/tmp", "--changed-only"])
-        assert ns.changed_only == "auto"
-
-    def test_changed_only_with_ref(self) -> None:
-        ns = _parse_cli(["--dir", "/tmp", "--changed-only", "develop"])
-        assert ns.changed_only == "develop"
-
-    def test_detect_default_branch_main(self) -> None:
-        with mock.patch.object(cli, "_git_run") as mock_git:
-            mock_git.return_value = mock.MagicMock(returncode=0)
-            assert cli._detect_default_branch("/tmp") == "main"
-
-    def test_detect_default_branch_master(self) -> None:
-        with mock.patch.object(cli, "_git_run") as mock_git:
-            mock_git.side_effect = [
-                mock.MagicMock(returncode=1),   # main not found
-                mock.MagicMock(returncode=0),   # master found
-            ]
-            assert cli._detect_default_branch("/tmp") == "master"
-
-    def test_detect_default_branch_fallback(self) -> None:
-        with mock.patch.object(cli, "_git_run") as mock_git:
-            mock_git.return_value = mock.MagicMock(returncode=1)
-            assert cli._detect_default_branch("/tmp") == "main"
-
-    def test_get_changed_files(self) -> None:
-        with mock.patch.object(cli, "_git_run") as mock_git:
-            mock_git.side_effect = [
-                mock.MagicMock(returncode=0, stdout="abc123"),  # merge-base
-                mock.MagicMock(returncode=0, stdout="src/a.py\nsrc/b.py\n"),  # diff
-            ]
-            files = cli._get_changed_files("/tmp", "main")
-            assert files == ["src/a.py", "src/b.py"]
-
-    def test_get_changed_files_merge_base_fails(self) -> None:
-        with mock.patch.object(cli, "_git_run") as mock_git:
-            mock_git.return_value = mock.MagicMock(returncode=1)
-            assert cli._get_changed_files("/tmp", "main") == []
-
-    def test_build_changed_files_prefix(self) -> None:
-        prefix = cli._build_changed_files_prefix(["src/a.py", "src/b.py"])
-        assert "2 file(s)" in prefix
-        assert "src/a.py" in prefix
-        assert "src/b.py" in prefix
-        assert "IMPORTANT" in prefix
-
-    def test_changed_prefix_prepended_to_prompt(self) -> None:
-        """When changed_files_prefix is set, it's prepended to the check prompt."""
-        passes = [{"id": "readability", "label": "Readability", "prompt": "review code"}]
-        args = _make_suite_args(dry_run=False)
-        args.changed_files_prefix = "ONLY THESE FILES: a.py\n\n"
-        with mock.patch.object(cli, "run_claude", return_value=0) as mock_run, \
-             mock.patch.object(cli, "_is_git_repo", return_value=False):
-            cli._run_check_suite(passes, 1, "/tmp", args)
-            prompt_used = mock_run.call_args[0][0]
-            assert prompt_used.startswith("ONLY THESE FILES: a.py")
-            assert "review code" in prompt_used
-
-
-class TestConvergenceInSuite:
-    """Tests for convergence detection within _run_check_suite."""
-
-    def test_stops_early_when_converged(self, capsys: pytest.CaptureFixture[str]) -> None:
-        passes = [{"id": "readability", "label": "Readability", "prompt": "review code"}]
-        args = _make_suite_args(dry_run=False)
-        with _patch_suite_git(["sha1", "sha2", "sha2", "sha3"]), \
-             mock.patch.object(cli, "_git_commit_all", return_value=True), \
-             mock.patch.object(cli, "_compute_change_stats", return_value=(1, 0.05)):
-            cli._run_check_suite(passes, 3, "/tmp", args, convergence_threshold=0.1)
-        out = capsys.readouterr().out
-        assert "Converged" in out
-
-    def test_continues_when_not_converged(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """Branch: convergence check returns False, loop continues to next cycle."""
-        passes = [{"id": "readability", "label": "Readability", "prompt": "review code"}]
-        args = _make_suite_args(dry_run=False)
-        with _patch_suite_git(["sha1"] * 10), \
-             mock.patch.object(cli, "_check_cycle_convergence", return_value=(False, 5.0)):
-            cli._run_check_suite(passes, 2, "/tmp", args, convergence_threshold=0.1)
-        out = capsys.readouterr().out
-        assert "Cycle 1/2" in out
-        assert "Cycle 2/2" in out
-
-    def test_no_convergence_without_git(self, capsys: pytest.CaptureFixture[str]) -> None:
-        passes = [{"id": "dry", "label": "DRY", "prompt": "check dry"}]
-        args = _make_suite_args()
-        cli._run_check_suite(passes, 2, "/tmp", args, convergence_threshold=0.1)
-        out = capsys.readouterr().out
-        # Should run both cycles without convergence checks (dry run)
-        assert "Cycle 1/2" in out
-        assert "Cycle 2/2" in out
-
-
-class TestKillProcessGroup:
-    """Tests for _kill_process_group() cleanup."""
-
-    def test_kills_process_group(self) -> None:
-        mock_proc = mock.MagicMock()
-        mock_proc.pid = 12345
-        with mock.patch("os.getpgid", return_value=12345) as mock_getpgid:
-            with mock.patch("os.killpg") as mock_killpg:
-                cli._kill_process_group(mock_proc)
-                mock_getpgid.assert_called_once_with(12345)
-                mock_killpg.assert_called_with(12345, signal.SIGTERM)
-
-    def test_sigkill_on_timeout(self) -> None:
-        mock_proc = mock.MagicMock()
-        mock_proc.pid = 99
-        mock_proc.wait.side_effect = subprocess.TimeoutExpired("cmd", 5)
-        with mock.patch("os.getpgid", return_value=99):
-            with mock.patch("os.killpg") as mock_killpg:
-                cli._kill_process_group(mock_proc)
-                # Should have been called with SIGTERM then SIGKILL
-                calls = [c for c in mock_killpg.call_args_list]
-                signals_sent = [c[0][1] for c in calls]
-                assert signal.SIGTERM in signals_sent
-                assert signal.SIGKILL in signals_sent
-
-    def test_handles_already_dead_process(self) -> None:
-        mock_proc = mock.MagicMock()
-        mock_proc.pid = 1
-        with mock.patch("os.getpgid", side_effect=OSError("No such process")):
-            # Should not raise
-            cli._kill_process_group(mock_proc)
-
-
-class TestMeasureCurrentRssMb:
-    """Tests for _measure_current_rss_mb() memory measurement."""
-
-    def test_returns_positive_value(self) -> None:
-        rss = cli._measure_current_rss_mb()
-        assert rss > 0
-
-    def test_fallback_on_ps_failure(self) -> None:
-        with mock.patch("subprocess.run", return_value=mock.MagicMock(returncode=1, stdout="")):
-            rss = cli._measure_current_rss_mb()
-            assert rss > 0  # falls back to resource.getrusage
-
-
-class TestFindChildPids:
-    """Tests for _find_child_pids()."""
-
-    def test_returns_empty_when_no_children(self) -> None:
-        with mock.patch("subprocess.run", return_value=mock.MagicMock(returncode=1, stdout="")):
-            assert cli._find_child_pids() == []
-
-    def test_returns_pids(self) -> None:
-        with mock.patch("subprocess.run", return_value=mock.MagicMock(returncode=0, stdout="123\n456\n")):
-            assert cli._find_child_pids() == [123, 456]
-
-
-class TestKillOrphanedChildren:
-    """Tests for _kill_orphaned_children()."""
-
-    def test_returns_zero_when_none(self) -> None:
-        with mock.patch("subprocess.run", return_value=mock.MagicMock(returncode=1, stdout="")):
-            assert cli._kill_orphaned_children() == 0
-
-    def test_kills_found_children(self) -> None:
-        with mock.patch("subprocess.run", return_value=mock.MagicMock(returncode=0, stdout="999\n")):
-            with mock.patch("os.kill") as mock_kill:
-                killed = cli._kill_orphaned_children()
-                assert killed == 1
-                mock_kill.assert_called_once_with(999, signal.SIGKILL)
-
-    def test_handles_already_dead_child(self) -> None:
-        with mock.patch("subprocess.run", return_value=mock.MagicMock(returncode=0, stdout="999\n")):
-            with mock.patch("os.kill", side_effect=OSError("No such process")):
-                killed = cli._kill_orphaned_children()
-                assert killed == 0
-
-
-class TestLogMemoryUsage:
-    """Tests for _log_memory_usage() reporting."""
-
-    def test_prints_memory_info(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch.object(cli, "_measure_current_rss_mb", return_value=42.0):
-            with mock.patch.object(cli, "_find_child_pids", return_value=[]):
-                cli._log_memory_usage("test-label")
-        out = capsys.readouterr().out
-        assert "42MB" in out
-        assert "0 child" in out
-
-    def test_kills_orphans_when_found(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch.object(cli, "_measure_current_rss_mb", return_value=100.0):
-            with mock.patch.object(cli, "_find_child_pids", return_value=[123, 456]):
-                with mock.patch.object(cli, "_kill_orphaned_children", return_value=2):
-                    cli._log_memory_usage("test-label")
-        out = capsys.readouterr().out
-        assert "2 child" in out
-        assert "Warning" in out
-        assert "Killed 2" in out
-
-    def test_orphans_found_but_none_killed(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """Branch: child_pids is truthy but _kill_orphaned_children returns 0."""
-        with mock.patch.object(cli, "_measure_current_rss_mb", return_value=50.0):
-            with mock.patch.object(cli, "_find_child_pids", return_value=[999]):
-                with mock.patch.object(cli, "_kill_orphaned_children", return_value=0):
-                    cli._log_memory_usage("test-label")
-        out = capsys.readouterr().out
-        assert "Warning" in out
-        assert "Killed" not in out
-
-
-class TestSpawnUsesNewSession:
-    """Verify _spawn_claude_process creates a new session for process group isolation."""
-
-    def test_start_new_session(self) -> None:
-        with mock.patch("subprocess.Popen") as mock_popen:
-            mock_popen.return_value = mock.MagicMock()
-            cli._spawn_claude_process(["claude"], "/tmp")
-            call_kwargs = mock_popen.call_args.kwargs
-            assert call_kwargs["start_new_session"] is True
-
-
-class TestCommitMessageInstructions:
-    """Tests that commit message instructions are appended to prompts."""
-
-    def test_prompt_includes_commit_instructions(self, capsys: pytest.CaptureFixture[str]) -> None:
-        passes = [{"id": "readability", "label": "Readability", "prompt": "review code"}]
-        args = _make_suite_args()
-        with mock.patch.object(cli, "run_claude", return_value=0) as mock_run:
-            cli._run_check_suite(passes, 1, "/tmp", args)
-            prompt_used = mock_run.call_args[0][0]
-            assert "commit message rules" in prompt_used
-            assert "Do not mention Claude" in prompt_used
-
-
-# =============================================================================
-# _measure_current_rss_mb — exception paths
-# =============================================================================
-
-class TestMeasureCurrentRssMbExceptions:
-    """Tests for _measure_current_rss_mb() exception fallback paths."""
-
-    def test_oserror_falls_back_to_resource(self) -> None:
-        with mock.patch("subprocess.run", side_effect=OSError("nope")):
-            rss = cli._measure_current_rss_mb()
-            assert rss > 0  # uses resource.getrusage fallback
-
-    def test_valueerror_falls_back_to_resource(self) -> None:
-        with mock.patch("subprocess.run", side_effect=ValueError("bad")):
-            rss = cli._measure_current_rss_mb()
-            assert rss > 0
-
-    def test_getrusage_oserror_returns_zero(self) -> None:
-        with mock.patch("subprocess.run", side_effect=OSError("nope")):
-            with mock.patch("resource.getrusage", side_effect=OSError("no resource")):
-                rss = cli._measure_current_rss_mb()
-                assert rss == 0.0
-
-
-# =============================================================================
-# _spawn_claude_process — OSError path
-# =============================================================================
-
-class TestSpawnClaudeProcessOSError:
-    """Test that _spawn_claude_process handles OSError (e.g. PermissionError)."""
-
-    def test_oserror_exits(self) -> None:
-        with mock.patch("subprocess.Popen", side_effect=PermissionError("not executable")):
-            with pytest.raises(SystemExit) as exc_info:
-                cli._spawn_claude_process(["claude"], "/tmp")
-            assert exc_info.value.code == 1
-
-
-# =============================================================================
-# _execute_claude_process — streaming error cleanup
-# =============================================================================
-
-class TestExecuteClaudeProcessCleanup:
-    """Test that _execute_claude_process kills the process on streaming errors."""
-
-    def test_stream_error_kills_process(self) -> None:
-        mock_proc = mock.MagicMock()
-        mock_proc.pid = 12345
-        with mock.patch.object(cli, "_spawn_claude_process", return_value=mock_proc):
-            with mock.patch.object(cli, "_stream_process_output", side_effect=RuntimeError("boom")):
-                with mock.patch.object(cli, "_kill_process_group") as kill_mock:
-                    with pytest.raises(RuntimeError, match="boom"):
-                        cli._execute_claude_process(["claude"], "/tmp", 120, False)
-                    kill_mock.assert_called_with(mock_proc)
-
-
-# =============================================================================
-# _find_child_pids — exception paths
-# =============================================================================
-
-class TestFindChildPidsExceptions:
-    """Tests for _find_child_pids() exception and edge-case paths."""
-
-    def test_oserror_returns_empty(self) -> None:
-        with mock.patch("subprocess.run", side_effect=OSError("nope")):
-            assert cli._find_child_pids() == []
-
-    def test_invalid_pid_lines_skipped(self) -> None:
-        """Non-numeric lines in pgrep output are silently skipped."""
-        with mock.patch("subprocess.run", return_value=mock.MagicMock(
-            returncode=0, stdout="123\nnot_a_number\n456\n"
-        )):
-            assert cli._find_child_pids() == [123, 456]
-
-
-# =============================================================================
-# _count_tracked_lines — various paths
-# =============================================================================
-
-class TestCountTrackedLines:
-    """Tests for _count_tracked_lines() line counting."""
-
-    def test_git_ls_files_failure_returns_1(self) -> None:
-        with mock.patch.object(cli, "_git_run", return_value=mock.MagicMock(returncode=1)):
-            assert cli._count_tracked_lines("/tmp") == 1
-
-    def test_skips_binary_files(self, tmp_path: Path) -> None:
-        # Create a binary file (contains null bytes)
-        binary_file = tmp_path / "binary.dat"
-        binary_file.write_bytes(b"\x00\x01\x02\x03")
-        # Create a text file with 3 lines
-        text_file = tmp_path / "hello.txt"
-        text_file.write_text("line1\nline2\nline3\n")
-
-        ls_result = mock.MagicMock(
-            returncode=0,
-            stdout=b"binary.dat\x00hello.txt\x00",
-        )
-        with mock.patch.object(cli, "_git_run", return_value=ls_result):
-            count = cli._count_tracked_lines(str(tmp_path))
-            assert count == 3  # only text file lines
-
-    def test_large_file_multi_chunk(self, tmp_path: Path) -> None:
-        """Files larger than the initial header read are processed in chunks."""
-        large_file = tmp_path / "big.txt"
-        # Create a file with content larger than _READ_CHUNK_SIZE
-        line = "x" * 100 + "\n"  # 101 bytes per line
-        num_lines = 200  # ~20200 bytes total, well beyond 8192
-        large_file.write_text(line * num_lines)
-
-        ls_result = mock.MagicMock(
-            returncode=0,
-            stdout=b"big.txt\x00",
-        )
-        with mock.patch.object(cli, "_git_run", return_value=ls_result):
-            count = cli._count_tracked_lines(str(tmp_path))
-            assert count == num_lines
-
-    def test_empty_repo_returns_minimum_one(self) -> None:
-        """Even an empty repo should return at least 1 to avoid division by zero."""
-        with mock.patch.object(cli, "_git_run") as mock_git:
-            mock_git.return_value = mock.Mock(returncode=0, stdout=b"")
-            result = cli._count_tracked_lines("/tmp")
-            assert result == 1
-
-    def test_oserror_on_file_open(self, tmp_path: Path) -> None:
-        """OSError when opening a file is silently skipped."""
-        ls_result = mock.MagicMock(
-            returncode=0,
-            stdout=b"nonexistent.txt\x00",
-        )
-        with mock.patch.object(cli, "_git_run", return_value=ls_result):
-            count = cli._count_tracked_lines(str(tmp_path))
-            assert count == 1  # max(0, 1)
-
-
-# =============================================================================
-# _read_stdout_chunk — OSError path
-# =============================================================================
-
-class TestReadStdoutChunkOSError:
-    """Tests for _read_stdout_chunk() OSError handling."""
-
-    def test_oserror_returns_empty_bytes(self) -> None:
-        mock_stdout = mock.MagicMock()
-        mock_stdout.read1 = mock.MagicMock(side_effect=OSError("broken pipe"))
-        result = cli._read_stdout_chunk(mock_stdout)
-        assert result == b""
-
-
-# =============================================================================
-# _drain_remaining_stdout — OSError path
-# =============================================================================
-
-class TestDrainRemainingStdoutOSError:
-    """Tests for _drain_remaining_stdout() OSError handling."""
-
-    def test_oserror_returns_buffer_unchanged(self) -> None:
-        mock_stdout = mock.MagicMock()
-        mock_stdout.fileno.side_effect = OSError("bad fd")
-        buf = bytearray(b"existing")
-        result = cli._drain_remaining_stdout(mock_stdout, buf, time.time(), False)
-        assert result == bytearray(b"existing")
-
-
-# =============================================================================
-# _stream_process_output — select() failure and stdout close failure
-# =============================================================================
-
-class TestStreamProcessOutputExceptions:
-    """Tests for exception paths in _stream_process_output()."""
-
-    def test_select_oserror_breaks_loop(self) -> None:
-        mock_proc = mock.MagicMock()
-        mock_stdout = mock.MagicMock()
-        mock_stdout.fileno.return_value = 5
-        mock_stdout.read1 = None
-        mock_proc.stdout = mock_stdout
-        mock_proc.pid = 9999
-        mock_proc.poll.return_value = None
-
-        with mock.patch("select.select", side_effect=OSError("fd closed")):
-            with mock.patch("os.read", return_value=b""):
-                cli._stream_process_output(mock_proc, idle_timeout=120, debug=False)
-        # Should not raise — just breaks out of loop
-
-    def test_stdout_close_oserror_handled(self) -> None:
-        mock_proc = mock.MagicMock()
-        mock_stdout = mock.MagicMock()
-        mock_stdout.fileno.return_value = 5
-        mock_stdout.read1 = None
-        mock_proc.stdout = mock_stdout
-        mock_proc.pid = 9999
-        mock_proc.poll.return_value = 0  # process already exited
-
-        with mock.patch("select.select", return_value=([], [], [])):
-            with mock.patch("os.read", return_value=b""):
-                mock_stdout.close.side_effect = OSError("close failed")
-                cli._stream_process_output(mock_proc, idle_timeout=120, debug=False)
-        # Should not raise
-
-
-# =============================================================================
-# _kill_process_group — SIGKILL OSError path
-# =============================================================================
-
-class TestKillProcessGroupSigkillOSError:
-    """Tests for _kill_process_group() SIGKILL OSError handling."""
-
-    def test_sigkill_oserror_handled(self) -> None:
-        mock_proc = mock.MagicMock()
-        mock_proc.pid = 12345
-        mock_proc.wait.side_effect = subprocess.TimeoutExpired("cmd", 5)
-
-        with mock.patch("os.getpgid", return_value=12345):
-            with mock.patch("os.killpg") as mock_killpg:
-                # SIGTERM succeeds, but SIGKILL raises OSError
-                def killpg_side_effect(pgid: int, sig: signal.Signals) -> None:
-                    if sig == signal.SIGKILL:
-                        raise OSError("no such process")
-                mock_killpg.side_effect = killpg_side_effect
-                cli._kill_process_group(mock_proc)
-        # Should not raise
-
-
-# =============================================================================
-# run_claude — process.wait() timeout path
-# =============================================================================
-
-class TestRunClaudeWaitTimeout:
-    """Tests for run_claude() when process.wait() times out."""
-
-    def test_wait_timeout_triggers_kill(self) -> None:
-        mock_proc = mock.MagicMock()
-        mock_proc.pid = 9999
-        mock_proc.wait.side_effect = subprocess.TimeoutExpired("cmd", 120)
-        mock_proc.returncode = -9
-
-        with mock.patch.object(cli, "_spawn_claude_process", return_value=mock_proc):
-            with mock.patch.object(cli, "_stream_process_output", return_value=time.time()):
-                with mock.patch.object(cli, "_kill_process_group") as mock_kill:
-                    cli.run_claude("test prompt", "/tmp", idle_timeout=1)
-                    # Called once in the finally block (covers both timeout and safety net)
-                    assert mock_kill.call_count == 1
-
-
-# =============================================================================
-# _check_cycle_convergence — all three return paths
-# =============================================================================
-
-class TestCheckCycleConvergence:
-    """Tests for _check_cycle_convergence() convergence detection."""
-
-    def test_no_changes_converged(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """When SHA hasn't changed, report convergence."""
-        with mock.patch.object(cli, "_git_commit_all"):
-            with mock.patch.object(cli, "_git_head_sha", return_value="abc123"):
-                should_stop, pct = cli._check_cycle_convergence(
-                    "/tmp", cycle=1, base_sha="abc123",
-                    convergence_threshold=0.1, prev_change_pct=None,
-                )
-        assert should_stop is True
-        assert pct is None
-        assert "converged" in capsys.readouterr().out.lower()
-
-    def test_oscillation_warning(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """When changes increase, print oscillation warning."""
-        with mock.patch.object(cli, "_git_commit_all"), \
-             mock.patch.object(cli, "_git_head_sha", return_value="def456"), \
-             mock.patch.object(cli, "_compute_change_stats", return_value=(50, 5.0)):
-            should_stop, pct = cli._check_cycle_convergence(
-                "/tmp", cycle=2, base_sha="abc123",
-                convergence_threshold=0.1, prev_change_pct=2.0,
-            )
-        assert should_stop is False
-        assert pct == 5.0
-        assert "oscillation" in capsys.readouterr().out.lower()
-
-    def test_not_converged(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """When changes are above threshold, return False."""
-        with mock.patch.object(cli, "_git_commit_all"), \
-             mock.patch.object(cli, "_git_head_sha", return_value="def456"), \
-             mock.patch.object(cli, "_compute_change_stats", return_value=(15, 1.5)):
-            should_stop, pct = cli._check_cycle_convergence(
-                "/tmp", cycle=1, base_sha="abc123",
-                convergence_threshold=0.1, prev_change_pct=None,
-            )
-        assert should_stop is False
-        assert pct == 1.5
-
-
-# =============================================================================
-# _resolve_working_directory — OSError path
-# =============================================================================
-
-class TestResolveWorkingDirectoryOSError:
-    """Tests for _resolve_working_directory() error handling."""
-
-    def test_oserror_calls_fatal(self) -> None:
-        with mock.patch.object(Path, "resolve", side_effect=OSError("bad path")):
-            with pytest.raises(SystemExit):
-                cli._resolve_working_directory("/nonexistent/\x00path")
-
-
-# =============================================================================
-# main() — KeyboardInterrupt path
-# =============================================================================
-
-class TestMainKeyboardInterrupt:
-    """Tests for main() KeyboardInterrupt handling."""
-
-    def test_keyboard_interrupt_exits_130(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with _patch_main_pipeline(suite_side_effect=KeyboardInterrupt):
-            with pytest.raises(SystemExit) as exc_info:
-                cli.main()
-            assert exc_info.value.code == 130
-        assert "Interrupted" in capsys.readouterr().out
-
-
-# =============================================================================
-# __main__ guard
-# =============================================================================
-
-class TestMainGuard:
-    """Test the if __name__ == '__main__' block."""
-
-    def test_main_guard_calls_main(self) -> None:
-        """Verify the __main__ guard invokes main() when __name__ == '__main__'."""
-        with mock.patch.dict("sys.modules", {"checkloop.cli": cli}):
-            with mock.patch.object(cli, "main") as mock_main:
-                # Simulate running "python -m checkloop.cli"
-                exec(
-                    compile('if __name__ == "__main__": main()', cli.__file__, "exec"),
-                    {"__name__": "__main__", "main": cli.main},
-                )
-                mock_main.assert_called_once()
-
-
-# =============================================================================
-# Edge cases and boundary conditions
-# =============================================================================
-
-class TestValidateArguments:
-    """Tests for _validate_arguments()."""
-
-    def test_cycles_zero_exits(self) -> None:
-        args = argparse.Namespace(idle_timeout=120, pause=0, cycles=0, converged_at_percentage=0.1)
-        with pytest.raises(SystemExit) as exc_info:
-            cli._validate_arguments(args)
-        assert exc_info.value.code == 1
-
-    def test_negative_cycles_exits(self) -> None:
-        args = argparse.Namespace(idle_timeout=120, pause=0, cycles=-5, converged_at_percentage=0.1)
-        with pytest.raises(SystemExit) as exc_info:
-            cli._validate_arguments(args)
-        assert exc_info.value.code == 1
-
-    def test_negative_convergence_exits(self) -> None:
-        args = argparse.Namespace(idle_timeout=120, pause=0, cycles=1, converged_at_percentage=-0.5)
-        with pytest.raises(SystemExit) as exc_info:
-            cli._validate_arguments(args)
-        assert exc_info.value.code == 1
-
-    def test_valid_arguments_no_exit(self) -> None:
-        args = argparse.Namespace(idle_timeout=1, pause=0, cycles=1, converged_at_percentage=0.0)
-        cli._validate_arguments(args)  # should not raise
-
-
-class TestResolveSelectedChecks:
-    """Tests for _resolve_selected_checks()."""
-
-    def test_level_basic(self) -> None:
-        args = argparse.Namespace(all_checks=False, checks=None, level="basic")
-        result = cli._resolve_selected_checks(args)
-        ids = [p["id"] for p in result]
-        assert ids == cli.TIER_BASIC
-
-    def test_all_checks(self) -> None:
-        args = argparse.Namespace(all_checks=True, checks=None, level=None)
-        result = cli._resolve_selected_checks(args)
-        assert len(result) == len(cli.CHECKS)
-
-    def test_passes_override_level(self) -> None:
-        args = argparse.Namespace(all_checks=False, checks=["security"], level="exhaustive")
-        result = cli._resolve_selected_checks(args)
-        assert len(result) == 1
-        assert result[0]["id"] == "security"
 
 
 class TestMainEmptyChecksExit:
@@ -2016,59 +523,15 @@ class TestMainNegativeConvergenceExit:
             assert exc_info.value.code == 1
 
 
-class TestGitRun:
-    """Tests for _git_run()."""
+class TestMainKeyboardInterrupt:
+    """Tests for main() KeyboardInterrupt handling."""
 
-    def test_empty_args(self) -> None:
-        """_git_run with no args should just run 'git'."""
-        result = cli._git_run("/tmp")
-        assert result.returncode != 0
-
-    def test_git_not_found(self) -> None:
-        with mock.patch("subprocess.run", side_effect=FileNotFoundError("git")):
-            with pytest.raises(FileNotFoundError):
-                cli._git_run("/tmp", "status")
-
-    def test_oserror_reraised(self) -> None:
-        with mock.patch("subprocess.run", side_effect=OSError("permission denied")):
-            with pytest.raises(OSError):
-                cli._git_run("/tmp", "status")
-
-
-class TestCountTrackedLinesPathTraversal:
-    """Test that path traversal is blocked in _count_tracked_lines."""
-
-    def test_symlink_outside_workdir_skipped(self, tmp_path: Path) -> None:
-        """Files that resolve outside the workdir are skipped."""
-        real_file = tmp_path / "real.txt"
-        real_file.write_text("line1\nline2\n")
-
-        ls_result = mock.MagicMock(
-            returncode=0,
-            stdout=b"real.txt\x00../../../etc/passwd\x00",
-        )
-        with mock.patch.object(cli, "_git_run", return_value=ls_result):
-            count = cli._count_tracked_lines(str(tmp_path))
-            assert count == 2  # only real.txt lines
-
-
-class TestRunClaudeReturnCodeNone:
-    """Test run_claude when process.returncode is None."""
-
-    def test_returncode_none_returns_negative_one(self, capsys: pytest.CaptureFixture[str]) -> None:
-        mock_proc = mock.MagicMock()
-        mock_proc.pid = 9999
-        mock_proc.returncode = None
-        mock_proc.wait.return_value = None
-
-        with mock.patch.object(cli, "_spawn_claude_process", return_value=mock_proc):
-            with mock.patch.object(cli, "_stream_process_output", return_value=time.time()):
-                with mock.patch.object(cli, "_kill_process_group"):
-                    with mock.patch.object(cli, "_log_memory_usage"):
-                        code = cli.run_claude("test", "/tmp")
-        assert code == -1
-        out = capsys.readouterr().out
-        assert "exited with code -1" in out
+    def test_keyboard_interrupt_exits_130(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with _patch_main_pipeline(suite_side_effect=KeyboardInterrupt):
+            with pytest.raises(SystemExit) as exc_info:
+                cli.main()
+            assert exc_info.value.code == 130
+        assert "Interrupted" in capsys.readouterr().out
 
 
 class TestMainFileNotFoundError:
@@ -2090,964 +553,14 @@ class TestMainUnexpectedException:
                 cli.main()
 
 
-class TestMainVerboseLogging:
-    """Test main() with --verbose flag sets INFO log level."""
-
-    def test_verbose_sets_info_level(self) -> None:
-        with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--verbose", "--dry-run", "--pause", "0"]):
-            with mock.patch("logging.basicConfig") as mock_log:
-                with mock.patch.object(cli, "_run_check_suite"):
-                    cli.main()
-                mock_log.assert_called_once()
-                assert mock_log.call_args.kwargs["level"] == logging.INFO
-
-    def test_debug_sets_debug_level(self) -> None:
-        with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--debug", "--dry-run", "--pause", "0"]):
-            with mock.patch("logging.basicConfig") as mock_log:
-                with mock.patch.object(cli, "_run_check_suite"):
-                    cli.main()
-                mock_log.assert_called_once()
-                assert mock_log.call_args.kwargs["level"] == logging.DEBUG
-
-
-# =============================================================================
-# Edge cases: _format_duration with NaN/Inf/extreme values
-# =============================================================================
-
-class TestFormatDurationEdgeCases:
-    """Edge case tests for _format_duration() with unusual float inputs."""
-
-    def test_nan_returns_zero(self) -> None:
-        assert cli._format_duration(float("nan")) == "0m00s"
-
-    def test_positive_inf_returns_zero(self) -> None:
-        assert cli._format_duration(float("inf")) == "0m00s"
-
-    def test_negative_inf_returns_zero(self) -> None:
-        assert cli._format_duration(float("-inf")) == "0m00s"
-
-    def test_very_small_positive_float(self) -> None:
-        assert cli._format_duration(0.001) == "0m00s"
-
-    def test_very_large_float(self) -> None:
-        # 1 million seconds ≈ 277 hours
-        result = cli._format_duration(1_000_000.0)
-        assert result == "277h46m40s"
-
-
-# =============================================================================
-# Edge cases: _parse_shortstat
-# =============================================================================
-
-class TestParseShortstatEdgeCases:
-    """Edge case tests for _parse_shortstat()."""
-
-    def test_empty_string(self) -> None:
-        assert cli._parse_shortstat("") == 0
-
-    def test_whitespace_only(self) -> None:
-        assert cli._parse_shortstat("   \n\t  ") == 0
-
-    def test_only_files_changed(self) -> None:
-        assert cli._parse_shortstat(" 3 files changed") == 0
-
-    def test_only_insertions(self) -> None:
-        assert cli._parse_shortstat(" 1 file changed, 42 insertions(+)") == 42
-
-    def test_only_deletions(self) -> None:
-        assert cli._parse_shortstat(" 1 file changed, 10 deletions(-)") == 10
-
-    def test_both_insertions_and_deletions(self) -> None:
-        assert cli._parse_shortstat(" 2 files changed, 10 insertions(+), 5 deletions(-)") == 15
-
-    def test_large_numbers(self) -> None:
-        assert cli._parse_shortstat(" 1 file changed, 999999 insertions(+), 888888 deletions(-)") == 1888887
-
-    def test_singular_insertion(self) -> None:
-        assert cli._parse_shortstat(" 1 file changed, 1 insertion(+)") == 1
-
-    def test_singular_deletion(self) -> None:
-        assert cli._parse_shortstat(" 1 file changed, 1 deletion(-)") == 1
-
-
-# =============================================================================
-# Edge cases: _count_file_lines
-# =============================================================================
-
-class TestCountFileLinesEdgeCases:
-    """Edge case tests for _count_file_lines()."""
-
-    def test_empty_file(self, tmp_path: Path) -> None:
-        f = tmp_path / "empty.txt"
-        f.write_bytes(b"")
-        assert cli._count_file_lines(f) == 0
-
-    def test_single_newline(self, tmp_path: Path) -> None:
-        f = tmp_path / "one.txt"
-        f.write_bytes(b"\n")
-        assert cli._count_file_lines(f) == 1
-
-    def test_no_trailing_newline(self, tmp_path: Path) -> None:
-        f = tmp_path / "no_newline.txt"
-        f.write_bytes(b"hello")
-        assert cli._count_file_lines(f) == 0
-
-    def test_binary_file_returns_zero(self, tmp_path: Path) -> None:
-        f = tmp_path / "binary.bin"
-        f.write_bytes(b"\x00\x01\x02\n\n\n")
-        assert cli._count_file_lines(f) == 0
-
-    def test_unicode_content(self, tmp_path: Path) -> None:
-        f = tmp_path / "unicode.txt"
-        f.write_bytes("こんにちは\nworld\n".encode("utf-8"))
-        assert cli._count_file_lines(f) == 2
-
-    def test_mixed_line_endings(self, tmp_path: Path) -> None:
-        f = tmp_path / "mixed.txt"
-        f.write_bytes(b"line1\r\nline2\nline3\r\n")
-        # Counts \n only: \r\n has one \n, \n has one, \r\n has one = 3
-        assert cli._count_file_lines(f) == 3
-
-    def test_null_byte_beyond_header(self, tmp_path: Path) -> None:
-        """Binary detection only checks the header chunk, not the full file."""
-        # Header is _READ_CHUNK_SIZE (8192) bytes. Put null byte after that.
-        f = tmp_path / "late_null.bin"
-        content = b"x" * (cli._READ_CHUNK_SIZE + 10)
-        content = content[:cli._READ_CHUNK_SIZE + 5] + b"\0" + content[cli._READ_CHUNK_SIZE + 6:]
-        f.write_bytes(content)
-        # No null in header → treated as text, counts \n (0 in this case)
-        assert cli._count_file_lines(f) == 0
-
-
-# =============================================================================
-# Edge cases: _count_tracked_lines
-# =============================================================================
-
-class TestCountTrackedLinesEdgeCases:
-    """Edge case tests for _count_tracked_lines()."""
-
-    def test_no_tracked_files_returns_one(self) -> None:
-        """Empty repo returns 1 to avoid division by zero."""
-        mock_result = mock.MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = b""  # no files
-        with mock.patch.object(cli, "_git_run", return_value=mock_result):
-            assert cli._count_tracked_lines("/tmp") == 1
-
-    def test_git_ls_files_failure(self) -> None:
-        mock_result = mock.MagicMock()
-        mock_result.returncode = 128
-        mock_result.stdout = b""
-        with mock.patch.object(cli, "_git_run", return_value=mock_result):
-            assert cli._count_tracked_lines("/tmp") == 1
-
-
-# =============================================================================
-# Edge cases: _compute_change_stats
-# =============================================================================
-
-class TestComputeChangeStatsEdgeCases:
-    """Edge case tests for _compute_change_stats()."""
-
-    def test_zero_lines_changed(self) -> None:
-        with mock.patch.object(cli, "_count_lines_changed", return_value=0):
-            lines, pct = cli._compute_change_stats("/tmp", "abc123")
-        assert lines == 0
-        assert pct == 0.0
-
-    def test_all_lines_changed(self) -> None:
-        with mock.patch.object(cli, "_count_lines_changed", return_value=1000):
-            with mock.patch.object(cli, "_cached_total_tracked_lines", return_value=1000):
-                lines, pct = cli._compute_change_stats("/tmp", "abc123")
-        assert lines == 1000
-        assert pct == 100.0
-
-
-# =============================================================================
-# Edge cases: _filter_active_checks
-# =============================================================================
-
-class TestFilterActiveChecksEdgeCases:
-    """Edge case tests for _filter_active_checks()."""
-
-    def test_empty_pass_list(self) -> None:
-        assert cli._filter_active_checks([], None) == []
-
-    def test_empty_pass_list_with_previous(self, capsys: pytest.CaptureFixture[str]) -> None:
-        result = cli._filter_active_checks([], set())
-        assert result == []
-
-    def test_all_skipped(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """All non-bookend checks skipped when none changed."""
-        passes = [{"id": "readability", "label": "R", "prompt": "p"}]
-        result = cli._filter_active_checks(passes, set())
-        assert result == []
-        assert "Skipping 1" in capsys.readouterr().out
-
-    def test_bookend_always_included(self) -> None:
-        passes = [
-            {"id": "test-fix", "label": "TF", "prompt": "p"},
-            {"id": "readability", "label": "R", "prompt": "p"},
-            {"id": "test-validate", "label": "TV", "prompt": "p"},
-        ]
-        result = cli._filter_active_checks(passes, set())
-        assert len(result) == 2
-        assert result[0]["id"] == "test-fix"
-        assert result[1]["id"] == "test-validate"
-
-
-# =============================================================================
-# Edge cases: _validate_arguments
-# =============================================================================
-
-class TestValidateArgumentsEdgeCases:
-    """Edge case tests for _validate_arguments()."""
-
-    def test_converged_at_percentage_over_100_exits(self) -> None:
-        args = _make_main_mock_args(converged_at_percentage=101.0)
-        with pytest.raises(SystemExit) as exc_info:
-            cli._validate_arguments(args)
-        assert exc_info.value.code == 1
-
-    def test_converged_at_zero_is_valid(self) -> None:
-        args = _make_main_mock_args(converged_at_percentage=0.0)
-        cli._validate_arguments(args)  # should not raise
-
-    def test_converged_at_100_is_valid(self) -> None:
-        args = _make_main_mock_args(converged_at_percentage=100.0)
-        cli._validate_arguments(args)  # should not raise
-
-    def test_idle_timeout_exactly_one(self) -> None:
-        args = _make_main_mock_args(idle_timeout=1)
-        cli._validate_arguments(args)  # should not raise
-
-    def test_pause_zero_is_valid(self) -> None:
-        args = _make_main_mock_args(pause=0)
-        cli._validate_arguments(args)  # should not raise
-
-    def test_cycles_exactly_one(self) -> None:
-        args = _make_main_mock_args(cycles=1)
-        cli._validate_arguments(args)  # should not raise
-
-
-# =============================================================================
-# Edge cases: _resolve_selected_checks
-# =============================================================================
-
-class TestResolveSelectedChecksEdgeCases:
-    """Edge case tests for _resolve_selected_checks()."""
-
-    def test_all_checks_flag(self) -> None:
-        args = _make_main_mock_args(all_checks=True, checks=None, level=None)
-        result = cli._resolve_selected_checks(args)
-        assert len(result) == len(cli.CHECKS)
-
-    def test_explicit_passes_override_level(self) -> None:
-        args = _make_main_mock_args(all_checks=False, checks=["security"], level="basic")
-        result = cli._resolve_selected_checks(args)
-        assert len(result) == 1
-        assert result[0]["id"] == "security"
-
-    def test_default_tier_when_nothing_specified(self) -> None:
-        args = _make_main_mock_args(all_checks=False, checks=None, level=None)
-        result = cli._resolve_selected_checks(args)
-        expected_ids = set(cli.TIERS[cli.DEFAULT_TIER])
-        assert {p["id"] for p in result} == expected_ids
-
-
-# =============================================================================
-# Edge cases: _looks_dangerous with boundary inputs
-# =============================================================================
-
-class TestLooksDangerousEdgeCases:
-    """Additional edge case tests for _looks_dangerous()."""
-
-    def test_very_long_safe_string(self) -> None:
-        assert cli._looks_dangerous("a" * 100_000) is False
-
-    def test_null_character_in_string(self) -> None:
-        assert cli._looks_dangerous("safe\x00text") is False
-
-    def test_newlines_around_keyword(self) -> None:
-        assert cli._looks_dangerous("something\nrm -rf /\nsomething") is True
-
-    def test_tabs_around_keyword(self) -> None:
-        assert cli._looks_dangerous("\t\tdd if=/dev/zero\t\t") is True
-
-    def test_mixed_case_drop_database(self) -> None:
-        assert cli._looks_dangerous("DrOp DaTaBaSe users") is True
-
-
-# =============================================================================
-# Edge cases: _build_changed_files_prefix
-# =============================================================================
-
-class TestBuildChangedFilesPrefixEdgeCases:
-    """Edge case tests for _build_changed_files_prefix()."""
-
-    def test_single_file(self) -> None:
-        result = cli._build_changed_files_prefix(["src/main.py"])
-        assert "1 file(s)" in result
-        assert "src/main.py" in result
-
-    def test_file_with_spaces(self) -> None:
-        result = cli._build_changed_files_prefix(["src/my file.py"])
-        assert "my file.py" in result
-
-    def test_file_with_unicode(self) -> None:
-        result = cli._build_changed_files_prefix(["src/日本語.py"])
-        assert "日本語.py" in result
-
-
-# =============================================================================
-# Edge cases: _git_run with empty args
-# =============================================================================
-
-class TestGitRunEdgeCases:
-    """Edge case tests for _git_run()."""
-
-    def test_git_not_installed(self) -> None:
-        with mock.patch("subprocess.run", side_effect=FileNotFoundError("git")):
-            with pytest.raises(FileNotFoundError):
-                cli._git_run("/tmp", "status")
-
-    def test_os_error(self) -> None:
-        with mock.patch("subprocess.run", side_effect=OSError("disk error")):
-            with pytest.raises(OSError):
-                cli._git_run("/tmp", "status")
-
-
-# =============================================================================
-# Edge cases: _get_changed_files
-# =============================================================================
-
-class TestGetChangedFilesEdgeCases:
-    """Edge case tests for _get_changed_files()."""
-
-    def test_empty_diff_output(self) -> None:
-        merge_base_result = mock.MagicMock(returncode=0, stdout="abc123\n")
-        diff_result = mock.MagicMock(returncode=0, stdout="")
-        with mock.patch.object(cli, "_git_run", side_effect=[merge_base_result, diff_result]):
-            result = cli._get_changed_files("/tmp", "main")
-        assert result == []
-
-    def test_merge_base_failure(self) -> None:
-        merge_base_result = mock.MagicMock(returncode=128, stdout="", stderr="")
-        with mock.patch.object(cli, "_git_run", return_value=merge_base_result):
-            result = cli._get_changed_files("/tmp", "nonexistent")
-        assert result == []
-
-
-# =============================================================================
-# Edge cases: _check_cycle_convergence
-# =============================================================================
-
-class TestCheckCycleConvergenceEdgeCases:
-    """Edge case tests for _check_cycle_convergence()."""
-
-    def test_no_changes_converges(self) -> None:
-        with mock.patch.object(cli, "_git_commit_all"):
-            with mock.patch.object(cli, "_git_head_sha", return_value="same_sha"):
-                converged, pct = cli._check_cycle_convergence(
-                    "/tmp", 1, "same_sha", 0.1, None,
+class TestMainGuard:
+    """Test the if __name__ == '__main__' block."""
+
+    def test_main_guard_calls_main(self) -> None:
+        with mock.patch.dict("sys.modules", {"checkloop.cli": cli}):
+            with mock.patch.object(cli, "main") as mock_main:
+                exec(
+                    compile('if __name__ == "__main__": main()', cli.__file__, "exec"),
+                    {"__name__": "__main__", "main": cli.main},
                 )
-        assert converged is True
-        assert pct is None  # unchanged from prev
-
-    def test_changes_below_threshold_converges(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch.object(cli, "_git_commit_all"):
-            with mock.patch.object(cli, "_git_head_sha", return_value="new_sha"):
-                with mock.patch.object(cli, "_compute_change_stats", return_value=(5, 0.05)):
-                    converged, pct = cli._check_cycle_convergence(
-                        "/tmp", 1, "old_sha", 0.1, None,
-                    )
-        assert converged is True
-        assert pct == 0.05
-
-    def test_increasing_changes_warns(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch.object(cli, "_git_commit_all"):
-            with mock.patch.object(cli, "_git_head_sha", return_value="new_sha"):
-                with mock.patch.object(cli, "_compute_change_stats", return_value=(100, 5.0)):
-                    converged, pct = cli._check_cycle_convergence(
-                        "/tmp", 2, "old_sha", 0.1, 2.0,
-                    )
-        assert converged is False
-        assert pct == 5.0
-        out = capsys.readouterr().out
-        assert "oscillation" in out.lower()
-
-
-# =============================================================================
-# Edge cases: _report_check_changes
-# =============================================================================
-
-class TestReportCheckChangesEdgeCases:
-    """Edge case tests for _report_check_changes()."""
-
-    def test_no_git_repo_assumes_changes(self) -> None:
-        assert cli._report_check_changes("/tmp", "test", None) is True
-
-    def test_same_sha_no_changes(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch.object(cli, "_git_head_sha", return_value="sha1"):
-            result = cli._report_check_changes("/tmp", "test", "sha1")
-        assert result is False
-        assert "no changes" in capsys.readouterr().out
-
-    def test_different_sha_reports_changes(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch.object(cli, "_git_head_sha", return_value="sha2"):
-            with mock.patch.object(cli, "_count_lines_changed", return_value=10):
-                with mock.patch.object(cli, "_cached_total_tracked_lines", return_value=2000):
-                    result = cli._report_check_changes("/tmp", "test", "sha1")
-        assert result is True
-        assert "10 lines changed" in capsys.readouterr().out
-
-
-# =============================================================================
-# Edge cases: _measure_current_rss_mb
-# =============================================================================
-
-class TestMeasureCurrentRssMbEdgeCases:
-    """Edge case tests for _measure_current_rss_mb()."""
-
-    def test_ps_returns_non_numeric(self) -> None:
-        mock_result = mock.MagicMock(returncode=0, stdout="not_a_number\n")
-        with mock.patch("subprocess.run", return_value=mock_result):
-            # Falls through to resource fallback, doesn't crash
-            result = cli._measure_current_rss_mb()
-            assert isinstance(result, float)
-
-    def test_ps_fails(self) -> None:
-        with mock.patch("subprocess.run", side_effect=OSError("no ps")):
-            result = cli._measure_current_rss_mb()
-            assert isinstance(result, float)
-
-
-# =============================================================================
-# Edge cases: run_claude with empty/whitespace prompts
-# =============================================================================
-
-class TestRunClaudeEdgeCases:
-    """Edge case tests for run_claude()."""
-
-    def test_whitespace_only_prompt_dry_run(self, capsys: pytest.CaptureFixture[str]) -> None:
-        code = cli.run_claude("   \t\n  ", "/tmp", dry_run=True)
-        assert code == 0
-
-    def test_unicode_prompt_dry_run(self, capsys: pytest.CaptureFixture[str]) -> None:
-        code = cli.run_claude("レビューコード 🔍 review", "/tmp", dry_run=True)
-        assert code == 0
-        out = capsys.readouterr().out
-        assert "レビューコード" in out
-
-
-# =============================================================================
-# Edge cases: _print_event with malformed events
-# =============================================================================
-
-class TestPrintEventEdgeCases:
-    """Edge case tests for _print_event() with unusual inputs."""
-
-    def test_none_type_field(self, capsys: pytest.CaptureFixture[str]) -> None:
-        event: dict[str, Any] = {"type": None}
-        cli._print_event(event, time.time())
-        assert capsys.readouterr().out.strip() == ""
-
-    def test_numeric_type_field(self, capsys: pytest.CaptureFixture[str]) -> None:
-        event: dict[str, Any] = {"type": 42}
-        cli._print_event(event, time.time())
-        assert capsys.readouterr().out.strip() == ""
-
-    def test_assistant_with_none_content(self, capsys: pytest.CaptureFixture[str]) -> None:
-        event: dict[str, Any] = {"type": "assistant", "message": {"content": None}}
-        cli._print_event(event, time.time())
-        assert capsys.readouterr().out.strip() == ""
-
-    def test_result_with_non_string_result(self, capsys: pytest.CaptureFixture[str]) -> None:
-        event: dict[str, Any] = {"type": "result", "result": 42}
-        cli._print_event(event, time.time())
-        # Should print since 42 is truthy
-        out = capsys.readouterr().out
-        assert "42" in out
-
-
-# =============================================================================
-# Edge cases: _git_head_sha with empty stdout
-# =============================================================================
-
-class TestGitHeadShaEdgeCases:
-    """Edge case tests for _git_head_sha()."""
-
-    def test_empty_stdout_returns_none(self) -> None:
-        """If git succeeds but stdout is empty, return None (not empty string)."""
-        with mock.patch("subprocess.run") as mock_run:
-            mock_run.return_value = mock.MagicMock(returncode=0, stdout="")
-            assert cli._git_head_sha("/tmp") is None
-
-    def test_whitespace_only_stdout_returns_none(self) -> None:
-        """If git succeeds but stdout is only whitespace, return None."""
-        with mock.patch("subprocess.run") as mock_run:
-            mock_run.return_value = mock.MagicMock(returncode=0, stdout="   \n  ")
-            assert cli._git_head_sha("/tmp") is None
-
-    def test_oserror_returns_none(self) -> None:
-        with mock.patch("subprocess.run", side_effect=OSError("no git")):
-            assert cli._git_head_sha("/tmp") is None
-
-
-# =============================================================================
-# Edge cases: _count_lines_changed with empty/invalid base_sha
-# =============================================================================
-
-class TestCountLinesChangedEdgeCases:
-    """Edge case tests for _count_lines_changed()."""
-
-    def test_empty_base_sha_returns_zero(self) -> None:
-        """Empty base_sha should return 0 instead of passing empty arg to git."""
-        result = cli._count_lines_changed("/tmp", "")
-        assert result == 0
-
-    def test_none_like_base_sha_returns_zero(self) -> None:
-        """Empty string base_sha should be handled gracefully."""
-        result = cli._count_lines_changed("/tmp", "")
-        assert result == 0
-
-    def test_valid_sha_with_empty_target(self) -> None:
-        """target='' means diff against working tree (no target appended)."""
-        with mock.patch.object(cli, "_git_run") as mock_git:
-            mock_git.return_value = mock.MagicMock(
-                returncode=0, stdout=" 1 file changed, 3 insertions(+)"
-            )
-            result = cli._count_lines_changed("/tmp", "abc123", target="")
-        assert result == 3
-        # Verify target was not appended
-        call_args = mock_git.call_args[0]
-        assert "abc123" in call_args
-        assert "" not in call_args[2:]  # no empty string after shortstat args
-
-    def test_git_diff_nonzero_returncode(self) -> None:
-        with mock.patch.object(cli, "_git_run") as mock_git:
-            mock_git.return_value = mock.MagicMock(
-                returncode=128, stdout="", stderr="fatal: bad revision"
-            )
-            result = cli._count_lines_changed("/tmp", "badref")
-        assert result == 0
-
-    def test_git_diff_oserror(self) -> None:
-        with mock.patch.object(cli, "_git_run", side_effect=OSError("no git")):
-            result = cli._count_lines_changed("/tmp", "abc123")
-        assert result == 0
-
-
-# =============================================================================
-# Edge cases: _compile_danger_patterns with empty keyword
-# =============================================================================
-
-class TestCompileDangerPatternsEdgeCases:
-    """Edge case tests for _compile_danger_patterns()."""
-
-    def test_empty_keyword_skipped(self) -> None:
-        """Empty keywords in the list should be skipped without crashing."""
-        original = cli._DANGEROUS_PROMPT_KEYWORDS[:]
-        try:
-            cli._DANGEROUS_PROMPT_KEYWORDS.insert(0, "")
-            patterns = cli._compile_danger_patterns()
-            # Should have one fewer pattern than keywords (empty one skipped)
-            assert len(patterns) == len(cli._DANGEROUS_PROMPT_KEYWORDS) - 1
-        finally:
-            cli._DANGEROUS_PROMPT_KEYWORDS[:] = original
-
-
-# =============================================================================
-# Edge cases: _configure_logging default level
-# =============================================================================
-
-class TestConfigureLoggingEdgeCases:
-    """Edge case tests for _configure_logging()."""
-
-    def test_default_level_is_warning(self) -> None:
-        args = argparse.Namespace(verbose=False, debug=False)
-        with mock.patch("logging.basicConfig") as mock_log:
-            cli._configure_logging(args)
-            mock_log.assert_called_once()
-            assert mock_log.call_args.kwargs["level"] == logging.WARNING
-
-
-# =============================================================================
-# Edge cases: _detect_default_branch with OSError
-# =============================================================================
-
-class TestDetectDefaultBranchEdgeCases:
-    """Edge case tests for _detect_default_branch()."""
-
-    def test_oserror_on_both_branches_returns_main(self) -> None:
-        with mock.patch.object(cli, "_git_run", side_effect=OSError("no git")):
-            assert cli._detect_default_branch("/tmp") == "main"
-
-    def test_oserror_on_main_then_master_found(self) -> None:
-        with mock.patch.object(cli, "_git_run") as mock_git:
-            mock_git.side_effect = [
-                OSError("no main"),
-                mock.MagicMock(returncode=0),
-            ]
-            assert cli._detect_default_branch("/tmp") == "master"
-
-
-# =============================================================================
-# Edge cases: _get_changed_files with OSError
-# =============================================================================
-
-class TestGetChangedFilesOSError:
-    """Edge case tests for _get_changed_files() exception handling."""
-
-    def test_merge_base_oserror(self) -> None:
-        with mock.patch.object(cli, "_git_run", side_effect=OSError("no git")):
-            assert cli._get_changed_files("/tmp", "main") == []
-
-    def test_diff_oserror(self) -> None:
-        with mock.patch.object(cli, "_git_run") as mock_git:
-            mock_git.side_effect = [
-                mock.MagicMock(returncode=0, stdout="abc123"),
-                OSError("diff failed"),
-            ]
-            assert cli._get_changed_files("/tmp", "main") == []
-
-    def test_diff_nonzero_returncode(self) -> None:
-        with mock.patch.object(cli, "_git_run") as mock_git:
-            mock_git.side_effect = [
-                mock.MagicMock(returncode=0, stdout="abc123"),
-                mock.MagicMock(returncode=128, stdout=""),
-            ]
-            assert cli._get_changed_files("/tmp", "main") == []
-
-
-# =============================================================================
-# Edge cases: _is_git_repo with OSError
-# =============================================================================
-
-class TestIsGitRepoOSError:
-    """Edge case tests for _is_git_repo() exception handling."""
-
-    def test_oserror_returns_false(self) -> None:
-        with mock.patch("subprocess.run", side_effect=OSError("no git")):
-            assert cli._is_git_repo("/tmp") is False
-
-
-# =============================================================================
-# Edge cases: _resolve_changed_files_prefix
-# =============================================================================
-
-class TestResolveChangedFilesPrefixEdgeCases:
-    """Edge case tests for _resolve_changed_files_prefix()."""
-
-    def test_changed_only_none_returns_empty(self) -> None:
-        args = argparse.Namespace(changed_only=None)
-        result = cli._resolve_changed_files_prefix(args, "/tmp")
-        assert result == ""
-
-    def test_not_git_repo_exits(self) -> None:
-        args = argparse.Namespace(changed_only="auto")
-        with mock.patch.object(cli, "_is_git_repo", return_value=False):
-            with pytest.raises(SystemExit) as exc_info:
-                cli._resolve_changed_files_prefix(args, "/tmp")
-            assert exc_info.value.code == 1
-
-    def test_no_changed_files_exits(self) -> None:
-        args = argparse.Namespace(changed_only="main")
-        with mock.patch.object(cli, "_is_git_repo", return_value=True), \
-             mock.patch.object(cli, "_get_changed_files", return_value=[]):
-            with pytest.raises(SystemExit) as exc_info:
-                cli._resolve_changed_files_prefix(args, "/tmp")
-            assert exc_info.value.code == 1
-
-
-# =============================================================================
-# Edge cases: _print_run_summary convergence display
-# =============================================================================
-
-class TestPrintRunSummaryConvergence:
-    """Edge case tests for _print_run_summary() convergence display."""
-
-    def test_convergence_threshold_displayed(self, capsys: pytest.CaptureFixture[str]) -> None:
-        passes = [{"id": "dry", "label": "DRY"}]
-        cli._print_run_summary("/dir", passes, 1, 1, 60, False, convergence_threshold=0.5)
-        out = capsys.readouterr().out
-        assert "0.5%" in out
-        assert "Convergence" in out
-
-    def test_zero_convergence_not_displayed(self, capsys: pytest.CaptureFixture[str]) -> None:
-        passes = [{"id": "dry", "label": "DRY"}]
-        cli._print_run_summary("/dir", passes, 1, 1, 60, False, convergence_threshold=0.0)
-        out = capsys.readouterr().out
-        assert "Convergence" not in out
-
-
-# =============================================================================
-# Edge cases: _summarise_tool_use with non-string inputs
-# =============================================================================
-
-class TestSummariseToolUseNonStringInputs:
-    """Edge case tests for _summarise_tool_use() with non-string tool_input values."""
-
-    def test_bash_command_is_integer(self) -> None:
-        """Non-string command value should be coerced to string, not crash."""
-        result = cli._summarise_tool_use("Bash", {"command": 42})
-        assert "$ 42" in result
-
-    def test_bash_command_is_none(self) -> None:
-        """None command value should be coerced to string 'None'."""
-        result = cli._summarise_tool_use("Bash", {"command": None})
-        assert "$ None" in result
-
-    def test_bash_command_is_list(self) -> None:
-        """List command value should be coerced to string."""
-        result = cli._summarise_tool_use("Bash", {"command": ["ls", "-la"]})
-        assert "$ [" in result
-
-    def test_empty_tool_input_dict(self) -> None:
-        result = cli._summarise_tool_use("Bash", {})
-        assert result == ""
-
-    def test_none_tool_name(self) -> None:
-        """Non-string tool name should not crash (lower() on non-string)."""
-        # This tests robustness; callers should pass str, but JSON can be weird.
-        result = cli._summarise_tool_use("", {})
-        assert result == ""
-
-
-# =============================================================================
-# Edge cases: _measure_current_rss_mb with multi-line ps output
-# =============================================================================
-
-class TestMeasureCurrentRssMbMultiline:
-    """Edge case tests for _measure_current_rss_mb() with unusual ps output."""
-
-    def test_multiline_ps_output(self) -> None:
-        """Multi-line ps output should use only the first line."""
-        mock_result = mock.MagicMock(returncode=0, stdout="12345\n67890\n")
-        with mock.patch("subprocess.run", return_value=mock_result):
-            rss = cli._measure_current_rss_mb()
-            assert abs(rss - 12345 / 1024) < 0.01
-
-    def test_ps_output_with_leading_whitespace(self) -> None:
-        """ps often pads output with leading spaces."""
-        mock_result = mock.MagicMock(returncode=0, stdout="  54321  \n")
-        with mock.patch("subprocess.run", return_value=mock_result):
-            rss = cli._measure_current_rss_mb()
-            assert abs(rss - 54321 / 1024) < 0.01
-
-
-# =============================================================================
-# Edge cases: _count_file_lines with read errors mid-file
-# =============================================================================
-
-class TestCountFileLinesReadError:
-    """Edge case tests for _count_file_lines() read errors after header."""
-
-    def test_oserror_during_chunk_read(self, tmp_path: Path) -> None:
-        """OSError during chunk reads after header should return 0."""
-        f = tmp_path / "bad_read.txt"
-        f.write_text("line1\nline2\n")
-        with mock.patch("builtins.open", side_effect=OSError("permission denied")):
-            assert cli._count_file_lines(f) == 0
-
-
-# =============================================================================
-# Edge cases: _build_changed_files_prefix with empty list
-# =============================================================================
-
-class TestBuildChangedFilesPrefixEmpty:
-    """Edge case test: _build_changed_files_prefix with empty list."""
-
-    def test_empty_list_produces_zero_files(self) -> None:
-        result = cli._build_changed_files_prefix([])
-        assert "0 file(s)" in result
-
-
-# =============================================================================
-# Edge cases: _run_single_check without changed_files_prefix attr
-# =============================================================================
-
-class TestRunSingleCheckMissingAttr:
-    """Edge case: _run_single_check when args lacks changed_files_prefix."""
-
-    def test_missing_changed_files_prefix(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """If changed_files_prefix is not on args, defaults to empty string."""
-        check_def = {"id": "readability", "label": "Readability", "prompt": "review code"}
-        args = _make_suite_args(dry_run=True)
-        # Ensure changed_files_prefix is not set
-        if hasattr(args, "changed_files_prefix"):
-            delattr(args, "changed_files_prefix")
-        with mock.patch.object(cli, "_is_git_repo", return_value=False):
-            result = cli._run_single_check(check_def, "/tmp", args, "[1/1]", is_git=False)
-        # Should run without error; dry_run returns True (assumes changes without git)
-        assert result is True
-
-
-# =============================================================================
-# Edge cases: _process_jsonl_buffer with invalid UTF-8
-# =============================================================================
-
-class TestProcessJsonlBufferInvalidUtf8:
-    """Edge case: _process_jsonl_buffer with invalid UTF-8 bytes."""
-
-    def test_invalid_utf8_does_not_crash(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """Invalid UTF-8 in buffer should be replaced, not crash."""
-        buf = bytearray(b"\xff\xfe invalid\n")
-        remainder = cli._process_jsonl_buffer(buf, time.time(), debug=True)
-        assert remainder == bytearray()
-        # Should not raise; invalid bytes get errors="replace"
-
-    def test_valid_utf8_json(self, capsys: pytest.CaptureFixture[str]) -> None:
-        event = json.dumps({"type": "system", "message": "café ñ ü"})
-        buf = bytearray((event + "\n").encode("utf-8"))
-        remainder = cli._process_jsonl_buffer(buf, time.time(), debug=False)
-        assert remainder == bytearray()
-        assert "café" in capsys.readouterr().out
-
-
-# =============================================================================
-# Edge cases: _format_duration boundary values
-# =============================================================================
-
-class TestFormatDurationBoundary:
-    """Boundary value tests for _format_duration()."""
-
-    def test_exactly_60_seconds(self) -> None:
-        assert cli._format_duration(60) == "1m00s"
-
-    def test_exactly_3599(self) -> None:
-        assert cli._format_duration(3599) == "59m59s"
-
-    def test_exactly_3600(self) -> None:
-        assert cli._format_duration(3600) == "1h00m00s"
-
-    def test_exactly_3601(self) -> None:
-        assert cli._format_duration(3601) == "1h00m01s"
-
-    def test_max_int(self) -> None:
-        """Very large integers should not overflow."""
-        result = cli._format_duration(2**31)
-        assert "h" in result  # just verify it returns without error
-
-
-# =============================================================================
-# Edge cases: _git_commit_all with various failure modes
-# =============================================================================
-
-class TestGitCommitCycleEdgeCases:
-    """Edge case tests for _git_commit_all()."""
-
-    def test_git_add_failure(self) -> None:
-        """CalledProcessError from git add should return False."""
-        with mock.patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, "git add")):
-            assert cli._git_commit_all("/tmp", "test commit") is False
-
-    def test_oserror_during_commit(self) -> None:
-        """OSError during any git operation should return False."""
-        with mock.patch("subprocess.run", side_effect=OSError("disk full")):
-            assert cli._git_commit_all("/tmp", "test commit") is False
-
-
-# =============================================================================
-# Coverage gap: _count_file_lines OSError during chunk read (lines 285-287)
-# =============================================================================
-
-class TestCountFileLinesOSErrorDuringRead:
-    """Test _count_file_lines when read fails after header succeeds."""
-
-    def test_oserror_after_header(self, tmp_path: Path) -> None:
-        """OSError during chunk read (after header) returns 0."""
-        f = tmp_path / "partial.txt"
-        f.write_text("line1\nline2\n")
-
-        original_open = open
-
-        def patched_open(filepath, mode="r", **kwargs):
-            fh = original_open(filepath, mode, **kwargs)
-            original_read = fh.read
-
-            call_count = 0
-            def failing_read(size=-1):
-                nonlocal call_count
-                call_count += 1
-                if call_count == 1:
-                    return original_read(size)  # header read succeeds
-                raise OSError("disk error during read")
-
-            fh.read = failing_read
-            return fh
-
-        with mock.patch("builtins.open", side_effect=patched_open):
-            result = cli._count_file_lines(f)
-        assert result == 0
-
-
-# =============================================================================
-# Coverage gap: _count_tracked_lines OSError from _git_run (lines 299-301)
-# =============================================================================
-
-class TestCountTrackedLinesGitRunOSError:
-    """Test _count_tracked_lines when _git_run raises OSError."""
-
-    def test_git_run_oserror_returns_1(self) -> None:
-        with mock.patch.object(cli, "_git_run", side_effect=OSError("no git")):
-            assert cli._count_tracked_lines("/tmp") == 1
-
-
-# =============================================================================
-# Coverage gap: _count_tracked_lines OSError on file (lines 321-322)
-# =============================================================================
-
-class TestCountTrackedLinesFileOSError:
-    """Test _count_tracked_lines when resolving a file path raises OSError."""
-
-    def test_oserror_on_resolve(self, tmp_path: Path) -> None:
-        """OSError during path resolution is silently skipped."""
-        ls_result = mock.MagicMock(returncode=0, stdout=b"good.txt\x00")
-        (tmp_path / "good.txt").write_text("line\n")
-
-        with mock.patch.object(cli, "_git_run", return_value=ls_result):
-            original_resolve = Path.resolve
-
-            def failing_resolve(self, *args, **kwargs):
-                if self.name == "good.txt" and "good.txt" in str(self):
-                    raise OSError("permission denied")
-                return original_resolve(self, *args, **kwargs)
-
-            with mock.patch.object(Path, "resolve", failing_resolve):
-                result = cli._count_tracked_lines(str(tmp_path))
-        assert result == 1  # clamped to 1 (no lines counted)
-
-
-# =============================================================================
-# Coverage gap: _stream_process_output stdout is None (lines 998-999)
-# =============================================================================
-
-class TestStreamProcessOutputStdoutNone:
-    """Test _stream_process_output when process.stdout is None."""
-
-    def test_returns_time_when_stdout_none(self) -> None:
-        mock_proc = mock.MagicMock()
-        mock_proc.stdout = None
-        mock_proc.pid = 12345
-        result = cli._stream_process_output(mock_proc, idle_timeout=120, debug=False)
-        assert isinstance(result, float)
-
-
-# =============================================================================
-# Coverage gap: _resolve_changed_files_prefix success path (lines 1599-1600)
-# =============================================================================
-
-class TestResolveChangedFilesPrefixSuccess:
-    """Test _resolve_changed_files_prefix success path."""
-
-    def test_returns_prefix_with_changed_files(self, capsys: pytest.CaptureFixture[str]) -> None:
-        args = argparse.Namespace(changed_only="main")
-        with mock.patch.object(cli, "_is_git_repo", return_value=True), \
-             mock.patch.object(cli, "_get_changed_files", return_value=["a.py", "b.py"]):
-            result = cli._resolve_changed_files_prefix(args, "/tmp")
-        assert "a.py" in result
-        assert "b.py" in result
-        out = capsys.readouterr().out
-        assert "2 changed file(s)" in out
-
+                mock_main.assert_called_once()

@@ -16,16 +16,16 @@ Public API:
     TIER_EXHAUSTIVE — Check IDs for the exhaustive tier.
 """
 
-from checkloop.cli import (
+from checkloop.checks import (
     CHECK_IDS,
     CHECKS,
     TIER_BASIC,
     TIER_EXHAUSTIVE,
     TIER_THOROUGH,
     TIERS,
-    main,
-    run_claude,
 )
+from checkloop.cli import main
+from checkloop.process import run_claude
 
 __all__ = [
     "CHECK_IDS",
