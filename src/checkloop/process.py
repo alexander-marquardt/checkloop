@@ -149,14 +149,6 @@ def _read_stdout_chunk(stdout: IO[bytes]) -> bytes:
         return b""
 
 
-def _check_buffer_overflow(output_buffer: bytearray) -> bytearray:
-    """Clear the buffer if it exceeds the safety cap, logging a warning."""
-    if len(output_buffer) > _MAX_BUFFER_SIZE:
-        logger.warning("Output buffer exceeded %d bytes — truncating", _MAX_BUFFER_SIZE)
-        output_buffer.clear()
-    return output_buffer
-
-
 def _drain_remaining_stdout(
     stdout: IO[bytes],
     output_buffer: bytearray,
@@ -170,8 +162,9 @@ def _drain_remaining_stdout(
             if not remaining:
                 break
             output_buffer.extend(remaining)
-            output_buffer = process_jsonl_buffer(output_buffer, check_start_time, debug)
-            output_buffer = _check_buffer_overflow(output_buffer)
+            output_buffer = process_jsonl_buffer(
+                output_buffer, check_start_time, debug, max_buffer_size=_MAX_BUFFER_SIZE,
+            )
     except OSError as exc:
         logger.debug("Failed to drain remaining stdout: %s", exc)
     return output_buffer
@@ -328,8 +321,9 @@ def _stream_process_output(
 
             last_output_time = time.time()
             output_buffer.extend(chunk)
-            output_buffer = process_jsonl_buffer(output_buffer, check_start_time, debug)
-            output_buffer = _check_buffer_overflow(output_buffer)
+            output_buffer = process_jsonl_buffer(
+                output_buffer, check_start_time, debug, max_buffer_size=_MAX_BUFFER_SIZE,
+            )
 
     finally:
         _flush_and_close_stdout(stdout, output_buffer, check_start_time, debug)

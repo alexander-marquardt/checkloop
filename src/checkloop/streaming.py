@@ -121,12 +121,15 @@ def process_jsonl_buffer(
     output_buffer: bytearray,
     check_start_time: float,
     debug: bool,
+    *,
+    max_buffer_size: int = 0,
 ) -> bytearray:
     """Process complete JSONL lines from the buffer, return the remainder.
 
     Parses each complete line as JSON and dispatches to the appropriate
     event printer.  Incomplete trailing data is left in the buffer for
-    the next call.
+    the next call.  When *max_buffer_size* > 0, the buffer is cleared
+    if it exceeds that limit to prevent unbounded memory growth.
 
     Args:
         output_buffer: Mutable byte buffer containing raw subprocess output.
@@ -135,6 +138,8 @@ def process_jsonl_buffer(
             compute elapsed-time prefixes for display.
         debug: If True, prints non-JSON lines to the terminal (useful for
             diagnosing Claude Code subprocess issues).
+        max_buffer_size: Safety cap in bytes.  If the buffer exceeds this
+            size after processing, it is cleared.  0 disables the check.
 
     Returns:
         The same *output_buffer* object with consumed lines removed.
@@ -143,24 +148,26 @@ def process_jsonl_buffer(
     # everything after stays in the buffer for the next call.
     # This single-delete approach avoids O(n²) cost from repeated del [:n].
     last_newline = output_buffer.rfind(b"\n")
-    if last_newline == -1:
-        return output_buffer  # no complete line yet
-    complete_lines_bytes = bytes(output_buffer[:last_newline])
-    del output_buffer[:last_newline + 1]
-    for line_bytes in complete_lines_bytes.split(b"\n"):
-        line_str = line_bytes.decode("utf-8", errors="replace").strip()
-        if not line_str:
-            continue
-        try:
-            parsed = json.loads(line_str)
-            if not isinstance(parsed, dict):
-                logger.debug("Skipping non-object JSON value: %s", type(parsed).__name__)
+    if last_newline != -1:
+        complete_lines_bytes = bytes(output_buffer[:last_newline])
+        del output_buffer[:last_newline + 1]
+        for line_bytes in complete_lines_bytes.split(b"\n"):
+            line_str = line_bytes.decode("utf-8", errors="replace").strip()
+            if not line_str:
                 continue
-            _print_event(parsed, check_start_time)
-        except json.JSONDecodeError:
-            logger.debug("Skipping non-JSON line from subprocess: %.120s", line_str)
-            if debug:
-                print(f"{DIM}{line_str}{RESET}")
-        except Exception as exc:
-            logger.warning("Failed to process JSONL event: %s (line: %.120s)", exc, line_str)
+            try:
+                parsed = json.loads(line_str)
+                if not isinstance(parsed, dict):
+                    logger.debug("Skipping non-object JSON value: %s", type(parsed).__name__)
+                    continue
+                _print_event(parsed, check_start_time)
+            except json.JSONDecodeError:
+                logger.debug("Skipping non-JSON line from subprocess: %.120s", line_str)
+                if debug:
+                    print(f"{DIM}{line_str}{RESET}")
+            except Exception as exc:
+                logger.warning("Failed to process JSONL event: %s (line: %.120s)", exc, line_str)
+    if max_buffer_size > 0 and len(output_buffer) > max_buffer_size:
+        logger.warning("Output buffer exceeded %d bytes — truncating", max_buffer_size)
+        output_buffer.clear()
     return output_buffer

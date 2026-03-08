@@ -128,7 +128,7 @@ class TestStreamProcessOutput:
             ([mock_stdout], [], []),
             ([mock_stdout], [], []),
         ]):
-            with mock.patch.object(process, "process_jsonl_buffer", side_effect=lambda buf, *a: buf):
+            with mock.patch.object(process, "process_jsonl_buffer", side_effect=lambda buf, *a, **kw: buf):
                 process._stream_process_output(mock_proc, idle_timeout=120, debug=False)
 
 
@@ -221,12 +221,13 @@ class TestDrainBufferOverflow:
         mock_stdout = mock.MagicMock()
         mock_stdout.fileno.return_value = 99
         # Return a large chunk that exceeds _MAX_BUFFER_SIZE, then EOF.
+        # The overflow check now lives inside process_jsonl_buffer, so we
+        # don't mock it — let the real function handle truncation.
         big_chunk = b"x" * (process._MAX_BUFFER_SIZE + 1)
         with mock.patch("os.read", side_effect=[big_chunk, b""]):
-            with mock.patch.object(process, "process_jsonl_buffer", side_effect=lambda buf, *a: buf):
-                result = process._drain_remaining_stdout(
-                    mock_stdout, bytearray(), time.time(), debug=False,
-                )
+            result = process._drain_remaining_stdout(
+                mock_stdout, bytearray(), time.time(), debug=False,
+            )
         assert result == bytearray()
 
 

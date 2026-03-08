@@ -11,6 +11,7 @@ from unittest import mock
 import pytest
 
 from checkloop import process
+from checkloop.streaming import process_jsonl_buffer
 
 
 class TestBuildClaudeCommand:
@@ -469,22 +470,24 @@ class TestCheckMemoryLimitBoundary:
 
 
 class TestCheckBufferOverflow:
-    """Edge cases for _check_buffer_overflow()."""
+    """Edge cases for max_buffer_size enforcement in process_jsonl_buffer()."""
 
     def test_buffer_at_exact_limit(self) -> None:
-        """Buffer at exactly _MAX_BUFFER_SIZE should NOT be truncated."""
-        buf = bytearray(b"x" * process._MAX_BUFFER_SIZE)
-        result = process._check_buffer_overflow(buf)
-        assert len(result) == process._MAX_BUFFER_SIZE
+        """Buffer at exactly max_buffer_size should NOT be truncated."""
+        limit = 1024
+        buf = bytearray(b"x" * limit)
+        result = process_jsonl_buffer(buf, time.time(), False, max_buffer_size=limit)
+        assert len(result) == limit
 
     def test_buffer_one_over_limit(self) -> None:
-        """Buffer one byte over _MAX_BUFFER_SIZE should be cleared."""
-        buf = bytearray(b"x" * (process._MAX_BUFFER_SIZE + 1))
-        result = process._check_buffer_overflow(buf)
+        """Buffer one byte over max_buffer_size should be cleared."""
+        limit = 1024
+        buf = bytearray(b"x" * (limit + 1))
+        result = process_jsonl_buffer(buf, time.time(), False, max_buffer_size=limit)
         assert len(result) == 0
 
     def test_empty_buffer(self) -> None:
         """Empty buffer should be returned unchanged."""
         buf = bytearray()
-        result = process._check_buffer_overflow(buf)
+        result = process_jsonl_buffer(buf, time.time(), False, max_buffer_size=1024)
         assert len(result) == 0

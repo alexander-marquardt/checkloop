@@ -81,6 +81,31 @@ class CheckOutcome:
         )
 
 
+def _make_outcome(
+    check: CheckDef,
+    cycle: int,
+    check_start: float,
+    *,
+    exit_code: int = 0,
+    kill_reason: str | None = None,
+    made_changes: bool = False,
+    lines_changed: int | None = None,
+    change_pct: float | None = None,
+) -> CheckOutcome:
+    """Build a CheckOutcome with the common fields filled in from context."""
+    return CheckOutcome(
+        check_id=check["id"],
+        label=check["label"],
+        cycle=cycle,
+        exit_code=exit_code,
+        kill_reason=kill_reason,
+        made_changes=made_changes,
+        lines_changed=lines_changed,
+        change_pct=change_pct,
+        duration_seconds=time.time() - check_start,
+    )
+
+
 # --- Prompt assembly ---------------------------------------------------------
 
 _MEMORY_FIX_PROMPT = (
@@ -221,12 +246,7 @@ def _run_single_check(
     if looks_dangerous(prompt):
         logger.warning("Skipping check '%s' — dangerous keywords detected in prompt", check["id"])
         print_status(f"Skipping '{check['id']}' — dangerous keywords detected.", YELLOW)
-        return CheckOutcome(
-            check_id=check["id"], label=check["label"], cycle=cycle,
-            exit_code=-1, kill_reason="dangerous_prompt", made_changes=False,
-            lines_changed=None, change_pct=None,
-            duration_seconds=time.time() - check_start,
-        )
+        return _make_outcome(check, cycle, check_start, exit_code=-1, kill_reason="dangerous_prompt")
 
     sha_before = git_head_sha(workdir) if is_git else None
 
@@ -235,12 +255,7 @@ def _run_single_check(
     except Exception as exc:
         logger.error("Check '%s' raised an unexpected exception: %s", check["id"], exc, exc_info=True)
         print_status(f"Check '{check['id']}' failed with error: {exc}. Continuing...", YELLOW)
-        return CheckOutcome(
-            check_id=check["id"], label=check["label"], cycle=cycle,
-            exit_code=-1, kill_reason=None, made_changes=False,
-            lines_changed=None, change_pct=None,
-            duration_seconds=time.time() - check_start,
-        )
+        return _make_outcome(check, cycle, check_start, exit_code=-1)
 
     if result.kill_reason == KILL_REASON_MEMORY:
         _run_memory_fix(workdir, args, is_git)
@@ -259,9 +274,8 @@ def _run_single_check(
             logger.debug("No uncommitted changes left after check '%s'", check["id"])
     made_changes, lines_changed, change_pct = _report_check_changes(workdir, check["id"], sha_before)
     logger.info("Check '%s' made_changes=%s", check["id"], made_changes)
-    return CheckOutcome(
-        check_id=check["id"], label=check["label"], cycle=cycle,
+    return _make_outcome(
+        check, cycle, check_start,
         exit_code=result.exit_code, kill_reason=result.kill_reason,
         made_changes=made_changes, lines_changed=lines_changed, change_pct=change_pct,
-        duration_seconds=time.time() - check_start,
     )
