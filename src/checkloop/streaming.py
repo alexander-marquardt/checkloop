@@ -166,7 +166,7 @@ def process_jsonl_buffer(
                 if debug:
                     print(f"{DIM}{line_str}{RESET}")
             except Exception as exc:
-                logger.warning("Failed to process JSONL event: %s (line: %.120s)", exc, line_str)
+                logger.warning("Failed to process JSONL event: %s (line: %.120s)", exc, line_str, exc_info=True)
     if max_buffer_size > 0 and len(output_buffer) > max_buffer_size:
         logger.warning("Output buffer exceeded %d bytes — truncating", max_buffer_size)
         output_buffer.clear()

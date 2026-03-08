@@ -463,6 +463,7 @@ def _execute_claude_process(
     Returns a ``CheckResult`` with exit code and kill reason.
     """
     process = _spawn_claude_process(cmd, workdir)
+    logger.info("Subprocess started: pid=%d, session_id=%d", process.pid, process.pid)
     kill_reason: str | None = None
     # Track session ID so kill_session_stragglers can catch stragglers later.
     previous_session_ids.append(process.pid)

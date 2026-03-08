@@ -237,6 +237,7 @@ def main() -> None:
         selected_checks, num_cycles, workdir, args,
         convergence_threshold, resume_from=resume_from,
     )
+    logger.info("checkloop finished (run_id=%s)", _RUN_ID)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -213,7 +213,7 @@ def _sweep_previous_sessions() -> None:
                 print_status(f"  Warning: {killed} straggler(s) from session {sid} — killed.", YELLOW)
                 still_active.append(sid)
         except Exception as exc:
-            logger.warning("Failed to sweep session %d: %s", sid, exc)
+            logger.warning("Failed to sweep session %d: %s", sid, exc, exc_info=True)
     previous_session_ids[:] = still_active
 
 

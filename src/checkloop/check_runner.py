@@ -273,7 +273,9 @@ def _run_single_check(
         if not committed:
             logger.debug("No uncommitted changes left after check '%s'", check["id"])
     made_changes, lines_changed, change_pct = _report_check_changes(workdir, check["id"], sha_before)
-    logger.info("Check '%s' made_changes=%s", check["id"], made_changes)
+    elapsed = time.time() - check_start
+    logger.info("Check '%s' completed: made_changes=%s, lines_changed=%s, duration=%.1fs",
+                check["id"], made_changes, lines_changed, elapsed)
     return _make_outcome(
         check, cycle, check_start,
         exit_code=result.exit_code, kill_reason=result.kill_reason,

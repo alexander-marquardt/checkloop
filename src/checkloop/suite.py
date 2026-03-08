@@ -267,6 +267,7 @@ def _run_check_suite(
             logger.warning("Failed to save checkpoint after check %d: %s", check_index, exc, exc_info=True)
 
     for cycle in range(state.start_cycle, num_cycles + 1):
+        cycle_start_time = time.time()
         logger.info("Cycle %d/%d started", cycle, num_cycles)
         if num_cycles > 1:
             print(f"\n{BOLD}{CYAN}===  Cycle {cycle}/{num_cycles}  ==={RESET}")
@@ -285,8 +286,10 @@ def _run_check_suite(
             on_check_complete=_save_after_check,
         )
         all_outcomes.extend(cycle_outcomes)
-        logger.info("Cycle %d/%d completed: %d/%d checks made changes (%s)",
-                     cycle, num_cycles, len(changed_this_cycle), len(active_checks),
+        cycle_elapsed = time.time() - cycle_start_time
+        logger.info("Cycle %d/%d completed in %.1fs: %d/%d checks made changes (%s)",
+                     cycle, num_cycles, cycle_elapsed,
+                     len(changed_this_cycle), len(active_checks),
                      ", ".join(sorted(changed_this_cycle)) or "none")
         _print_cycle_summary(cycle_outcomes, cycle, num_cycles)
         state.previously_changed_ids = changed_this_cycle
