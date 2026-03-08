@@ -230,7 +230,7 @@ The project has no runtime dependencies — only `pytest` and `mypy` in the dev 
    uv run pytest
    uv run mypy src/checkloop/
    ```
-5. Ensure all tests pass and coverage stays above 90%.
+5. Ensure all tests pass.
 6. Open a pull request with a clear description of your changes.
 
 Commit messages should be concise (5–10 lines max), describe *what* changed and *why*, and avoid mentioning specific tools used to make the changes.
