@@ -144,3 +144,21 @@ def _sweep_previous_sessions() -> None:
             _kill_pids(stragglers)
             still_active.append(sid)
     _previous_session_ids[:] = still_active
+
+
+def _cleanup_all_sessions() -> None:
+    """Kill all processes from every tracked session.
+
+    Registered as an ``atexit`` handler and called from signal handlers so
+    that subprocess trees are cleaned up even when checkloop is interrupted
+    by Ctrl+C, SIGTERM, SIGHUP (terminal close), or ``sys.exit()``.
+    """
+    for sid in _previous_session_ids:
+        pids = _find_session_pids(sid)
+        if pids:
+            _kill_pids(pids)
+    # Also kill any direct children that might have escaped session tracking.
+    child_pids = _find_child_pids()
+    if child_pids:
+        _kill_pids(child_pids)
+    _previous_session_ids.clear()

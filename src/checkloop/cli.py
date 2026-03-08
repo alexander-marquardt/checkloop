@@ -17,7 +17,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import atexit
 import logging
+import signal
+import sys
 from pathlib import Path
 
 from checkloop.checks import (
@@ -36,6 +39,7 @@ from checkloop.git import (
     _build_changed_files_prefix,
     _is_git_repo,
 )
+from checkloop.monitoring import _cleanup_all_sessions
 from checkloop.process import DEFAULT_IDLE_TIMEOUT, DEFAULT_PAUSE_SECONDS
 from checkloop.suite import (
     _display_pre_run_warning,
@@ -245,6 +249,12 @@ def main() -> None:
     in ``pyproject.toml``.  It parses CLI flags, resolves the check tier and
     check list, displays a pre-run summary, then delegates to the check loop.
     """
+    # Ensure subprocess trees are cleaned up on any exit path: normal exit,
+    # sys.exit(), Ctrl+C, SIGTERM, or terminal close (SIGHUP).
+    atexit.register(_cleanup_all_sessions)
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, lambda signum, frame: sys.exit(128 + signum))
+
     args = _build_argument_parser().parse_args()
     _configure_logging(args)
 
