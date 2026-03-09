@@ -4,8 +4,7 @@ Coordinates the full lifecycle of a checkloop run: iterating through cycles,
 executing individual checks, tracking which checks produced changes, detecting
 convergence.  All checks run every cycle so that cascading improvements are
 never missed.  Per-check commits are preserved individually for easier
-debugging.  Supports resuming from a saved
-checkpoint.
+debugging.  Supports resuming from a saved checkpoint.
 """
 
 from __future__ import annotations

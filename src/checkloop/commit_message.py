@@ -10,18 +10,13 @@ call with no process-group management, timeout escalation, or RSS monitoring.
 from __future__ import annotations
 
 import logging
-import os
 import subprocess
+
+from checkloop.process import _SANITIZED_ENV
 
 logger = logging.getLogger(__name__)
 
 _COMMIT_MSG_TIMEOUT = 60  # seconds to wait for Claude to generate a commit message
-
-# Strips CLAUDECODE env var whose presence causes nested claude processes
-# to refuse to start when checkloop is invoked from within a Claude Code session.
-_SANITIZED_ENV: dict[str, str] = {
-    k: v for k, v in os.environ.items() if k != "CLAUDECODE"
-}
 
 
 def generate_commit_message(
