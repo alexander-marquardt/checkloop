@@ -4,7 +4,7 @@
 
 **Writeup:** [Autonomous Multi-Check AI Code Review](https://alexmarquardt.com/ai-tools/checkloop-autonomous-code-review/)
 
-Single-check AI code review misses things. `checkloop` runs dimension-specific checks — readability, DRY, tests, security, performance, error handling, and more — in sequence, then optionally cycles through the full suite again. Each check creates a cleaner baseline that makes the next category of issues more visible.
+Asking an AI to "review everything" spreads it thin. `checkloop` runs focused, single-concern checks in sequence — readability, then DRY, then tests, then security, and so on — where each check builds on the previous one's cleanup. Splitting a long function reveals duplication; removing the duplication exposes a security gap that was hidden in the repeated code. Multi-cycle runs repeat the full suite on the improved codebase, catching issues that only become visible after the first round of fixes.
 
 ## Install
 
@@ -74,14 +74,14 @@ Use `--checks` to pick individual checks, or `--all-checks` as a shortcut for `-
 | Check | Tier | What it does |
 |-------|------|-------------|
 | `test-fix` | bookend | Runs the existing test suite and fixes any failures in source code. Always runs first. |
-| `readability` | basic | Naming, function size, comments, formatting. Avoids rename churn. No behaviour changes. |
-| `dry` | basic | Finds repeated logic, extracts helpers, consolidates constants. |
-| `tests` | basic | Behaviour-driven tests for happy paths, edge cases, errors. Avoids defensive/impossible paths. |
-| `docs` | basic | README, config docs. Docstrings only where purpose isn't obvious from name. |
+| `readability` | basic | Naming, function size, module/class docstrings for design strategy. Avoids rename churn. No behaviour changes. |
+| `dry` | basic | Finds repeated logic, extracts helpers, separates mixed concerns into focused modules. |
+| `tests` | basic | Behaviour-driven tests for happy paths, edge cases, complex logic correctness. Unit tests with mocks, integration tests separately. |
+| `docs` | basic | README, config docs. Module-level docstrings for design strategy, class docstrings for intent. Function docstrings only where name+signature don't tell the full story. |
 | `security` | thorough | Injection, hardcoded secrets, input validation. Won't change CORS/retry/auth config without a clear vuln. |
-| `perf` | thorough | N+1 queries, O(N²) algorithms, blocking I/O, unnecessary allocations. |
-| `errors` | thorough | Error handling only where code can meaningfully respond. No wrapping code that can't fail. |
-| `types` | thorough | Type annotations, replace `Any`/untyped code, run type checker. |
+| `perf` | thorough | N+1 queries, O(N²) algorithms, blocking I/O, unnecessary allocations. Selective caching for expensive repeated computations. |
+| `errors` | thorough | Centralized error handling for external services. Only where code can meaningfully respond. No wrapping code that can't fail. |
+| `types` | thorough | Type annotations, replace `Any`/untyped code, runtime validation at API boundaries (Annotated/Pydantic/Zod). |
 | `edge-cases` | exhaustive | Off-by-one, null/empty inputs, overflow, Unicode edge cases. |
 | `complexity` | exhaustive | Flatten nested conditionals, reduce cyclomatic complexity. |
 | `deps` | exhaustive | Remove verified-unused deps, flag vulnerable/outdated packages. |
@@ -126,7 +126,7 @@ The checkpoint file (`.checkloop-checkpoint.json`) is saved in the target projec
 
 ## Convergence Detection
 
-When running multiple cycles (`--cycles N`), `checkloop` can stop early once the codebase stabilises. After each cycle it commits the changes and measures what percentage of total tracked lines were modified. If that percentage falls below the `--convergence-threshold` threshold (default 0.1%), the loop exits. This requires the project directory to be a git repo. Set to 0 to disable.
+When running multiple cycles (`--cycles N`), `checkloop` can stop early once the codebase stabilises. After each cycle it measures what percentage of total tracked lines were modified. If that percentage falls below the `--convergence-threshold` threshold (default 0.1%), the loop exits. This requires the project directory to be a git repo. Set to 0 to disable.
 
 ```bash
 # Run up to 5 cycles, but stop early if changes drop below 0.5%
