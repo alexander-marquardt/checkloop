@@ -6,6 +6,12 @@
 
 Asking an AI to "review everything" spreads it thin. `checkloop` runs focused, single-concern checks in sequence — readability, then DRY, then tests, then security, and so on — where each check builds on the previous one's cleanup. Splitting a long function reveals duplication; removing the duplication exposes a security gap that was hidden in the repeated code. Multi-cycle runs repeat the full suite on the improved codebase, catching issues that only become visible after the first round of fixes.
 
+
+## Token Usage
+
+Each check is a full Claude Code session — reading files, making edits, running tests. A basic-tier run (6 checks) on a medium-sized project typically uses 200K–500K tokens. Thorough or exhaustive runs with multiple cycles can reach several million tokens. Be careful!
+
+
 ## Install
 
 Requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`npm install -g @anthropic-ai/claude-code`).
@@ -102,10 +108,6 @@ A single "review everything" prompt overwhelms the model. Dimension-specific che
 4. **Tests** check writes tests for the cleaned-up API surface, which is now testable
 
 Each check builds on the work of the previous ones.
-
-## Token Usage
-
-Each check is a full Claude Code session — reading files, making edits, running tests. A basic-tier run (6 checks) on a medium-sized project typically uses 200K–500K tokens. Thorough or exhaustive runs with multiple cycles can reach several million tokens. Consider running `checkloop` overnight or when stepping away — it's designed to run unattended, and this avoids competing with tokens you need for interactive work during the day.
 
 ## Checkpoint & Resume
 
