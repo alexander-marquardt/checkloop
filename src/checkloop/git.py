@@ -15,8 +15,6 @@ import time
 from pathlib import Path
 from typing import Literal, overload
 
-from checkloop.terminal import print_status
-
 logger = logging.getLogger(__name__)
 
 # I/O chunk sizes for file-based line counting (independent of process streaming).
@@ -79,13 +77,28 @@ def _git_run(
         raise
 
 
+def _git_stdout(workdir: str, *args: str) -> str | None:
+    """Run a git command and return stripped stdout, or None on any error.
+
+    Consolidates the repeated try/_git_run/except-OSError/check-returncode
+    pattern used by most git helper functions.  Returns the stripped stdout
+    string on success, or None if the command raised OSError or exited with
+    a non-zero return code.
+    """
+    try:
+        result = _git_run(workdir, *args)
+    except OSError:
+        return None
+    if result.returncode != 0:
+        logger.debug("git %s failed (rc=%d): %s", args[0] if args else "",
+                      result.returncode, (result.stderr or "").strip())
+        return None
+    return result.stdout.strip()
+
+
 def is_git_repo(workdir: str) -> bool:
     """Return True if workdir is inside a git repository."""
-    try:
-        is_repo = _git_run(workdir, "rev-parse", "--is-inside-work-tree").returncode == 0
-    except OSError as exc:
-        logger.warning("Could not check git repo status for %s: %s", workdir, exc)
-        return False
+    is_repo = _git_stdout(workdir, "rev-parse", "--is-inside-work-tree") is not None
     if not is_repo:
         logger.info("Not a git repo: %s", workdir)
     return is_repo
@@ -93,13 +106,7 @@ def is_git_repo(workdir: str) -> bool:
 
 def git_head_sha(workdir: str) -> str | None:
     """Return the current HEAD commit SHA, or None if unavailable."""
-    try:
-        result = _git_run(workdir, "rev-parse", "HEAD")
-    except OSError as exc:
-        logger.warning("Could not read HEAD SHA in %s: %s", workdir, exc)
-        return None
-    sha = result.stdout.strip() if result.returncode == 0 else ""
-    return sha or None  # treat empty stdout as unavailable
+    return _git_stdout(workdir, "rev-parse", "HEAD") or None
 
 
 # --- Commit -------------------------------------------------------------------
@@ -169,16 +176,8 @@ def _count_lines_changed(workdir: str, base_sha: str, target: str = "HEAD") -> i
     diff_args = ["diff", "--shortstat", base_sha]
     if target:  # empty string means diff against working tree (uncommitted changes)
         diff_args.append(target)
-    try:
-        result = _git_run(workdir, *diff_args)
-    except OSError as exc:
-        logger.warning("git diff --shortstat failed in %s: %s", workdir, exc)
-        return 0
-    if result.returncode != 0:
-        logger.warning("git diff --shortstat failed (rc=%d): %s", result.returncode,
-                       (result.stderr or "").strip())
-        return 0
-    return _parse_shortstat(result.stdout)
+    output = _git_stdout(workdir, *diff_args)
+    return _parse_shortstat(output) if output is not None else 0
 
 
 # --- Line counting (for convergence percentage) -------------------------------
@@ -268,12 +267,7 @@ def _cached_total_tracked_lines(workdir: str) -> int:
 def detect_default_branch(workdir: str) -> str:
     """Return the name of the default branch (main or master), falling back to 'main'."""
     for branch in ("main", "master"):
-        try:
-            result = _git_run(workdir, "rev-parse", "--verify", f"refs/heads/{branch}")
-        except OSError as exc:
-            logger.warning("Could not verify branch '%s': %s", branch, exc)
-            continue
-        if result.returncode == 0:
+        if _git_stdout(workdir, "rev-parse", "--verify", f"refs/heads/{branch}") is not None:
             logger.info("Detected default branch: %s", branch)
             return branch
     logger.info("No main/master branch found — falling back to 'main'")
@@ -284,30 +278,17 @@ def get_changed_files(workdir: str, base_ref: str) -> list[str]:
     """Return list of files changed between *base_ref* and HEAD.
 
     Uses ``git merge-base`` to find the common ancestor, then ``git diff --name-only``
-    to list changed files. Returns an empty list if the diff fails.
+    to list changed files. Returns an empty list if either command fails.
     """
     start_time = time.time()
-    try:
-        merge_base = _git_run(workdir, "merge-base", base_ref, "HEAD")
-    except OSError as exc:
-        logger.warning("git merge-base failed for ref '%s': %s", base_ref, exc)
-        return []
-    if merge_base.returncode != 0:
-        logger.warning("git merge-base failed for ref '%s' (rc=%d)", base_ref, merge_base.returncode)
-        return []
-    base_sha = merge_base.stdout.strip()
+    base_sha = _git_stdout(workdir, "merge-base", base_ref, "HEAD")
     if not base_sha:
-        logger.warning("git merge-base returned empty SHA for ref '%s'", base_ref)
+        logger.warning("Could not determine merge-base for ref '%s'", base_ref)
         return []
-    try:
-        result = _git_run(workdir, "diff", "--name-only", base_sha, "HEAD")
-    except OSError as exc:
-        logger.warning("git diff --name-only failed: %s", exc)
+    diff_output = _git_stdout(workdir, "diff", "--name-only", base_sha, "HEAD")
+    if diff_output is None:
         return []
-    if result.returncode != 0:
-        logger.warning("git diff --name-only failed (rc=%d)", result.returncode)
-        return []
-    files = [f for f in result.stdout.strip().split("\n") if f]
+    files = [f for f in diff_output.split("\n") if f]
     logger.info("Found %d changed file(s) vs %s in %.2fs", len(files), base_ref, time.time() - start_time)
     return files
 
