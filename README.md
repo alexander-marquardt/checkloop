@@ -103,6 +103,10 @@ A single "review everything" prompt overwhelms the model. Dimension-specific che
 
 Each check builds on the work of the previous ones.
 
+## Token Usage
+
+Each check is a full Claude Code session — reading files, making edits, running tests. A basic-tier run (6 checks) on a medium-sized project typically uses 200K–500K tokens. Thorough or exhaustive runs with multiple cycles can reach several million tokens. Consider running `checkloop` overnight or when stepping away — it's designed to run unattended, and this avoids competing with tokens you need for interactive work during the day.
+
 ## Checkpoint & Resume
 
 If `checkloop` is interrupted (Ctrl+C, crash, terminal close), it saves a checkpoint after each completed check. On the next run with the same check selection, it detects the incomplete run and offers to resume:
@@ -157,6 +161,9 @@ uv run checkloop --cycles 5 --convergence-threshold 0.5
                        Stop cycling early when less than PCT% of total lines
                        changed in a cycle (default: 0.1). Requires a git repo.
                        Set to 0 to disable convergence detection.
+--cleanup-ai-slop      Add the cleanup-ai-slop check to the selected tier.
+                       Removes AI-generated noise: redundant docstrings,
+                       unnecessary logging, misleading error handling, etc.
 ```
 
 ## How It Works
