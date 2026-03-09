@@ -192,6 +192,10 @@ Each check operates on the code left by the previous check, so improvements comp
 
 No other environment variables or config files are required. All configuration is done via CLI flags.
 
+## Log File
+
+Every run writes a DEBUG-level log to `.checkloop-run.log` in the target project directory. The log captures detailed operational data — prompt text, subprocess timing, memory measurements, and error traces — useful for post-run debugging. It is overwritten on each run and created with owner-only permissions (0600) since it may contain sensitive content. The file is excluded from git staging by default.
+
 ## Requirements
 
 - Python 3.12+

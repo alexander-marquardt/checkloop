@@ -105,7 +105,12 @@ class SummaryStats(NamedTuple):
 
 
 def compute_summary_stats(results: list[SummaryRow]) -> SummaryStats:
-    """Compute aggregate statistics from summary rows."""
+    """Compute aggregate statistics from a list of per-check summary rows.
+
+    Tallies successes, failures, kills, total lines changed, and checks
+    with changes across all rows.  Used by both the per-cycle and overall
+    summary table printers.
+    """
     total = len(results)
     succeeded = sum(1 for row in results if row["exit_code"] == 0)
     failed = total - succeeded
@@ -203,7 +208,18 @@ def print_run_summary_table(
 
 
 class CycleSummary(NamedTuple):
-    """Aggregate statistics for a single cycle, used in the overall summary."""
+    """Aggregate statistics for a single cycle, used in the overall summary.
+
+    Attributes:
+        cycle: Cycle number (1-based).
+        total_checks: Number of checks executed in this cycle.
+        succeeded: Number of checks that exited with code 0.
+        failed: Number of checks that exited with a non-zero code.
+        killed: Number of checks terminated by a resource limit.
+        total_lines: Sum of lines changed across all checks in this cycle.
+        with_changes: Number of checks that modified at least one tracked file.
+        duration: Human-readable elapsed time string for the cycle (e.g. ``"5m30s"``).
+    """
 
     cycle: int
     total_checks: int
@@ -216,7 +232,12 @@ class CycleSummary(NamedTuple):
 
 
 def compute_cycle_summaries(results: list[SummaryRow]) -> list[CycleSummary]:
-    """Group summary rows by cycle and compute per-cycle aggregates."""
+    """Group summary rows by cycle number and compute per-cycle aggregates.
+
+    Returns a list of ``CycleSummary`` tuples sorted by cycle number,
+    one per cycle present in *results*.  Used by ``print_overall_summary_table``
+    to render the cross-cycle overview.
+    """
     cycles_seen: dict[int, list[SummaryRow]] = {}
     for row in results:
         cycles_seen.setdefault(row["cycle"], []).append(row)
