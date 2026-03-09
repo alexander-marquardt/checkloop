@@ -168,7 +168,9 @@ def _register_cleanup_handlers() -> None:
     atexit.register(cleanup_all_sessions)
     for sig in (signal.SIGTERM, signal.SIGHUP):
         def _signal_handler(signum: int, frame: types.FrameType | None) -> None:
-            logger.info("Received signal %d — exiting", signum)
+            # Avoid calling logger here — logging acquires locks internally,
+            # so calling it from a signal handler can deadlock if the signal
+            # interrupts the main thread while it holds a logging lock.
             sys.exit(128 + signum)
         try:
             signal.signal(sig, _signal_handler)
