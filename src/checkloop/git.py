@@ -135,13 +135,14 @@ def get_uncommitted_diff(workdir: str) -> str:
 
 # --- Commit -------------------------------------------------------------------
 
-_CHECKLOOP_PATHSPEC_EXCLUDES: list[str] = [
-    ":(exclude).checkloop-run.log",
-    ":(exclude).checkloop-checkpoint.json",
-    ":(exclude).checkloop-ckpt-*.tmp",
+_CHECKLOOP_UNSTAGE_PATTERNS: list[str] = [
+    ".checkloop-run.log",
+    ".checkloop-checkpoint.json",
+    ".checkloop-ckpt-*.tmp",
 ]
-"""Pathspec excludes to prevent checkloop's own files from being staged.
+"""File patterns to unstage after `git add -A`.
 
+These are checkloop's own operational files that should never be committed.
 The log file contains DEBUG-level data (prompts, file paths) that is
 intentionally written with 0o600 permissions.  Committing it into git
 history would permanently expose that sensitive content.
@@ -158,7 +159,10 @@ def git_commit_all(workdir: str, message: str) -> bool:
     """
     start_time = time.time()
     try:
-        _git_run(workdir, "add", "-A", "--", *_CHECKLOOP_PATHSPEC_EXCLUDES, check=True)
+        _git_run(workdir, "add", "-A", check=True)
+        # Unstage checkloop's own files (ignore errors — files may not be staged).
+        for pattern in _CHECKLOOP_UNSTAGE_PATTERNS:
+            _git_run(workdir, "reset", "HEAD", "--", pattern)
         if _git_run(workdir, "diff", "--cached", "--quiet").returncode == 0:
             logger.debug("No staged changes — nothing to commit")
             return False

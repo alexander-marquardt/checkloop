@@ -75,7 +75,10 @@ class TestGitCommitAll:
     def test_commits_when_changes_exist(self) -> None:
         with mock.patch("subprocess.run") as mock_run:
             mock_run.side_effect = [
-                make_git_result(),                       # git add
+                make_git_result(),                       # git add -A
+                make_git_result(),                       # git reset (pattern 1)
+                make_git_result(),                       # git reset (pattern 2)
+                make_git_result(),                       # git reset (pattern 3)
                 make_git_result(returncode=1),           # git diff --cached --quiet (changes exist)
                 make_git_result(),                       # git commit
                 make_git_result(stdout="abc123\n"),       # git rev-parse HEAD
@@ -85,7 +88,10 @@ class TestGitCommitAll:
     def test_no_commit_when_clean(self) -> None:
         with mock.patch("subprocess.run") as mock_run:
             mock_run.side_effect = [
-                make_git_result(),  # git add
+                make_git_result(),  # git add -A
+                make_git_result(),  # git reset (pattern 1)
+                make_git_result(),  # git reset (pattern 2)
+                make_git_result(),  # git reset (pattern 3)
                 make_git_result(),  # git diff --cached --quiet (no changes)
             ]
             assert git.git_commit_all("/tmp", "test commit") is False
@@ -273,30 +279,37 @@ class TestGetChangedFilesEdgeCases:
             assert result == []
 
 
-class TestGitCommitAllPathspecExcludes:
-    """Tests verifying that git_commit_all excludes checkloop's own files."""
+class TestGitCommitAllUnstagePatterns:
+    """Tests verifying that git_commit_all unstages checkloop's own files."""
 
-    def test_add_command_includes_pathspec_excludes(self) -> None:
-        """git add should include pathspec excludes to prevent staging checkloop files."""
+    def test_unstages_checkloop_files_after_add(self) -> None:
+        """git_commit_all should run git reset to unstage checkloop files after git add -A."""
         with mock.patch("subprocess.run") as mock_run:
             mock_run.side_effect = [
-                make_git_result(),                       # git add
+                make_git_result(),                       # git add -A
+                make_git_result(),                       # git reset (pattern 1)
+                make_git_result(),                       # git reset (pattern 2)
+                make_git_result(),                       # git reset (pattern 3)
                 make_git_result(returncode=1),           # git diff --cached --quiet
                 make_git_result(),                       # git commit
                 make_git_result(stdout="abc123\n"),       # git rev-parse HEAD
             ]
             git.git_commit_all("/tmp", "test commit")
-        # First call is git add — verify pathspec excludes are present
+        # First call is git add -A (no pathspec excludes)
         add_call_args = mock_run.call_args_list[0][0][0]
-        assert ":(exclude).checkloop-run.log" in add_call_args
-        assert ":(exclude).checkloop-checkpoint.json" in add_call_args
+        assert add_call_args[-1] == "-A"
+        # Next calls are git reset for each pattern
+        for i, pattern in enumerate(git._CHECKLOOP_UNSTAGE_PATTERNS):
+            reset_args = mock_run.call_args_list[1 + i][0][0]
+            assert "reset" in reset_args
+            assert pattern in reset_args
 
-    def test_pathspec_excludes_constant_is_nonempty(self) -> None:
-        """The pathspec excludes list should contain at least the log and checkpoint files."""
-        assert len(git._CHECKLOOP_PATHSPEC_EXCLUDES) >= 2
-        exclude_str = " ".join(git._CHECKLOOP_PATHSPEC_EXCLUDES)
-        assert "checkloop-run.log" in exclude_str
-        assert "checkloop-checkpoint.json" in exclude_str
+    def test_unstage_patterns_constant_is_nonempty(self) -> None:
+        """The unstage patterns list should contain at least the log and checkpoint files."""
+        assert len(git._CHECKLOOP_UNSTAGE_PATTERNS) >= 2
+        patterns_str = " ".join(git._CHECKLOOP_UNSTAGE_PATTERNS)
+        assert "checkloop-run.log" in patterns_str
+        assert "checkloop-checkpoint.json" in patterns_str
 
 
 class TestGitRunTimeout:
