@@ -266,10 +266,15 @@ def compute_cycle_summaries(results: list[SummaryRow]) -> list[CycleSummary]:
     return summaries
 
 
+# Pre-compiled regex for _parse_duration — called in a loop for every summary
+# row so avoiding re.compile overhead on each invocation matters.
+_RE_DURATION = re.compile(r"(?:(\d+)h)?(\d+)m(\d+)s")
+
+
 def _parse_duration(duration_str: str) -> float:
     """Parse a duration string like '2m30s' or '1h02m30s' back to seconds."""
     total = 0.0
-    match = re.match(r"(?:(\d+)h)?(\d+)m(\d+)s", duration_str.strip())
+    match = _RE_DURATION.match(duration_str.strip())
     if match:
         hours = int(match.group(1) or 0)
         minutes = int(match.group(2))

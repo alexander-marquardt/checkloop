@@ -29,6 +29,11 @@ _GIT_CMD_TIMEOUT = 120  # seconds before a git subprocess is killed to prevent i
 # to silently report zero lines changed.
 _GIT_ENV: dict[str, str] = {**os.environ, "LC_ALL": "C"}
 
+# Pre-compiled regexes for _parse_shortstat — called on every diff stat
+# computation so avoiding re.compile overhead on each invocation matters.
+_RE_INSERTIONS = re.compile(r"(\d+) insertion")
+_RE_DELETIONS = re.compile(r"(\d+) deletion")
+
 
 # --- Low-level git wrappers --------------------------------------------------
 
@@ -151,10 +156,10 @@ def git_commit_all(workdir: str, message: str) -> bool:
 def _parse_shortstat(text: str) -> int:
     """Parse ``git diff --shortstat`` output into total lines changed."""
     insertions = deletions = 0
-    match = re.search(r"(\d+) insertion", text)
+    match = _RE_INSERTIONS.search(text)
     if match:
         insertions = int(match.group(1))
-    match = re.search(r"(\d+) deletion", text)
+    match = _RE_DELETIONS.search(text)
     if match:
         deletions = int(match.group(1))
     if insertions == 0 and deletions == 0 and text.strip():
