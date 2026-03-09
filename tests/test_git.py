@@ -316,3 +316,49 @@ class TestGitRunTimeout:
         with mock.patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="git", timeout=120)):
             with pytest.raises(OSError, match="timed out"):
                 git._git_run("/tmp", "status")
+
+
+# =============================================================================
+# has_uncommitted_changes
+# =============================================================================
+
+class TestHasUncommittedChanges:
+    """Tests for has_uncommitted_changes()."""
+
+    def test_clean_working_tree(self) -> None:
+        with mock.patch.object(git, "_git_stdout", return_value=""):
+            assert git.has_uncommitted_changes("/tmp") is False
+
+    def test_dirty_working_tree(self) -> None:
+        with mock.patch.object(git, "_git_stdout", return_value=" M foo.py\n?? bar.py"):
+            assert git.has_uncommitted_changes("/tmp") is True
+
+    def test_git_failure_returns_false(self) -> None:
+        with mock.patch.object(git, "_git_stdout", return_value=None):
+            assert git.has_uncommitted_changes("/tmp") is False
+
+
+# =============================================================================
+# get_uncommitted_diff
+# =============================================================================
+
+class TestGetUncommittedDiff:
+    """Tests for get_uncommitted_diff()."""
+
+    def test_returns_diff_from_head(self) -> None:
+        with mock.patch.object(git, "_git_stdout", return_value="diff content"):
+            assert git.get_uncommitted_diff("/tmp") == "diff content"
+
+    def test_falls_back_to_cached_when_no_head(self) -> None:
+        def side_effect(workdir: str, *args: str) -> str | None:
+            if args[:2] == ("diff", "HEAD"):
+                return None
+            if args[:2] == ("diff", "--cached"):
+                return "staged diff"
+            return None
+        with mock.patch.object(git, "_git_stdout", side_effect=side_effect):
+            assert git.get_uncommitted_diff("/tmp") == "staged diff"
+
+    def test_returns_empty_when_both_fail(self) -> None:
+        with mock.patch.object(git, "_git_stdout", return_value=None):
+            assert git.get_uncommitted_diff("/tmp") == ""

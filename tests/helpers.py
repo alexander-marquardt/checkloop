@@ -95,6 +95,8 @@ def patch_suite_git(
         stack.enter_context(mock.patch.object(suite, "git_head_sha", side_effect=sha_iter))
         stack.enter_context(mock.patch.object(check_runner, "git_head_sha", side_effect=sha_iter))
         stack.enter_context(mock.patch.object(check_runner, "git_commit_all", return_value=True))
+        # Prevent pre-suite uncommitted-change snapshot from running.
+        stack.enter_context(mock.patch.object(suite, "has_uncommitted_changes", return_value=False))
         if lines_changed is not None:
             change_pct = lines_changed / (total_tracked or 1000) * 100
             stack.enter_context(mock.patch.object(

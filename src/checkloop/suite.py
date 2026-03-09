@@ -28,9 +28,13 @@ from checkloop.checkpoint import (
 from checkloop.checks import CheckDef
 from checkloop.git import (
     compute_change_stats,
+    get_uncommitted_diff,
+    git_commit_all,
     git_head_sha,
+    has_uncommitted_changes,
     is_git_repo,
 )
+from checkloop.process import generate_commit_message
 from checkloop.terminal import (
     BOLD,
     CYAN,
@@ -94,6 +98,41 @@ def _check_cycle_convergence(
     logger.info("Cycle %d: %.2f%% lines changed (%d lines, threshold: %.2f%%), continuing",
                  cycle, change_pct, lines_changed, convergence_threshold)
     return False, change_pct
+
+
+# --- Pre-suite uncommitted change snapshot ------------------------------------
+
+_MAX_DIFF_LEN = 50_000  # truncate diffs beyond this to avoid overwhelming Claude
+_FALLBACK_COMMIT_MSG = "Snapshot uncommitted work before checkloop review"
+
+
+def _commit_uncommitted_changes(workdir: str, skip_permissions: bool) -> None:
+    """Commit any uncommitted changes with a Claude-generated message.
+
+    Called at the start of a suite run to preserve the user's in-progress
+    work before checks begin modifying files.  If Claude fails to generate
+    a message, falls back to a generic description.
+    """
+    if not has_uncommitted_changes(workdir):
+        return
+
+    diff = get_uncommitted_diff(workdir)
+    if not diff:
+        # Untracked files only — no diff content, but still worth committing.
+        message = _FALLBACK_COMMIT_MSG
+    else:
+        if len(diff) > _MAX_DIFF_LEN:
+            diff = diff[:_MAX_DIFF_LEN] + f"\n\n... (truncated, {len(diff) - _MAX_DIFF_LEN} more characters)"
+        message = generate_commit_message(diff, workdir, skip_permissions=skip_permissions)
+        if not message:
+            message = _FALLBACK_COMMIT_MSG
+
+    committed = git_commit_all(workdir, message)
+    if committed:
+        logger.info("Committed uncommitted changes before suite: %s", message[:120])
+        print_status("Committed uncommitted changes before starting checks.", GREEN)
+    else:
+        logger.debug("git_commit_all returned False despite has_uncommitted_changes=True")
 
 
 # --- Suite state --------------------------------------------------------------
@@ -244,6 +283,8 @@ def _run_check_suite(
     Returns a list of ``CheckOutcome`` objects for the post-run summary.
     """
     is_git = is_git_repo(workdir)
+    if is_git and not args.dry_run:
+        _commit_uncommitted_changes(workdir, args.dangerously_skip_permissions)
     convergence_enabled = convergence_threshold > 0 and is_git
     check_ids = [c["id"] for c in selected_checks]
     state = _build_suite_state(resume_from)

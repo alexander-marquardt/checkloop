@@ -514,3 +514,71 @@ class TestPrintSummarySingleCycle:
         """Empty outcomes should produce no output."""
         suite._print_summary([], "0m00s")
         assert capsys.readouterr().out == ""
+
+
+# =============================================================================
+# _commit_uncommitted_changes
+# =============================================================================
+
+class TestCommitUncommittedChanges:
+    """Tests for _commit_uncommitted_changes() pre-suite snapshot."""
+
+    def test_no_changes_does_nothing(self) -> None:
+        """When there are no uncommitted changes, nothing happens."""
+        with mock.patch.object(suite, "has_uncommitted_changes", return_value=False) as mock_check, \
+             mock.patch.object(suite, "git_commit_all") as mock_commit:
+            suite._commit_uncommitted_changes("/tmp", skip_permissions=False)
+            mock_check.assert_called_once_with("/tmp")
+            mock_commit.assert_not_called()
+
+    def test_commits_with_claude_message(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """When there are changes and Claude succeeds, uses Claude's message."""
+        with mock.patch.object(suite, "has_uncommitted_changes", return_value=True), \
+             mock.patch.object(suite, "get_uncommitted_diff", return_value="diff --git a/foo.py"), \
+             mock.patch.object(suite, "generate_commit_message", return_value="Fix typo in foo.py") as mock_gen, \
+             mock.patch.object(suite, "git_commit_all", return_value=True) as mock_commit:
+            suite._commit_uncommitted_changes("/tmp", skip_permissions=True)
+            mock_gen.assert_called_once()
+            mock_commit.assert_called_once_with("/tmp", "Fix typo in foo.py")
+        out = capsys.readouterr().out
+        assert "Committed uncommitted changes" in out
+
+    def test_falls_back_when_claude_fails(self) -> None:
+        """When Claude fails to generate a message, uses the fallback."""
+        with mock.patch.object(suite, "has_uncommitted_changes", return_value=True), \
+             mock.patch.object(suite, "get_uncommitted_diff", return_value="some diff"), \
+             mock.patch.object(suite, "generate_commit_message", return_value=None), \
+             mock.patch.object(suite, "git_commit_all", return_value=True) as mock_commit:
+            suite._commit_uncommitted_changes("/tmp", skip_permissions=False)
+            mock_commit.assert_called_once_with("/tmp", suite._FALLBACK_COMMIT_MSG)
+
+    def test_falls_back_when_diff_empty(self) -> None:
+        """When diff is empty (untracked files only), uses the fallback."""
+        with mock.patch.object(suite, "has_uncommitted_changes", return_value=True), \
+             mock.patch.object(suite, "get_uncommitted_diff", return_value=""), \
+             mock.patch.object(suite, "generate_commit_message") as mock_gen, \
+             mock.patch.object(suite, "git_commit_all", return_value=True) as mock_commit:
+            suite._commit_uncommitted_changes("/tmp", skip_permissions=False)
+            mock_gen.assert_not_called()
+            mock_commit.assert_called_once_with("/tmp", suite._FALLBACK_COMMIT_MSG)
+
+    def test_truncates_large_diffs(self) -> None:
+        """Diffs larger than _MAX_DIFF_LEN are truncated before sending to Claude."""
+        large_diff = "x" * (suite._MAX_DIFF_LEN + 1000)
+        with mock.patch.object(suite, "has_uncommitted_changes", return_value=True), \
+             mock.patch.object(suite, "get_uncommitted_diff", return_value=large_diff), \
+             mock.patch.object(suite, "generate_commit_message", return_value="msg") as mock_gen, \
+             mock.patch.object(suite, "git_commit_all", return_value=True):
+            suite._commit_uncommitted_changes("/tmp", skip_permissions=False)
+            sent_diff = mock_gen.call_args[0][0]
+            assert len(sent_diff) < len(large_diff)
+            assert "truncated" in sent_diff
+
+    def test_passes_skip_permissions(self) -> None:
+        """The skip_permissions flag is forwarded to generate_commit_message."""
+        with mock.patch.object(suite, "has_uncommitted_changes", return_value=True), \
+             mock.patch.object(suite, "get_uncommitted_diff", return_value="diff"), \
+             mock.patch.object(suite, "generate_commit_message", return_value="msg") as mock_gen, \
+             mock.patch.object(suite, "git_commit_all", return_value=True):
+            suite._commit_uncommitted_changes("/tmp", skip_permissions=True)
+            assert mock_gen.call_args[1]["skip_permissions"] is True

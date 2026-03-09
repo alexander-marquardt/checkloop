@@ -113,6 +113,28 @@ def git_head_sha(workdir: str) -> str | None:
     return _git_stdout(workdir, "rev-parse", "HEAD") or None
 
 
+# --- Working tree status ------------------------------------------------------
+
+def has_uncommitted_changes(workdir: str) -> bool:
+    """Return True if there are staged, unstaged, or untracked changes."""
+    output = _git_stdout(workdir, "status", "--porcelain")
+    return bool(output)
+
+
+def get_uncommitted_diff(workdir: str) -> str:
+    """Return the combined diff of all uncommitted changes relative to HEAD.
+
+    Includes both staged and unstaged modifications.  Falls back to
+    ``git diff --cached`` if HEAD does not exist (initial commit scenario).
+    Returns an empty string if no diff is available.
+    """
+    diff = _git_stdout(workdir, "diff", "HEAD")
+    if diff is not None:
+        return diff
+    # No HEAD yet (no commits) — show staged changes only.
+    return _git_stdout(workdir, "diff", "--cached") or ""
+
+
 # --- Commit -------------------------------------------------------------------
 
 _CHECKLOOP_PATHSPEC_EXCLUDES: list[str] = [
