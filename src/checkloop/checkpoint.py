@@ -95,10 +95,10 @@ def save_checkpoint(workdir: str, data: CheckpointData) -> None:
         logger.warning("Failed to save checkpoint: %s", exc, exc_info=True)
         return
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
         os.replace(tmp_path, target)
-    except OSError as exc:
+    except (OSError, TypeError, ValueError) as exc:
         _unlink_quietly(tmp_path)
         logger.warning("Failed to save checkpoint: %s", exc, exc_info=True)
         return
@@ -115,7 +115,7 @@ def load_checkpoint(workdir: str) -> CheckpointData | None:
     if not path.exists():
         return None
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
         logger.warning("Corrupted checkpoint file %s: %s", path, exc, exc_info=True)

@@ -236,11 +236,11 @@ class TestSaveCheckpointErrors:
     """Tests for save_checkpoint error handling paths."""
 
     def test_write_error_unlinks_temp_file(self, tmp_path: Path) -> None:
-        """When json.dump raises during write, the temp file is cleaned up."""
+        """When json.dump raises during write, the temp file is cleaned up and no exception propagates."""
         data = make_checkpoint_data(workdir=str(tmp_path))
         with mock.patch("json.dump", side_effect=TypeError("not serializable")):
-            with pytest.raises(TypeError):
-                checkpoint.save_checkpoint(str(tmp_path), data)
+            # Should not raise — TypeError is now caught and logged as best-effort
+            checkpoint.save_checkpoint(str(tmp_path), data)
         # Temp files should have been cleaned up
         remaining = list(tmp_path.glob(".checkloop-ckpt-*.tmp"))
         assert remaining == []
@@ -313,12 +313,12 @@ class TestSaveCheckpointUnlinkFailure:
     """Test that os.unlink failure in the cleanup path is handled."""
 
     def test_unlink_oserror_during_write_error_cleanup(self, tmp_path: Path) -> None:
-        """When json.dump fails AND os.unlink also fails, the original error propagates."""
+        """When json.dump fails AND os.unlink also fails, save_checkpoint still handles it gracefully."""
         data = make_checkpoint_data(workdir=str(tmp_path))
         with mock.patch("json.dump", side_effect=TypeError("not serializable")):
             with mock.patch("os.unlink", side_effect=OSError("permission denied")):
-                with pytest.raises(TypeError):
-                    checkpoint.save_checkpoint(str(tmp_path), data)
+                # Should not raise — TypeError is caught and logged as best-effort
+                checkpoint.save_checkpoint(str(tmp_path), data)
 
 
 # =============================================================================
