@@ -85,7 +85,7 @@ _MEMORY_CHECK_INTERVAL = 10
 # Perf: build once instead of copying os.environ on every subprocess spawn.
 # Strips CLAUDECODE env var whose presence causes nested claude processes
 # to refuse to start when checkloop is invoked from within a Claude Code session.
-_SANITIZED_ENV: dict[str, str] = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+SANITIZED_ENV: dict[str, str] = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
 
 
 # --- Claude command construction ----------------------------------------------
@@ -119,7 +119,7 @@ def _spawn_claude_process(
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            env=_SANITIZED_ENV,
+            env=SANITIZED_ENV,
             start_new_session=True,  # creates a new process group
         )
     except FileNotFoundError:

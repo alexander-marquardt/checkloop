@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import subprocess
 
-from checkloop.process import _SANITIZED_ENV
+from checkloop.process import SANITIZED_ENV
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ def generate_commit_message(
             capture_output=True,
             text=True,
             timeout=_COMMIT_MSG_TIMEOUT,
-            env=_SANITIZED_ENV,
+            env=SANITIZED_ENV,
         )
         if result.returncode != 0:
             logger.warning("Commit message generation failed (rc=%d): %s",
