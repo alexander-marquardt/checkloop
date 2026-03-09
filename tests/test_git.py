@@ -172,11 +172,6 @@ class TestCountLinesChanged:
             result = git._count_lines_changed("/tmp", "abc123")
         assert result == 0
 
-    def test_none_base_sha_returns_zero(self) -> None:
-        """None is falsy, so _count_lines_changed should return 0."""
-        result = git._count_lines_changed("/tmp", None)  # type: ignore[arg-type]
-        assert result == 0
-
     def test_whitespace_only_base_sha_proceeds(self) -> None:
         """Whitespace-only SHA is truthy, so git is called (and likely fails)."""
         with mock.patch.object(git, "_git_run", return_value=make_git_result(

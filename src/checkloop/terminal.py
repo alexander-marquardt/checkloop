@@ -108,12 +108,6 @@ class SummaryStats(NamedTuple):
 
 
 def compute_summary_stats(results: list[SummaryRow]) -> SummaryStats:
-    """Compute aggregate statistics from a list of per-check summary rows.
-
-    Tallies successes, failures, kills, total lines changed, and checks
-    with changes across all rows.  Used by both the per-cycle and overall
-    summary table printers.
-    """
     total = len(results)
     succeeded = sum(1 for row in results if row["exit_code"] == 0)
     failed = total - succeeded
@@ -236,12 +230,6 @@ class CycleSummary(NamedTuple):
 
 
 def compute_cycle_summaries(results: list[SummaryRow]) -> list[CycleSummary]:
-    """Group summary rows by cycle number and compute per-cycle aggregates.
-
-    Returns a list of ``CycleSummary`` tuples sorted by cycle number,
-    one per cycle present in *results*.  Used by ``print_overall_summary_table``
-    to render the cross-cycle overview.
-    """
     cycles_seen: dict[int, list[SummaryRow]] = {}
     for row in results:
         cycles_seen.setdefault(row["cycle"], []).append(row)

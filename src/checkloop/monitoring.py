@@ -20,13 +20,12 @@ from checkloop.terminal import DIM, YELLOW, print_status
 logger = logging.getLogger(__name__)
 
 _KB_PER_MB = 1024  # ps reports RSS in kilobytes
-_CMD_TIMEOUT = 10  # seconds before ps/pgrep subprocesses are killed
+_CMD_TIMEOUT = 10
 
 
 # --- Shared subprocess helpers ------------------------------------------------
 
 def _run_cmd_quiet(cmd: list[str]) -> subprocess.CompletedProcess[str] | None:
-    """Run a command with captured output, returning None on any launch error."""
     try:
         return subprocess.run(cmd, capture_output=True, text=True, timeout=_CMD_TIMEOUT)
     except subprocess.TimeoutExpired:
@@ -98,7 +97,6 @@ def _run_pgrep(*args: str) -> list[int]:
 
 
 def _find_child_pids() -> list[int]:
-    """Return PIDs of surviving child processes (direct children only)."""
     return _run_pgrep("-P", str(os.getpid()))
 
 
@@ -111,15 +109,7 @@ def find_session_pids(session_id: int) -> list[int]:
 # --- Orphan and straggler cleanup --------------------------------------------
 
 def kill_pids(pids: list[int], sig: signal.Signals = signal.SIGKILL) -> int:
-    """Send a signal to each PID, ignoring already-dead processes.
-
-    Args:
-        pids: Process IDs to signal.
-        sig: Signal to send (defaults to SIGKILL for immediate termination).
-
-    Returns:
-        Number of processes successfully signalled.
-    """
+    """Send a signal to each PID, ignoring already-dead processes."""
     killed = 0
     for pid in pids:
         try:
@@ -157,10 +147,6 @@ def log_memory_usage(label: str) -> None:
 
     This is a diagnostic/cleanup helper and must never crash the main check
     loop — all errors are caught and logged so the suite can continue.
-
-    Args:
-        label: A short identifier for the log context (e.g. ``"after check"``),
-            included in log messages to distinguish different measurement points.
     """
     try:
         rss_mb = _measure_current_rss_mb()

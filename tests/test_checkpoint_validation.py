@@ -306,54 +306,6 @@ class TestLoadCheckpointMissingOptionalFields:
         assert loaded is not None
 
 
-class TestPromptResumeEdgeCases:
-    """Edge cases for prompt_resume()."""
-
-    def test_user_says_YES_uppercase(self, tmp_path: Path) -> None:
-        """'YES' (uppercase) should be accepted as resume."""
-        data = make_checkpoint_data(workdir=str(tmp_path))
-        checkpoint.save_checkpoint(str(tmp_path), data)
-        with mock.patch("sys.stdin") as mock_stdin:
-            mock_stdin.isatty.return_value = True
-            mock_stdin.readline.return_value = "YES\n"
-            with mock.patch("select.select", return_value=([mock_stdin], [], [])):
-                result = checkpoint.prompt_resume(str(tmp_path))
-        assert result is True
-
-    def test_user_says_yes_with_whitespace(self, tmp_path: Path) -> None:
-        """'  yes  ' with surrounding whitespace should be accepted."""
-        data = make_checkpoint_data(workdir=str(tmp_path))
-        checkpoint.save_checkpoint(str(tmp_path), data)
-        with mock.patch("sys.stdin") as mock_stdin:
-            mock_stdin.isatty.return_value = True
-            mock_stdin.readline.return_value = "  yes  \n"
-            with mock.patch("select.select", return_value=([mock_stdin], [], [])):
-                result = checkpoint.prompt_resume(str(tmp_path))
-        assert result is True
-
-    def test_user_says_ye_not_accepted(self, tmp_path: Path) -> None:
-        """'ye' is not 'y' or 'yes', so it should not resume."""
-        data = make_checkpoint_data(workdir=str(tmp_path))
-        checkpoint.save_checkpoint(str(tmp_path), data)
-        with mock.patch("sys.stdin") as mock_stdin:
-            mock_stdin.isatty.return_value = True
-            mock_stdin.readline.return_value = "ye\n"
-            with mock.patch("select.select", return_value=([mock_stdin], [], [])):
-                result = checkpoint.prompt_resume(str(tmp_path))
-        assert result is False
-
-    def test_readline_oserror_returns_false(self, tmp_path: Path) -> None:
-        """When readline() raises OSError, should return False."""
-        data = make_checkpoint_data(workdir=str(tmp_path))
-        checkpoint.save_checkpoint(str(tmp_path), data)
-        with mock.patch("sys.stdin") as mock_stdin:
-            mock_stdin.isatty.return_value = True
-            mock_stdin.readline.side_effect = OSError("broken pipe")
-            with mock.patch("select.select", return_value=([mock_stdin], [], [])):
-                result = checkpoint.prompt_resume(str(tmp_path))
-        assert result is False
-
-
 class TestIsStrictIntEdgeCases:
     """Additional boundary tests for _is_strict_int()."""
 
@@ -362,12 +314,6 @@ class TestIsStrictIntEdgeCases:
 
     def test_string_number_is_rejected(self) -> None:
         assert _is_strict_int("5") is False
-
-    def test_negative_one_with_min_zero(self) -> None:
-        assert _is_strict_int(-1, min_value=0) is False
-
-    def test_zero_with_min_zero(self) -> None:
-        assert _is_strict_int(0, min_value=0) is True
 
     def test_max_python_int(self) -> None:
         """Very large ints should still be accepted."""

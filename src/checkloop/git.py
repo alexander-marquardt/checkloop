@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 # I/O chunk sizes for file-based line counting (independent of process streaming).
 _BINARY_CHECK_SIZE = 8192  # bytes to read when checking for null bytes (binary detection)
-_LINE_COUNT_CHUNK_SIZE = 65536  # bytes per chunk when counting newlines
+_LINE_COUNT_CHUNK_SIZE = 65536
 _GIT_CMD_TIMEOUT = 120  # seconds before a git subprocess is killed to prevent indefinite hangs
 
 # Force English output from git regardless of the user's locale.  Without
@@ -101,7 +101,6 @@ def _git_stdout(workdir: str, *args: str) -> str | None:
 
 
 def is_git_repo(workdir: str) -> bool:
-    """Return True if workdir is inside a git repository."""
     is_repo = _git_stdout(workdir, "rev-parse", "--is-inside-work-tree") is not None
     if not is_repo:
         logger.info("Not a git repo: %s", workdir)
@@ -109,7 +108,6 @@ def is_git_repo(workdir: str) -> bool:
 
 
 def git_head_sha(workdir: str) -> str | None:
-    """Return the current HEAD commit SHA, or None if unavailable."""
     return _git_stdout(workdir, "rev-parse", "HEAD") or None
 
 
@@ -176,7 +174,6 @@ def git_commit_all(workdir: str, message: str) -> bool:
 # --- Diff statistics ----------------------------------------------------------
 
 def _parse_shortstat(text: str) -> int:
-    """Parse ``git diff --shortstat`` output into total lines changed."""
     insertions = deletions = 0
     match = _RE_INSERTIONS.search(text)
     if match:
@@ -290,7 +287,6 @@ def _cached_total_tracked_lines(workdir: str) -> int:
 # --- Branch and changed-file helpers -----------------------------------------
 
 def detect_default_branch(workdir: str) -> str:
-    """Return the name of the default branch (main or master), falling back to 'main'."""
     for branch in ("main", "master"):
         if _git_stdout(workdir, "rev-parse", "--verify", f"refs/heads/{branch}") is not None:
             logger.info("Detected default branch: %s", branch)

@@ -79,8 +79,8 @@ A value of 0 disables the hard timeout entirely.
 _READ_CHUNK_SIZE = 8192  # bytes per stdout read during streaming
 _DRAIN_CHUNK_SIZE = 65536  # bytes per read when draining after process exit
 _MAX_BUFFER_SIZE = 10 * 1024 * 1024  # 10 MB safety cap on JSONL output buffer
-_PROCESS_WAIT_TIMEOUT = 5  # seconds to wait for process group to die
-_MEMORY_CHECK_INTERVAL = 10  # seconds between child-tree memory checks
+_PROCESS_WAIT_TIMEOUT = 5
+_MEMORY_CHECK_INTERVAL = 10
 
 # Perf: build once instead of copying os.environ on every subprocess spawn.
 # Strips CLAUDECODE env var whose presence causes nested claude processes
@@ -220,7 +220,6 @@ def _check_idle_timeout(
     check_start_time: float,
     process: subprocess.Popen[bytes],
 ) -> bool:
-    """Return True and kill the process if it has been idle too long."""
     now = time.time()
     if now - last_output_time > idle_timeout:
         logger.warning("Idle timeout: pid=%d, idle=%.0fs, elapsed=%s",
@@ -238,7 +237,6 @@ def _check_hard_timeout(
     check_timeout: int,
     process: subprocess.Popen[bytes],
 ) -> bool:
-    """Return True and kill the process if the hard wall-clock timeout is exceeded."""
     if check_timeout <= 0:
         return False
     elapsed = time.time() - check_start_time
@@ -501,10 +499,6 @@ def _execute_claude_process(
     check_timeout: int = 0,
     max_memory_mb: int = 0,
 ) -> CheckResult:
-    """Spawn the Claude subprocess, stream its output, and clean up.
-
-    Returns a ``CheckResult`` with exit code and kill reason.
-    """
     process = _spawn_claude_process(cmd, workdir)
     logger.info("Subprocess started: pid=%d, session_id=%d", process.pid, process.pid)
     kill_reason: str | None = None

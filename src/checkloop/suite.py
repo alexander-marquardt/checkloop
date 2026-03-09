@@ -420,18 +420,6 @@ def run_suite_with_error_handling(
 
     The checkpoint file is intentionally NOT cleared on error — this is what
     allows resume on the next run.
-
-    Args:
-        selected_checks: Ordered list of check definitions to execute.
-        num_cycles: Maximum number of times to repeat the full suite.
-        workdir: Absolute path to the project directory to review.
-        args: Parsed CLI namespace containing timeout, permission, and
-            output settings passed through to each check invocation.
-        convergence_threshold: Stop cycling early when fewer than this
-            percentage of total tracked lines change in a cycle. Set to 0
-            to disable convergence detection.
-        resume_from: Checkpoint data from a previous interrupted run, or
-            None to start fresh.
     """
     suite_start_time = time.time()
     all_outcomes: list[CheckOutcome] = []

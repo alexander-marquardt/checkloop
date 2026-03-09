@@ -228,7 +228,6 @@ def _has_valid_field_types(data: dict[str, object]) -> bool:
 
 
 def clear_checkpoint(workdir: str) -> None:
-    """Delete the checkpoint file if it exists."""
     path = _checkpoint_path(workdir)
     try:
         path.unlink(missing_ok=True)
@@ -316,24 +315,7 @@ def build_checkpoint(
     prev_change_pct: float | None,
     started_at: str | None = None,
 ) -> CheckpointData:
-    """Construct a CheckpointData dict from current suite state.
-
-    Args:
-        workdir: Absolute path to the project directory being reviewed.
-        check_ids: Full ordered list of selected check IDs for this run.
-        num_cycles: Total number of cycles configured.
-        convergence_threshold: Percentage threshold for early-stop convergence.
-        current_cycle: The cycle that is in progress (1-based).
-        current_check_index: 0-based index of the next check to run.
-        active_check_ids: Ordered check IDs scheduled for the current cycle.
-        changed_this_cycle: Check IDs that produced changes so far this cycle.
-        previously_changed_ids: Check IDs that made changes in the prior
-            cycle, or None if this is the first cycle.
-        prev_change_pct: Percentage of lines changed in the prior cycle,
-            or None if not yet computed.
-        started_at: ISO 8601 timestamp when the suite was originally started.
-            Defaults to the current UTC time if not provided.
-    """
+    """Construct a CheckpointData dict from current suite state."""
     return CheckpointData(
         version=_CHECKPOINT_VERSION,
         started_at=started_at or datetime.now(timezone.utc).isoformat(),

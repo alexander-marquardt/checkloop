@@ -205,8 +205,6 @@ def main() -> None:
     args = build_argument_parser().parse_args()
     _configure_logging(args)
     logger.info("checkloop started (run_id=%s)", _RUN_ID)
-    logger.debug("argv: %s", sys.argv)
-
     workdir = resolve_working_directory(args.dir)
     _add_file_log_handler(workdir)
     validate_arguments(args)
@@ -231,16 +229,6 @@ def main() -> None:
     logger.info(
         "Suite started: workdir=%s, checks=[%s], cycles=%d, idle_timeout=%d, convergence=%.2f%%",
         workdir, check_names, num_cycles, args.idle_timeout, convergence_threshold,
-    )
-
-    logger.debug(
-        "Resolved config: workdir=%s, checks=[%s], cycles=%d, idle_timeout=%d, "
-        "check_timeout=%d, max_memory_mb=%d, convergence=%.2f%%, dry_run=%s, "
-        "skip_permissions=%s, changed_only=%s",
-        workdir, check_names,
-        num_cycles, args.idle_timeout, args.check_timeout, args.max_memory_mb,
-        convergence_threshold, args.dry_run, args.dangerously_skip_permissions,
-        args.changed_only,
     )
 
     if not args.dry_run:
