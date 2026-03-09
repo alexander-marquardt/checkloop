@@ -48,6 +48,7 @@ def generate_commit_message(
         result = subprocess.run(
             cmd,
             cwd=workdir,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=_COMMIT_MSG_TIMEOUT,

@@ -266,6 +266,7 @@ def _run_check_suite(
     convergence_threshold: float = 0.0,
     *,
     resume_from: CheckpointData | None = None,
+    all_outcomes: list[CheckOutcome] | None = None,
 ) -> list[CheckOutcome]:
     """Execute all checks across all cycles.
 
@@ -279,7 +280,11 @@ def _run_check_suite(
     When *resume_from* is provided, the suite picks up from the saved checkpoint
     instead of starting from the beginning.
 
-    Returns a list of ``CheckOutcome`` objects for the post-run summary.
+    When *all_outcomes* is provided, completed check outcomes are appended to it
+    progressively.  This allows the caller to access partial results even if the
+    suite is interrupted by an exception or KeyboardInterrupt.
+
+    Returns the outcomes list (same object as *all_outcomes* when provided).
     """
     is_git = is_git_repo(workdir)
     if is_git and not args.dry_run:
@@ -287,7 +292,8 @@ def _run_check_suite(
     convergence_enabled = convergence_threshold > 0 and is_git
     check_ids = [c["id"] for c in selected_checks]
     state = _build_suite_state(resume_from)
-    all_outcomes: list[CheckOutcome] = []
+    if all_outcomes is None:
+        all_outcomes = []
 
     def _save_after_check(check_index: int, changed: set[str]) -> None:
         """Checkpoint callback — invoked after each check completes."""
@@ -423,9 +429,10 @@ def run_suite_with_error_handling(
     suite_start_time = time.time()
     all_outcomes: list[CheckOutcome] = []
     try:
-        all_outcomes = _run_check_suite(
+        _run_check_suite(
             selected_checks, num_cycles, workdir, args,
             convergence_threshold, resume_from=resume_from,
+            all_outcomes=all_outcomes,
         )
     except KeyboardInterrupt:
         elapsed = format_duration(time.time() - suite_start_time)
