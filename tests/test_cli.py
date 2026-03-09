@@ -355,3 +355,62 @@ class TestTryResumeFromCheckpoint:
         assert result is None
         out = capsys.readouterr().out
         assert "check selection differs" in out
+
+
+# =============================================================================
+# _resolve_path_safe — empty input
+# =============================================================================
+
+class TestResolvePathSafe:
+    """Tests for _resolve_path_safe edge cases."""
+
+    def test_empty_string_returns_none(self) -> None:
+        """An empty string should return None without raising."""
+        assert cli._resolve_path_safe("") is None
+
+    def test_none_like_empty_returns_none(self) -> None:
+        """An empty path returns None."""
+        assert cli._resolve_path_safe("") is None
+
+
+# =============================================================================
+# _try_resume_from_checkpoint — current workdir resolution failure
+# =============================================================================
+
+class TestTryResumeCurrentWorkdirResolutionFailure:
+    """Cover the branch where the *current* workdir cannot be resolved."""
+
+    def test_current_workdir_resolve_fails(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """When Path.resolve() raises OSError on the current workdir, start fresh."""
+        from pathlib import Path as RealPath
+        from checkloop.checkpoint import save_checkpoint
+
+        real_workdir = str(tmp_path)
+        data = make_checkpoint_data(
+            workdir=real_workdir,
+            check_ids=["readability"],
+            num_cycles=1,
+            current_check_index=0,
+            active_check_ids=["readability"],
+            changed_this_cycle=[],
+        )
+        save_checkpoint(real_workdir, data)
+
+        selected_checks: list[CheckDef] = [CheckDef(id="readability", label="Readability", prompt="review code")]
+        original_resolve = RealPath.resolve
+        call_count = 0
+
+        def resolve_side_effect(self_path: Path, *args: Any, **kwargs: Any) -> Path:
+            nonlocal call_count
+            call_count += 1
+            # First call resolves the saved workdir (succeeds).
+            # Second call resolves the current workdir (fails).
+            if call_count >= 2 and str(self_path) == real_workdir:
+                raise OSError("disk error")
+            return original_resolve(self_path, *args, **kwargs)
+
+        with mock.patch.object(RealPath, "resolve", resolve_side_effect):
+            result = cli._try_resume_from_checkpoint(real_workdir, selected_checks)
+        assert result is None
+        out = capsys.readouterr().out
+        assert "Cannot resolve current workdir" in out

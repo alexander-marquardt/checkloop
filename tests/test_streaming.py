@@ -89,6 +89,19 @@ class TestSummariseToolUse:
         assert result.endswith("...")
 
 
+class TestSummariseToolUseExceptionHandling:
+    """Test that _summarise_tool_use catches exceptions gracefully."""
+
+    def test_tool_input_raising_exception_returns_empty(self) -> None:
+        """When tool_input causes an internal error, the function returns ''."""
+        # Pass a tool_input whose __contains__ raises, triggering the except branch
+        bad_input: Any = unittest.mock.MagicMock()
+        bad_input.__contains__ = unittest.mock.MagicMock(side_effect=TypeError("boom"))
+        bad_input.__getitem__ = unittest.mock.MagicMock(side_effect=TypeError("boom"))
+        result = streaming._summarise_tool_use("Bash", bad_input)
+        assert result == ""
+
+
 class TestSummariseToolUseNonStringInputs:
     """Edge case tests for _summarise_tool_use() with non-string tool_input values."""
 

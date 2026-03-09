@@ -120,6 +120,13 @@ class TestSpawnClaudeProcess:
                 process._spawn_claude_process(["claude"], "/tmp")
             assert exc_info.value.code == 1
 
+    def test_unexpected_exception_exits(self) -> None:
+        """A generic Exception from Popen should be caught and cause SystemExit."""
+        with mock.patch("subprocess.Popen", side_effect=RuntimeError("something unexpected")):
+            with pytest.raises(SystemExit) as exc_info:
+                process._spawn_claude_process(["claude"], "/tmp")
+            assert exc_info.value.code == 1
+
 
 class TestRunClaude:
     """Tests for the public run_claude() function."""
@@ -230,6 +237,23 @@ class TestRunClaudeWaitTimeout:
                 with mock.patch.object(process, "_kill_process_group") as mock_kill:
                     process.run_claude("test prompt", "/tmp", idle_timeout=1)
                     assert mock_kill.call_count == 1
+
+
+class TestRunClaudeWaitOSError:
+    """Tests for run_claude() when process.wait() raises OSError."""
+
+    def test_wait_oserror_handled_gracefully(self) -> None:
+        """An OSError from process.wait() should be caught without crashing."""
+        mock_proc = mock.MagicMock()
+        mock_proc.pid = 7777
+        mock_proc.wait.side_effect = OSError("child process gone")
+        mock_proc.returncode = 0
+
+        with mock.patch.object(process, "_spawn_claude_process", return_value=mock_proc):
+            with mock.patch.object(process, "_stream_process_output", return_value=(time.time(), None)):
+                with mock.patch.object(process, "_kill_process_group"):
+                    result = process.run_claude("test prompt", "/tmp", idle_timeout=1)
+                    assert result.exit_code == 0
 
 
 class TestExecuteClaudeProcessCleanup:
