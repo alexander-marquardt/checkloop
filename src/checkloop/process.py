@@ -466,10 +466,14 @@ def _execute_claude_process(
         )
 
         try:
-            process.wait(timeout=idle_timeout)
+            # Use a short timeout: streaming is done, so the process should
+            # have already exited or been killed.  The finally block will
+            # force-kill it if it's still alive.  Using idle_timeout here
+            # (default 300s) would block unnecessarily.
+            process.wait(timeout=_PROCESS_WAIT_TIMEOUT)
         except subprocess.TimeoutExpired:
             logger.warning("process.wait() timed out after %ds — killing group (pid=%d)",
-                           idle_timeout, process.pid)
+                           _PROCESS_WAIT_TIMEOUT, process.pid)
             if kill_reason is None:
                 kill_reason = KILL_REASON_IDLE
         except OSError as exc:

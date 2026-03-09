@@ -218,17 +218,18 @@ Every run writes a DEBUG-level log to `.checkloop-run.log` in the target project
 ```
 src/checkloop/
 ├── __init__.py      # Public API exports (main, run_claude, CHECKS, TIERS, etc.)
-├── check_runner.py  # Single-check execution: prompt assembly, invocation, change reporting
-├── checkpoint.py    # Checkpoint save/load/clear for resume-after-interrupt
-├── checks.py        # Check definitions, tier configuration, dangerous-prompt guard
-├── cli.py           # CLI entry point, logging setup, checkpoint resume, signal handling
-├── cli_args.py      # Argument parsing, validation, resolution, and pre-run display
-├── git.py           # Git operations: commits, diffs, line counting, branch detection
-├── monitoring.py    # Memory/process monitoring, orphan detection, session cleanup
-├── process.py       # Claude Code subprocess spawning, streaming, and cleanup
-├── streaming.py     # JSONL stream parsing and real-time event display
-├── suite.py         # Multi-cycle suite orchestration and convergence detection
-└── terminal.py      # ANSI colours, banners, status messages, duration formatting
+├── check_runner.py   # Single-check execution: prompt assembly, invocation, change reporting
+├── checkpoint.py     # Checkpoint save/load/clear for resume-after-interrupt
+├── checks.py         # Check definitions, tier configuration, dangerous-prompt guard
+├── cli.py            # CLI entry point, logging setup, checkpoint resume, signal handling
+├── cli_args.py       # Argument parsing, validation, resolution, and pre-run display
+├── commit_message.py # Commit message generation via Claude Code (plain-text, no streaming)
+├── git.py            # Git operations: commits, diffs, line counting, branch detection
+├── monitoring.py     # Memory/process monitoring, orphan detection, session cleanup
+├── process.py        # Claude Code subprocess spawning, streaming, and cleanup
+├── streaming.py      # JSONL stream parsing and real-time event display
+├── suite.py          # Multi-cycle suite orchestration and convergence detection
+└── terminal.py       # ANSI colours, banners, status messages, duration formatting
 ```
 
 ## Development
