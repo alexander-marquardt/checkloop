@@ -263,7 +263,7 @@ class TestResumeFromCheckpoint:
                 lines_changed=0, change_pct=0.0, duration_seconds=0.1,
             )
 
-        with mock.patch.object(suite, "_run_single_check", side_effect=tracking_run):
+        with mock.patch.object(suite, "run_single_check", side_effect=tracking_run):
             with mock.patch.object(suite, "is_git_repo", return_value=False):
                 with mock.patch.object(suite, "clear_checkpoint"):
                     suite._run_check_suite(
@@ -317,7 +317,7 @@ class TestResumeFromCheckpoint:
             check_id="b", label="B", cycle=1, exit_code=0, kill_reason=None,
             made_changes=False, lines_changed=0, change_pct=0.0, duration_seconds=0.1,
         )
-        with mock.patch.object(suite, "_run_single_check", return_value=no_change_outcome):
+        with mock.patch.object(suite, "run_single_check", return_value=no_change_outcome):
             with mock.patch.object(suite, "is_git_repo", return_value=False):
                 with mock.patch.object(suite, "save_checkpoint") as mock_save:
                     with mock.patch.object(suite, "clear_checkpoint"):

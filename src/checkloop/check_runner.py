@@ -218,7 +218,7 @@ def _report_check_changes(
 
 # --- Single check execution --------------------------------------------------
 
-def _run_single_check(
+def run_single_check(
     check: CheckDef,
     workdir: str,
     args: argparse.Namespace,

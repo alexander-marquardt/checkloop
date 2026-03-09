@@ -14,18 +14,18 @@ from tests.helpers import make_check, make_suite_args
 
 
 # =============================================================================
-# _run_single_check
+# run_single_check
 # =============================================================================
 
 class TestRunSingleCheck:
-    """Tests for _run_single_check()."""
+    """Tests for run_single_check()."""
 
     def test_missing_changed_files_prefix(self, capsys: pytest.CaptureFixture[str]) -> None:
         check_def: CheckDef = make_check("readability", "Readability", "review code")
         args = make_suite_args(dry_run=True)
         if hasattr(args, "changed_files_prefix"):
             delattr(args, "changed_files_prefix")
-        result = check_runner._run_single_check(check_def, "/tmp", args, "[1/1]", is_git=False)
+        result = check_runner.run_single_check(check_def, "/tmp", args, "[1/1]", is_git=False)
         assert result.made_changes is True
 
     def test_changed_prefix_prepended_to_prompt(self) -> None:
@@ -41,7 +41,7 @@ class TestRunSingleCheck:
 
 
 class TestRunSingleCheckNoCommit:
-    """Tests for _run_single_check when git commit returns no changes."""
+    """Tests for run_single_check when git commit returns no changes."""
 
     def test_no_commit_after_check(self, capsys: pytest.CaptureFixture[str]) -> None:
         """When git_commit_all returns False, the no-commit debug path is hit."""
@@ -52,12 +52,12 @@ class TestRunSingleCheckNoCommit:
              mock.patch.object(check_runner, "git_head_sha", return_value="sha1"), \
              mock.patch.object(check_runner, "git_commit_all", return_value=False), \
              mock.patch.object(check_runner, "_report_check_changes", return_value=(False, 0, 0.0)):
-            result = check_runner._run_single_check(check_def, "/tmp", args, "[1/1]", is_git=True)
+            result = check_runner.run_single_check(check_def, "/tmp", args, "[1/1]", is_git=True)
         assert result.made_changes is False
 
 
 class TestRunSingleCheckEdgeCases:
-    """Edge cases for _run_single_check."""
+    """Edge cases for run_single_check."""
 
     def test_idle_timeout_kill_does_not_trigger_memory_fix(self) -> None:
         """KILL_REASON_IDLE should NOT trigger _run_memory_fix."""
@@ -67,7 +67,7 @@ class TestRunSingleCheckEdgeCases:
 
         with mock.patch.object(check_runner, "_invoke_claude", return_value=idle_result), \
              mock.patch.object(check_runner, "_run_memory_fix") as mock_fix:
-            check_runner._run_single_check(check_def, "/tmp", args, "[1/1]", is_git=False)
+            check_runner.run_single_check(check_def, "/tmp", args, "[1/1]", is_git=False)
             mock_fix.assert_not_called()
 
     def test_timeout_kill_does_not_trigger_memory_fix(self) -> None:
@@ -78,21 +78,21 @@ class TestRunSingleCheckEdgeCases:
 
         with mock.patch.object(check_runner, "_invoke_claude", return_value=timeout_result), \
              mock.patch.object(check_runner, "_run_memory_fix") as mock_fix:
-            check_runner._run_single_check(check_def, "/tmp", args, "[1/1]", is_git=False)
+            check_runner.run_single_check(check_def, "/tmp", args, "[1/1]", is_git=False)
             mock_fix.assert_not_called()
 
 
 class TestInvokeClaudeExceptionInRunSingleCheck:
-    """Tests for _run_single_check when _invoke_claude raises an unexpected exception."""
+    """Tests for run_single_check when _invoke_claude raises an unexpected exception."""
 
     def test_invoke_claude_exception_returns_error_outcome(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """When _invoke_claude raises, _run_single_check catches it and returns exit_code=-1."""
+        """When _invoke_claude raises, run_single_check catches it and returns exit_code=-1."""
         check_def = CheckDef(id="readability", label="Readability", prompt="review code")
         args = make_suite_args(dry_run=False)
 
         with mock.patch.object(check_runner, "_invoke_claude", side_effect=OSError("connection lost")), \
              mock.patch.object(check_runner, "git_head_sha", return_value="abc123"):
-            outcome = check_runner._run_single_check(check_def, "/tmp", args, "[1/1]", is_git=True)
+            outcome = check_runner.run_single_check(check_def, "/tmp", args, "[1/1]", is_git=True)
         assert outcome.exit_code == -1
         out = capsys.readouterr().out
         assert "failed with error" in out
@@ -242,7 +242,7 @@ class TestMemoryKillFeedbackLoop:
 
         with mock.patch.object(check_runner, "_invoke_claude", return_value=oom_result), \
              mock.patch.object(check_runner, "_run_memory_fix") as mock_fix:
-            check_runner._run_single_check(check_def, "/tmp", args, "[1/1]", is_git=False)
+            check_runner.run_single_check(check_def, "/tmp", args, "[1/1]", is_git=False)
             mock_fix.assert_called_once_with("/tmp", args, False)
 
     def test_no_memory_fix_on_normal_exit(self) -> None:
@@ -253,7 +253,7 @@ class TestMemoryKillFeedbackLoop:
 
         with mock.patch.object(check_runner, "_invoke_claude", return_value=ok_result), \
              mock.patch.object(check_runner, "_run_memory_fix") as mock_fix:
-            check_runner._run_single_check(check_def, "/tmp", args, "[1/1]", is_git=False)
+            check_runner.run_single_check(check_def, "/tmp", args, "[1/1]", is_git=False)
             mock_fix.assert_not_called()
 
     def test_memory_fix_invokes_claude_with_fix_prompt(self, capsys: pytest.CaptureFixture[str]) -> None:

@@ -47,7 +47,7 @@ DEFAULT_CONVERGENCE_THRESHOLD = 0.1
 
 # --- Argument parsing ---------------------------------------------------------
 
-def _build_argument_parser() -> argparse.ArgumentParser:
+def build_argument_parser() -> argparse.ArgumentParser:
     """Create and configure the CLI argument parser."""
     tier_names = ", ".join(TIERS)
     parser = argparse.ArgumentParser(
@@ -160,7 +160,7 @@ def _build_argument_parser() -> argparse.ArgumentParser:
 
 # --- Pre-run summary ----------------------------------------------------------
 
-def _print_run_summary(
+def print_run_summary(
     workdir: str,
     selected_checks: list[CheckDef],
     num_cycles: int,
@@ -190,7 +190,7 @@ def _print_run_summary(
 
 # --- Validation and resolution ------------------------------------------------
 
-def _resolve_working_directory(dir_arg: str) -> str:
+def resolve_working_directory(dir_arg: str) -> str:
     """Resolve and validate the --dir argument, exiting on error."""
     try:
         workdir = str(Path(dir_arg).resolve())
@@ -201,7 +201,7 @@ def _resolve_working_directory(dir_arg: str) -> str:
     return workdir
 
 
-def _validate_arguments(args: argparse.Namespace) -> None:
+def validate_arguments(args: argparse.Namespace) -> None:
     """Exit with an error if any CLI arguments have invalid values."""
     if args.idle_timeout < 1:
         fatal("--idle-timeout must be at least 1 second")
@@ -219,7 +219,7 @@ def _validate_arguments(args: argparse.Namespace) -> None:
         fatal("--check-timeout cannot be negative")
 
 
-def _resolve_changed_files_prefix(args: argparse.Namespace, workdir: str) -> str:
+def resolve_changed_files_prefix(args: argparse.Namespace, workdir: str) -> str:
     """Resolve --changed-only into a prompt prefix, or return empty string."""
     if args.changed_only is None:
         return ""
@@ -234,7 +234,7 @@ def _resolve_changed_files_prefix(args: argparse.Namespace, workdir: str) -> str
     return build_changed_files_prefix(changed_files)
 
 
-def _resolve_selected_checks(args: argparse.Namespace) -> list[CheckDef]:
+def resolve_selected_checks(args: argparse.Namespace) -> list[CheckDef]:
     """Determine which checks to run based on CLI arguments."""
     if args.all_checks:
         selected_ids = set(CHECK_IDS)
@@ -289,7 +289,7 @@ def _build_permission_warning(skip_permissions: bool) -> _PermissionWarning:
     )
 
 
-def _display_pre_run_warning(skip_permissions: bool) -> None:
+def display_pre_run_warning(skip_permissions: bool) -> None:
     """Show a warning about permissions and count down before starting.
 
     With ``--dangerously-skip-permissions``, warns that all actions will run

@@ -35,13 +35,13 @@ from checkloop.checkpoint import (
 )
 from checkloop.cli_args import (
     DEFAULT_CONVERGENCE_THRESHOLD,
-    _build_argument_parser,
-    _display_pre_run_warning,
-    _print_run_summary,
-    _resolve_changed_files_prefix,
-    _resolve_selected_checks,
-    _resolve_working_directory,
-    _validate_arguments,
+    build_argument_parser,
+    display_pre_run_warning,
+    print_run_summary,
+    resolve_changed_files_prefix,
+    resolve_selected_checks,
+    resolve_working_directory,
+    validate_arguments,
 )
 from checkloop.monitoring import cleanup_all_sessions
 from checkloop.suite import run_suite_with_error_handling
@@ -189,25 +189,25 @@ def main() -> None:
     """
     _register_cleanup_handlers()
 
-    args = _build_argument_parser().parse_args()
+    args = build_argument_parser().parse_args()
     _configure_logging(args)
     logger.info("checkloop started (run_id=%s)", _RUN_ID)
     logger.debug("argv: %s", sys.argv)
 
-    workdir = _resolve_working_directory(args.dir)
+    workdir = resolve_working_directory(args.dir)
     _add_file_log_handler(workdir)
-    _validate_arguments(args)
+    validate_arguments(args)
 
-    args.changed_files_prefix = _resolve_changed_files_prefix(args, workdir)
+    args.changed_files_prefix = resolve_changed_files_prefix(args, workdir)
 
-    selected_checks = _resolve_selected_checks(args)
+    selected_checks = resolve_selected_checks(args)
     if not selected_checks:
         fatal("No checks selected. Check your --checks or --level arguments.")
     num_cycles = args.cycles
     total_steps = len(selected_checks) * num_cycles
     convergence_threshold = args.convergence_threshold
 
-    _print_run_summary(
+    print_run_summary(
         workdir, selected_checks, num_cycles, total_steps,
         args.idle_timeout, args.dry_run, convergence_threshold,
         max_memory_mb=args.max_memory_mb, check_timeout=args.check_timeout,
@@ -234,7 +234,7 @@ def main() -> None:
     )
 
     if not args.dry_run:
-        _display_pre_run_warning(args.dangerously_skip_permissions)
+        display_pre_run_warning(args.dangerously_skip_permissions)
 
     # Check for a previous incomplete run and offer to resume.
     resume_from = None

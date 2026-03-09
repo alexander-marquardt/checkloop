@@ -33,7 +33,7 @@ SHARED_ARG_DEFAULTS: dict[str, Any] = dict(
 
 
 def make_suite_args(*, dry_run: bool = True, **overrides: Any) -> argparse.Namespace:
-    """Build an argparse.Namespace for _run_check_suite / _run_single_check."""
+    """Build an argparse.Namespace for _run_check_suite / run_single_check."""
     defaults = {**SHARED_ARG_DEFAULTS, "dry_run": dry_run}
     defaults.update(overrides)
     return argparse.Namespace(**defaults)

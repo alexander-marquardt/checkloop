@@ -29,12 +29,12 @@ def _patch_main_pipeline(
     suite_kwargs: dict[str, Any] = {}
     if suite_side_effect is not None:
         suite_kwargs["side_effect"] = suite_side_effect
-    with mock.patch.object(cli, "_build_argument_parser") as mock_parser:
+    with mock.patch.object(cli, "build_argument_parser") as mock_parser:
         mock_parser.return_value.parse_args.return_value = mock_args
         with contextlib.ExitStack() as stack:
-            stack.enter_context(mock.patch.object(cli, "_resolve_working_directory", return_value="/tmp"))
-            stack.enter_context(mock.patch.object(cli, "_validate_arguments"))
-            stack.enter_context(mock.patch.object(cli, "_display_pre_run_warning"))
+            stack.enter_context(mock.patch.object(cli, "resolve_working_directory", return_value="/tmp"))
+            stack.enter_context(mock.patch.object(cli, "validate_arguments"))
+            stack.enter_context(mock.patch.object(cli, "display_pre_run_warning"))
             stack.enter_context(mock.patch.object(suite, "_run_check_suite", **suite_kwargs))
             yield
 
@@ -103,7 +103,7 @@ class TestMainNonDryRun:
 
     def test_non_dry_run_calls_warning(self, capsys: pytest.CaptureFixture[str]) -> None:
         with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--pause", "0"]):
-            with mock.patch.object(cli, "_display_pre_run_warning") as mock_warn:
+            with mock.patch.object(cli, "display_pre_run_warning") as mock_warn:
                 with mock.patch.object(cli, "run_suite_with_error_handling"):
                     cli.main()
                 mock_warn.assert_called_once()
@@ -121,11 +121,11 @@ class TestMainEmptyChecksExit:
 
     def test_empty_checks_exits(self) -> None:
         mock_args = make_mock_cli_args(dry_run=True, checks=None, level=None)
-        with mock.patch.object(cli, "_build_argument_parser") as mock_parser:
+        with mock.patch.object(cli, "build_argument_parser") as mock_parser:
             mock_parser.return_value.parse_args.return_value = mock_args
-            with mock.patch.object(cli, "_resolve_working_directory", return_value="/tmp"):
-                with mock.patch.object(cli, "_validate_arguments"):
-                    with mock.patch.object(cli, "_resolve_selected_checks", return_value=[]):
+            with mock.patch.object(cli, "resolve_working_directory", return_value="/tmp"):
+                with mock.patch.object(cli, "validate_arguments"):
+                    with mock.patch.object(cli, "resolve_selected_checks", return_value=[]):
                         with pytest.raises(SystemExit) as exc_info:
                             cli.main()
                         assert exc_info.value.code == 1
@@ -195,11 +195,11 @@ class TestSignalHandler:
             return original_signal(signum, signal_mod.SIG_DFL)
 
         mock_args = make_mock_cli_args(dry_run=True)
-        with mock.patch.object(cli, "_build_argument_parser") as mock_parser:
+        with mock.patch.object(cli, "build_argument_parser") as mock_parser:
             mock_parser.return_value.parse_args.return_value = mock_args
-            with mock.patch.object(cli, "_resolve_working_directory", return_value="/tmp"), \
-                 mock.patch.object(cli, "_validate_arguments"), \
-                 mock.patch.object(cli, "_display_pre_run_warning"), \
+            with mock.patch.object(cli, "resolve_working_directory", return_value="/tmp"), \
+                 mock.patch.object(cli, "validate_arguments"), \
+                 mock.patch.object(cli, "display_pre_run_warning"), \
                  mock.patch.object(cli, "run_suite_with_error_handling"), \
                  mock.patch("signal.signal", side_effect=capture_signal):
                 cli.main()
@@ -220,11 +220,11 @@ class TestSignalHandler:
             raise OSError("Operation not permitted")
 
         mock_args = make_mock_cli_args(dry_run=True)
-        with mock.patch.object(cli, "_build_argument_parser") as mock_parser:
+        with mock.patch.object(cli, "build_argument_parser") as mock_parser:
             mock_parser.return_value.parse_args.return_value = mock_args
-            with mock.patch.object(cli, "_resolve_working_directory", return_value="/tmp"), \
-                 mock.patch.object(cli, "_validate_arguments"), \
-                 mock.patch.object(cli, "_display_pre_run_warning"), \
+            with mock.patch.object(cli, "resolve_working_directory", return_value="/tmp"), \
+                 mock.patch.object(cli, "validate_arguments"), \
+                 mock.patch.object(cli, "display_pre_run_warning"), \
                  mock.patch.object(cli, "run_suite_with_error_handling"), \
                  mock.patch("signal.signal", side_effect=failing_signal):
                 # Should not raise — the OSError is caught

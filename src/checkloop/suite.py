@@ -18,7 +18,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from checkloop.check_runner import CheckOutcome as CheckOutcome, _run_single_check
+from checkloop.check_runner import CheckOutcome as CheckOutcome, run_single_check
 from checkloop.checkpoint import (
     CheckpointData,
     build_checkpoint,
@@ -210,7 +210,7 @@ def _run_single_cycle(
         cycle_suffix = f" (cycle {cycle}/{num_cycles})" if num_cycles > 1 else ""
         step_label = f"[{display_idx}/{len(active_checks)}]{cycle_suffix}"
 
-        outcome = _run_single_check(check, workdir, args, step_label, is_git=is_git, cycle=cycle)
+        outcome = run_single_check(check, workdir, args, step_label, is_git=is_git, cycle=cycle)
         outcomes.append(outcome)
         if outcome.made_changes:
             changed_this_cycle.add(check["id"])
