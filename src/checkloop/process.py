@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 # --- Kill reasons -------------------------------------------------------------
 
-KILL_REASON_MEMORY = "memory"
+KILL_REASON_MEMORY = "memory_limit"
 """Kill reason when the child process tree exceeds the RSS memory limit."""
 
 KILL_REASON_TIMEOUT = "check_timeout"

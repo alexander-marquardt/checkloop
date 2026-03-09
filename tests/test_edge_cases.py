@@ -301,7 +301,7 @@ class TestComputeSummaryStatsEdgeCasesNew:
 
     def test_killed_with_exit_code_zero(self) -> None:
         """A check killed (has kill_reason) but with exit_code=0 counts as succeeded AND killed."""
-        row = make_summary_row(exit_code=0, kill_reason="memory", made_changes=True, lines_changed=50)
+        row = make_summary_row(exit_code=0, kill_reason="memory_limit", made_changes=True, lines_changed=50)
         stats = terminal.compute_summary_stats([row])
         assert stats.succeeded == 1
         assert stats.killed == 1

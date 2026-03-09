@@ -8,6 +8,7 @@ can focus deeply on one concern at a time.
 Public API:
     main()          — CLI entry point (also available as the ``checkloop`` command).
     run_claude()    — Run a single Claude Code check programmatically.
+    looks_dangerous() — Check if a prompt contains destructive keywords.
     CheckResult     — Return type of ``run_claude()``.
     CheckDef        — TypedDict describing a single check (id, label, prompt).
     CHECKS          — Ordered list of all available check definitions.
@@ -24,10 +25,11 @@ Kill-reason constants (possible values of ``CheckResult.kill_reason``):
     KILL_REASON_MEMORY  — Child process tree RSS exceeded limit.
 
 Default resource limits (match ``run_claude()`` keyword defaults):
-    DEFAULT_IDLE_TIMEOUT   — Seconds before killing a silent subprocess (300).
-    DEFAULT_CHECK_TIMEOUT  — Hard wall-clock timeout per check in seconds (0 = disabled).
-    DEFAULT_MAX_MEMORY_MB  — Max child-tree RSS in MB before killing (8192).
-    DEFAULT_PAUSE_SECONDS  — Seconds between consecutive checks (2).
+    DEFAULT_IDLE_TIMEOUT          — Seconds before killing a silent subprocess (300).
+    DEFAULT_CHECK_TIMEOUT         — Hard wall-clock timeout per check in seconds (0 = disabled).
+    DEFAULT_MAX_MEMORY_MB         — Max child-tree RSS in MB before killing (8192).
+    DEFAULT_PAUSE_SECONDS         — Seconds between consecutive checks (2).
+    DEFAULT_CONVERGENCE_THRESHOLD — Percent of lines changed below which cycles stop (0.1).
 """
 
 from checkloop.checks import (
@@ -39,8 +41,10 @@ from checkloop.checks import (
     TIER_EXHAUSTIVE,
     TIER_THOROUGH,
     TIERS,
+    looks_dangerous,
 )
 from checkloop.cli import main
+from checkloop.cli_args import DEFAULT_CONVERGENCE_THRESHOLD
 from checkloop.process import (
     CheckResult,
     DEFAULT_CHECK_TIMEOUT,
@@ -59,6 +63,7 @@ __all__ = [
     "CheckDef",
     "CheckResult",
     "DEFAULT_CHECK_TIMEOUT",
+    "DEFAULT_CONVERGENCE_THRESHOLD",
     "DEFAULT_IDLE_TIMEOUT",
     "DEFAULT_MAX_MEMORY_MB",
     "DEFAULT_PAUSE_SECONDS",
@@ -70,6 +75,7 @@ __all__ = [
     "TIER_EXHAUSTIVE",
     "TIER_THOROUGH",
     "TIERS",
+    "looks_dangerous",
     "main",
     "run_claude",
 ]
