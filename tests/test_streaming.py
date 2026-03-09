@@ -519,3 +519,15 @@ class TestPrintEventEdgeCasesAdditional:
         streaming._print_event(event, time.time())
         out = capsys.readouterr().out
         assert "42" in out
+
+
+class TestProcessJsonlBufferMaxBufferDisabled:
+    """Test process_jsonl_buffer when max_buffer_size is 0 (disabled)."""
+
+    def test_zero_max_buffer_size_does_not_truncate(self) -> None:
+        """When max_buffer_size=0, buffer is never truncated regardless of size."""
+        big_buf = bytearray(b"x" * 100_000)
+        result = streaming.process_jsonl_buffer(
+            big_buf, 0.0, False, max_buffer_size=0,
+        )
+        assert len(result) == 100_000

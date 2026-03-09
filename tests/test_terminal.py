@@ -376,3 +376,64 @@ class TestFormatDurationAdditional:
 
     def test_61_seconds(self) -> None:
         assert terminal.format_duration(61) == "1m01s"
+
+
+class TestParseDurationEdgeCases:
+    """Edge cases for _parse_duration beyond what's already tested."""
+
+    def test_seconds_only_format_returns_zero(self) -> None:
+        """A string like '30s' (no minutes) doesn't match the regex and returns 0.0."""
+        assert terminal._parse_duration("30s") == 0.0
+
+    def test_empty_string_returns_zero(self) -> None:
+        assert terminal._parse_duration("") == 0.0
+
+    def test_whitespace_only_returns_zero(self) -> None:
+        assert terminal._parse_duration("   ") == 0.0
+
+    def test_negative_components_not_matched(self) -> None:
+        """Regex \\d+ doesn't match negative numbers."""
+        assert terminal._parse_duration("-1m-30s") == 0.0
+
+    def test_zero_hours_zero_minutes_zero_seconds(self) -> None:
+        assert terminal._parse_duration("0h00m00s") == 0.0
+
+    def test_large_hours(self) -> None:
+        assert terminal._parse_duration("999h59m59s") == 999 * 3600 + 59 * 60 + 59
+
+    def test_format_parse_roundtrip_all_ranges(self) -> None:
+        """Verify format_duration → _parse_duration round-trips for various values."""
+        test_values = [0, 1, 59, 60, 61, 3599, 3600, 3661, 86400]
+        for secs in test_values:
+            formatted = terminal.format_duration(secs)
+            parsed = terminal._parse_duration(formatted)
+            assert parsed == secs, f"Round-trip failed for {secs}: '{formatted}' → {parsed}"
+
+
+class TestComputeSummaryStatsEdgeCasesNew:
+    """Additional edge cases for compute_summary_stats."""
+
+    def test_killed_with_exit_code_zero(self) -> None:
+        """A check killed (has kill_reason) but with exit_code=0 counts as succeeded AND killed."""
+        row = make_summary_row(exit_code=0, kill_reason="memory_limit", made_changes=True, lines_changed=50)
+        stats = terminal.compute_summary_stats([row])
+        assert stats.succeeded == 1
+        assert stats.killed == 1
+        assert stats.failed == 0
+
+    def test_all_checks_failed(self) -> None:
+        rows = [
+            make_summary_row(exit_code=1),
+            make_summary_row(exit_code=2),
+            make_summary_row(exit_code=127),
+        ]
+        stats = terminal.compute_summary_stats(rows)
+        assert stats.succeeded == 0
+        assert stats.failed == 3
+
+    def test_negative_exit_code(self) -> None:
+        """Negative exit code (signal kill) is treated as failure."""
+        row = make_summary_row(exit_code=-9)
+        stats = terminal.compute_summary_stats([row])
+        assert stats.succeeded == 0
+        assert stats.failed == 1

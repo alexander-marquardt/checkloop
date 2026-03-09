@@ -253,3 +253,48 @@ class TestReadStdoutChunk:
         mock_stdout.read1 = mock.MagicMock(side_effect=OSError("broken pipe"))
         result = process._read_stdout_chunk(mock_stdout)
         assert result == b""
+
+
+class TestStreamProcessOutputEdgeCases:
+    """Edge cases for _stream_process_output."""
+
+    def test_select_valueerror_breaks_loop(self) -> None:
+        """ValueError from select() (e.g., closed fd) breaks the streaming loop."""
+        mock_proc = mock.MagicMock()
+        mock_stdout = mock.MagicMock()
+        mock_stdout.fileno.return_value = 5
+        mock_stdout.read1 = None
+        mock_proc.stdout = mock_stdout
+        mock_proc.pid = 9999
+
+        with mock.patch("select.select", side_effect=ValueError("closed fd")):
+            _, kill_reason = process._stream_process_output(
+                mock_proc, idle_timeout=120, debug=False,
+            )
+        assert kill_reason is None
+
+
+class TestReportCheckExitStatusEdgeCases:
+    """Edge cases for _report_check_exit_status."""
+
+    def test_returncode_none_returns_negative_one(self, capsys: pytest.CaptureFixture[str]) -> None:
+        mock_proc = mock.MagicMock()
+        mock_proc.returncode = None
+        exit_code = process._report_check_exit_status(mock_proc, 0.0)
+        assert exit_code == -1
+
+    def test_returncode_zero_reports_completed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        mock_proc = mock.MagicMock()
+        mock_proc.returncode = 0
+        exit_code = process._report_check_exit_status(mock_proc, 0.0)
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert "completed" in out
+
+    def test_negative_returncode_reports_exit_code(self, capsys: pytest.CaptureFixture[str]) -> None:
+        mock_proc = mock.MagicMock()
+        mock_proc.returncode = -9
+        exit_code = process._report_check_exit_status(mock_proc, 0.0)
+        assert exit_code == -9
+        out = capsys.readouterr().out
+        assert "exited with code -9" in out

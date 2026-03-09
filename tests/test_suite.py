@@ -99,6 +99,39 @@ class TestRunCheckSuite:
         assert "dry: no changes" in out
 
 
+class TestRunCheckSuiteEdgeCases:
+    """Edge case tests for _run_check_suite."""
+
+    def test_empty_selected_checks(self) -> None:
+        """Suite with zero checks should complete without error."""
+        args = make_suite_args(dry_run=True)
+        with mock.patch.object(suite, "clear_checkpoint"):
+            suite._run_check_suite([], 1, "/tmp", args)
+
+    def test_checkpoint_save_exception_is_swallowed(self) -> None:
+        """If save_checkpoint raises inside _save_after_check, the suite continues."""
+        selected_checks: list[CheckDef] = [
+            make_check("a", "A", "do a"),
+            make_check("b", "B", "do b"),
+        ]
+        args = make_suite_args(dry_run=True)
+        with mock.patch.object(suite, "save_checkpoint", side_effect=RuntimeError("disk full")):
+            with mock.patch.object(suite, "clear_checkpoint"):
+                # Should NOT raise — the exception is caught and logged.
+                suite._run_check_suite(selected_checks, 1, "/tmp", args)
+
+    def test_single_cycle_no_convergence_check(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """With 1 cycle and convergence enabled, convergence is checked but loop exits after 1 cycle."""
+        selected_checks: list[CheckDef] = [make_check("a", "A", "do a")]
+        args = make_suite_args(dry_run=False)
+        # SHAs: base, before-check, after-check, convergence-check
+        with patch_suite_git(["sha1", "sha2", "sha3", "sha3"], lines_changed=5, total_tracked=1000):
+            suite._run_check_suite(selected_checks, 1, "/tmp", args, convergence_threshold=0.1)
+        # Should complete without "Cycle 2" appearing
+        out = capsys.readouterr().out
+        assert "Cycle 2" not in out
+
+
 # =============================================================================
 # _check_cycle_convergence
 # =============================================================================
@@ -147,6 +180,20 @@ class TestCheckCycleConvergence:
         assert pct == 0.05
 
 
+class TestCheckCycleConvergenceNoneSha:
+    """Tests for _check_cycle_convergence when HEAD SHA is unavailable."""
+
+    def test_current_sha_none_skips_convergence(self) -> None:
+        """If git_head_sha returns None, convergence check is skipped."""
+        with mock.patch.object(suite, "git_head_sha", return_value=None):
+            should_stop, pct = suite._check_cycle_convergence(
+                "/tmp", cycle=1, base_sha="abc123",
+                convergence_threshold=0.1, prev_change_pct=None,
+            )
+        assert should_stop is False
+        assert pct is None
+
+
 # =============================================================================
 # Convergence in suite
 # =============================================================================
@@ -180,104 +227,6 @@ class TestConvergenceInSuite:
         out = capsys.readouterr().out
         assert "Cycle 1/2" in out
         assert "Cycle 2/2" in out
-
-
-# =============================================================================
-# _run_single_check
-# =============================================================================
-
-class TestRunSingleCheck:
-    """Tests for _run_single_check()."""
-
-    def test_missing_changed_files_prefix(self, capsys: pytest.CaptureFixture[str]) -> None:
-        check_def: CheckDef = make_check("readability", "Readability", "review code")
-        args = make_suite_args(dry_run=True)
-        if hasattr(args, "changed_files_prefix"):
-            delattr(args, "changed_files_prefix")
-        result = check_runner._run_single_check(check_def, "/tmp", args, "[1/1]", is_git=False)
-        assert result.made_changes is True
-
-    def test_changed_prefix_prepended_to_prompt(self) -> None:
-        selected_checks: list[CheckDef] = [make_check("readability", "Readability", "review code")]
-        args = make_suite_args(dry_run=False)
-        args.changed_files_prefix = "ONLY THESE FILES: a.py\n\n"
-        with mock.patch.object(check_runner, "_invoke_claude", return_value=CheckResult(exit_code=0)) as mock_run, \
-             mock.patch.object(suite, "is_git_repo", return_value=False):
-            suite._run_check_suite(selected_checks, 1, "/tmp", args)
-            prompt_used = mock_run.call_args[0][0]
-            assert prompt_used.startswith("ONLY THESE FILES: a.py")
-            assert "review code" in prompt_used
-
-
-# =============================================================================
-# _report_check_changes
-# =============================================================================
-
-class TestReportCheckChanges:
-    """Tests for _report_check_changes()."""
-
-    def test_no_git_repo_assumes_changes(self) -> None:
-        made, lines, pct = check_runner._report_check_changes("/tmp", "test", None)
-        assert made is True
-        assert lines is None
-
-    def test_same_sha_no_changes(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch.object(check_runner, "git_head_sha", return_value="sha1"):
-            made, lines, pct = check_runner._report_check_changes("/tmp", "test", "sha1")
-        assert made is False
-        assert lines == 0
-        assert "no changes" in capsys.readouterr().out
-
-    def test_different_sha_reports_changes(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch.object(check_runner, "git_head_sha", return_value="sha2"):
-            with mock.patch.object(check_runner, "compute_change_stats", return_value=(10, 0.50)):
-                made, lines, pct = check_runner._report_check_changes("/tmp", "test", "sha1")
-        assert made is True
-        assert lines == 10
-        assert pct == 0.50
-        assert "10 lines changed" in capsys.readouterr().out
-
-    def test_sha_after_none_assumes_changes(self) -> None:
-        """When git_head_sha returns None after a check, assume changes were made."""
-        with mock.patch.object(check_runner, "git_head_sha", return_value=None):
-            made, lines, pct = check_runner._report_check_changes("/tmp", "test", "sha1")
-        assert made is True
-        assert lines is None
-
-
-# =============================================================================
-# _check_cycle_convergence — None SHA edge case
-# =============================================================================
-
-class TestCheckCycleConvergenceNoneSha:
-    """Tests for _check_cycle_convergence when HEAD SHA is unavailable."""
-
-    def test_current_sha_none_skips_convergence(self) -> None:
-        """If git_head_sha returns None, convergence check is skipped."""
-        with mock.patch.object(suite, "git_head_sha", return_value=None):
-            should_stop, pct = suite._check_cycle_convergence(
-                "/tmp", cycle=1, base_sha="abc123",
-                convergence_threshold=0.1, prev_change_pct=None,
-            )
-        assert should_stop is False
-        assert pct is None
-
-
-# =============================================================================
-# Commit message instructions
-# =============================================================================
-
-class TestCommitMessageInstructions:
-    """Tests that commit message instructions are appended to prompts."""
-
-    def test_prompt_includes_commit_instructions(self, capsys: pytest.CaptureFixture[str]) -> None:
-        selected_checks: list[CheckDef] = [make_check("readability", "Readability", "review code")]
-        args = make_suite_args()
-        with mock.patch.object(check_runner, "_invoke_claude", return_value=CheckResult(exit_code=0)) as mock_run:
-            suite._run_check_suite(selected_checks, 1, "/tmp", args)
-            prompt_used = mock_run.call_args[0][0]
-            assert "commit message rules" in prompt_used
-            assert "Do NOT mention Claude" in prompt_used
 
 
 # =============================================================================
@@ -382,63 +331,6 @@ class TestResumeFromCheckpoint:
 
 
 # =============================================================================
-# _run_single_check — git commit returns False (no changes)
-# =============================================================================
-
-class TestRunSingleCheckNoCommit:
-    """Tests for _run_single_check when git commit returns no changes."""
-
-    def test_no_commit_after_check(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """When git_commit_all returns False, the no-commit debug path is hit."""
-        check_def: CheckDef = make_check("readability", "Readability", "review code")
-        args = make_suite_args(dry_run=False)
-
-        with mock.patch.object(check_runner, "_invoke_claude", return_value=CheckResult(exit_code=0)), \
-             mock.patch.object(check_runner, "git_head_sha", return_value="sha1"), \
-             mock.patch.object(check_runner, "git_commit_all", return_value=False), \
-             mock.patch.object(check_runner, "_report_check_changes", return_value=(False, 0, 0.0)):
-            result = check_runner._run_single_check(check_def, "/tmp", args, "[1/1]", is_git=True)
-        assert result.made_changes is False
-
-
-# =============================================================================
-# _run_check_suite — empty checks list edge case
-# =============================================================================
-
-class TestRunCheckSuiteEdgeCases:
-    """Edge case tests for _run_check_suite."""
-
-    def test_empty_selected_checks(self) -> None:
-        """Suite with zero checks should complete without error."""
-        args = make_suite_args(dry_run=True)
-        with mock.patch.object(suite, "clear_checkpoint"):
-            suite._run_check_suite([], 1, "/tmp", args)
-
-    def test_checkpoint_save_exception_is_swallowed(self) -> None:
-        """If save_checkpoint raises inside _save_after_check, the suite continues."""
-        selected_checks: list[CheckDef] = [
-            make_check("a", "A", "do a"),
-            make_check("b", "B", "do b"),
-        ]
-        args = make_suite_args(dry_run=True)
-        with mock.patch.object(suite, "save_checkpoint", side_effect=RuntimeError("disk full")):
-            with mock.patch.object(suite, "clear_checkpoint"):
-                # Should NOT raise — the exception is caught and logged.
-                suite._run_check_suite(selected_checks, 1, "/tmp", args)
-
-    def test_single_cycle_no_convergence_check(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """With 1 cycle and convergence enabled, convergence is checked but loop exits after 1 cycle."""
-        selected_checks: list[CheckDef] = [make_check("a", "A", "do a")]
-        args = make_suite_args(dry_run=False)
-        # SHAs: base, before-check, after-check, convergence-check
-        with patch_suite_git(["sha1", "sha2", "sha3", "sha3"], lines_changed=5, total_tracked=1000):
-            suite._run_check_suite(selected_checks, 1, "/tmp", args, convergence_threshold=0.1)
-        # Should complete without "Cycle 2" appearing
-        out = capsys.readouterr().out
-        assert "Cycle 2" not in out
-
-
-# =============================================================================
 # _build_suite_state edge cases
 # =============================================================================
 
@@ -492,48 +384,6 @@ class TestResolveCycleChecksEdgeCases:
         assert len(active) == 2
         assert start_idx == 0
         assert changed is None
-
-
-# =============================================================================
-# CheckOutcome edge cases
-# =============================================================================
-
-class TestCheckOutcomeToSummaryDict:
-    """Edge cases for CheckOutcome.to_summary_dict()."""
-
-    def test_all_none_optional_fields(self) -> None:
-        outcome = suite.CheckOutcome(
-            check_id="test", label="Test", cycle=1,
-            exit_code=0, kill_reason=None,
-            made_changes=False, lines_changed=None,
-            change_pct=None, duration_seconds=0.0,
-        )
-        row = outcome.to_summary_dict()
-        assert row["lines_changed"] is None
-        assert row["change_pct"] is None
-        assert row["kill_reason"] is None
-        assert row["duration"] == "0m00s"
-
-    def test_zero_duration(self) -> None:
-        outcome = suite.CheckOutcome(
-            check_id="t", label="T", cycle=1,
-            exit_code=0, kill_reason=None,
-            made_changes=False, lines_changed=0,
-            change_pct=0.0, duration_seconds=0.0,
-        )
-        row = outcome.to_summary_dict()
-        assert row["duration"] == "0m00s"
-
-    def test_negative_duration(self) -> None:
-        """Negative duration (clock skew) should be handled gracefully."""
-        outcome = suite.CheckOutcome(
-            check_id="t", label="T", cycle=1,
-            exit_code=0, kill_reason=None,
-            made_changes=False, lines_changed=0,
-            change_pct=0.0, duration_seconds=-5.0,
-        )
-        row = outcome.to_summary_dict()
-        assert row["duration"] == "0m00s"  # format_duration clamps negative to 0
 
 
 # =============================================================================

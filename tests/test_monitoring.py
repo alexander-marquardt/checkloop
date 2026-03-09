@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import signal
+import subprocess
 from unittest import mock
 
 import pytest
@@ -349,4 +350,57 @@ class TestRunCmdQuietFileNotFound:
         """When the binary does not exist, _run_cmd_quiet returns None."""
         with mock.patch("subprocess.run", side_effect=FileNotFoundError("no such file")):
             result = monitoring._run_cmd_quiet(["nonexistent_binary", "--version"])
+        assert result is None
+
+
+# =============================================================================
+# _parse_int_lines — edge cases
+# =============================================================================
+
+
+class TestParseIntLinesEdgeCases:
+    """Edge cases for _parse_int_lines."""
+
+    def test_empty_string(self) -> None:
+        assert monitoring._parse_int_lines("") == []
+
+    def test_whitespace_only(self) -> None:
+        assert monitoring._parse_int_lines("   \n\t\n  ") == []
+
+    def test_single_value(self) -> None:
+        assert monitoring._parse_int_lines("42") == [42]
+
+    def test_negative_numbers(self) -> None:
+        """Negative numbers should be parsed as valid integers."""
+        assert monitoring._parse_int_lines("-1\n-100") == [-1, -100]
+
+    def test_mixed_valid_and_invalid(self) -> None:
+        assert monitoring._parse_int_lines("10\nabc\n20\n\n30") == [10, 20, 30]
+
+    def test_leading_trailing_whitespace(self) -> None:
+        assert monitoring._parse_int_lines("  42  \n  99  ") == [42, 99]
+
+    def test_float_values_rejected(self) -> None:
+        """Floats are not valid ints and should be skipped."""
+        assert monitoring._parse_int_lines("3.14\n42") == [42]
+
+    def test_very_large_number(self) -> None:
+        big = str(2**63)
+        assert monitoring._parse_int_lines(big) == [2**63]
+
+
+# =============================================================================
+# _run_cmd_quiet — timeout handling
+# =============================================================================
+
+
+class TestRunCmdQuietTimeout:
+    """Test _run_cmd_quiet timeout handling."""
+
+    def test_timeout_returns_none(self) -> None:
+        with mock.patch(
+            "subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="ps", timeout=10),
+        ):
+            result = monitoring._run_cmd_quiet(["ps", "-o", "rss="])
         assert result is None
