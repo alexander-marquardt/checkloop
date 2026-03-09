@@ -282,7 +282,8 @@ def prompt_resume(workdir: str, timeout: int = _DEFAULT_RESUME_TIMEOUT) -> bool:
 
     try:
         ready, _, _ = select.select([sys.stdin], [], [], timeout)
-    except (OSError, ValueError):
+    except (OSError, ValueError) as exc:
+        logger.warning("select() failed during resume prompt: %s", exc)
         print()
         return False
 

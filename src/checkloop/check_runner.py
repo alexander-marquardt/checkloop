@@ -180,6 +180,7 @@ def _run_memory_fix(
             logger.warning("Memory-fix check exited with code %d", fix_result.exit_code)
             print_status("Memory-fix check did not complete cleanly. Continuing...", YELLOW)
         else:
+            logger.info("Memory-fix follow-up completed successfully")
             print_status("Memory-fix check completed.", GREEN)
 
         if is_git:

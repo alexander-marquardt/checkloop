@@ -80,6 +80,8 @@ def _check_cycle_convergence(
                  f"(threshold: {convergence_threshold}%)")
 
     if prev_change_pct is not None and change_pct > prev_change_pct:
+        logger.warning("Cycle %d: possible oscillation — changes increased from %.2f%% to %.2f%%",
+                       cycle, prev_change_pct, change_pct)
         print_status(f"Warning: changes increased ({prev_change_pct:.2f}% -> {change_pct:.2f}%) — "
                      f"possible oscillation.", YELLOW)
 
@@ -136,6 +138,8 @@ def _build_suite_state(resume_from: CheckpointData | None) -> _SuiteState:
     raw_prev = resume_from.get("previously_changed_ids")
     state.previously_changed_ids = set(raw_prev) if raw_prev is not None else None
     state.started_at = resume_from.get("started_at", state.started_at)
+    logger.info("Resuming from checkpoint: cycle=%d, check_index=%d, changed=%s",
+                state.start_cycle, state.start_check_index, sorted(state.resume_changed))
     print_status(f"Resuming from cycle {state.start_cycle}, "
                  f"check {state.start_check_index + 1}...", CYAN)
     return state
