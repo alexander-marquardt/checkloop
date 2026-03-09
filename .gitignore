@@ -15,6 +15,7 @@ build/
 # Checkloop local state (contains absolute paths, should not be committed)
 .checkloop-checkpoint.json
 .checkloop-run.log
+.checkloop-ckpt-*.tmp
 
 # Secrets / environment files
 .env
