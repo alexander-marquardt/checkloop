@@ -106,6 +106,17 @@ def _add_file_log_handler(workdir: str) -> None:
 
 # --- Checkpoint resume --------------------------------------------------------
 
+def _resolve_path_safe(path_str: str) -> str | None:
+    """Return the resolved absolute path as a string, or None on error or empty input."""
+    if not path_str:
+        return None
+    try:
+        return str(Path(path_str).resolve())
+    except OSError as exc:
+        logger.warning("Cannot resolve path '%s': %s", path_str, exc)
+        return None
+
+
 def _try_resume_from_checkpoint(
     workdir: str,
     selected_checks: list[CheckDef],
@@ -122,18 +133,13 @@ def _try_resume_from_checkpoint(
 
     # Guard against a checkpoint from a different project directory being
     # loaded (e.g. if the file was copied or the directory was renamed).
-    saved_workdir = checkpoint.get("workdir", "")
-    try:
-        resolved_saved = str(Path(saved_workdir).resolve()) if saved_workdir else ""
-    except OSError as exc:
-        logger.warning("Cannot resolve saved checkpoint workdir '%s': %s", saved_workdir, exc)
+    resolved_saved = _resolve_path_safe(checkpoint.get("workdir", ""))
+    if resolved_saved is None:
         print_status("Checkpoint has invalid workdir — starting fresh.", YELLOW)
         clear_checkpoint(workdir)
         return None
-    try:
-        resolved_current = str(Path(workdir).resolve())
-    except OSError as exc:
-        logger.warning("Cannot resolve current workdir '%s': %s", workdir, exc)
+    resolved_current = _resolve_path_safe(workdir)
+    if resolved_current is None:
         print_status("Cannot resolve current workdir — starting fresh.", YELLOW)
         clear_checkpoint(workdir)
         return None
@@ -213,21 +219,17 @@ def main() -> None:
         max_memory_mb=args.max_memory_mb, check_timeout=args.check_timeout,
     )
 
+    check_names = ", ".join(check["id"] for check in selected_checks)
     logger.info(
         "Suite started: workdir=%s, checks=[%s], cycles=%d, idle_timeout=%d, convergence=%.2f%%",
-        workdir,
-        ", ".join(check["id"] for check in selected_checks),
-        num_cycles,
-        args.idle_timeout,
-        convergence_threshold,
+        workdir, check_names, num_cycles, args.idle_timeout, convergence_threshold,
     )
 
     logger.debug(
         "Resolved config: workdir=%s, checks=[%s], cycles=%d, idle_timeout=%d, "
         "check_timeout=%d, max_memory_mb=%d, convergence=%.2f%%, dry_run=%s, "
         "skip_permissions=%s, changed_only=%s",
-        workdir,
-        ", ".join(check["id"] for check in selected_checks),
+        workdir, check_names,
         num_cycles, args.idle_timeout, args.check_timeout, args.max_memory_mb,
         convergence_threshold, args.dry_run, args.dangerously_skip_permissions,
         args.changed_only,

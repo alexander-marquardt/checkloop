@@ -115,6 +115,32 @@ def compute_summary_stats(results: list[SummaryRow]) -> SummaryStats:
     return SummaryStats(succeeded, failed, killed, total_lines, with_changes)
 
 
+def _print_stats_footer(
+    stats: SummaryStats,
+    total_count: int,
+    total_elapsed: str,
+    *,
+    colour: str = "",
+    extra_lines: list[str] | None = None,
+) -> None:
+    """Print the common stats footer shared by both summary tables.
+
+    Displays total checks (with ok/failed/killed breakdown), total lines,
+    elapsed time, and any extra lines inserted before the common stats.
+    """
+    c = colour
+    r = RESET if colour else ""
+    print()
+    if extra_lines:
+        for line in extra_lines:
+            print(f"{c}{line}{r}")
+    print(f"  {c}Total checks : {total_count}  "
+          f"({stats.succeeded} ok, {stats.failed} failed, {stats.killed} killed){r}")
+    print(f"  {c}Total lines  : {stats.total_lines}{r}")
+    print(f"  {c}Elapsed      : {total_elapsed}{r}")
+    print()
+
+
 def print_run_summary_table(
     results: list[SummaryRow],
     total_elapsed: str,
@@ -170,12 +196,10 @@ def print_run_summary_table(
         print(f"  {colour}{check_id:<20s} {cycle:>2s}  {exit_code:>4s}  {kill:<14s}  {lines:>7s}  {duration:>8s}{RESET}")
 
     # Footer
-    print()
-    print(f"  Total checks : {total_checks}  ({succeeded} ok, {failed} failed, {killed} killed)")
-    print(f"  Total lines  : {total_lines}")
-    print(f"  With changes : {checks_with_changes}/{total_checks}")
-    print(f"  Elapsed      : {total_elapsed}")
-    print()
+    _print_stats_footer(
+        stats, total_checks, total_elapsed,
+        extra_lines=[f"  With changes : {checks_with_changes}/{total_checks}"],
+    )
 
 
 class CycleSummary(NamedTuple):
@@ -281,10 +305,8 @@ def print_overall_summary_table(
 
     # Footer
     total_stats = compute_summary_stats(results)
-    print()
-    print(f"  {BLUE}Total cycles : {len(cycle_summaries)}{RESET}")
-    print(f"  {BLUE}Total checks : {len(results)}  "
-          f"({total_stats.succeeded} ok, {total_stats.failed} failed, {total_stats.killed} killed){RESET}")
-    print(f"  {BLUE}Total lines  : {total_stats.total_lines}{RESET}")
-    print(f"  {BLUE}Elapsed      : {total_elapsed}{RESET}")
-    print()
+    _print_stats_footer(
+        total_stats, len(results), total_elapsed,
+        colour=BLUE,
+        extra_lines=[f"  Total cycles : {len(cycle_summaries)}"],
+    )
