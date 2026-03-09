@@ -75,8 +75,10 @@ class TestMain:
         with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--all-checks", "--dry-run", "--pause", "0"]):
             cli.main()
         out = capsys.readouterr().out
+        exhaustive_ids = set(checks.TIER_EXHAUSTIVE)
         for check in checks.CHECKS:
-            assert check["label"] in out
+            if check["id"] in exhaustive_ids:
+                assert check["label"] in out
 
     def test_cycles_zero_exits(self) -> None:
         with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--cycles", "0"]):

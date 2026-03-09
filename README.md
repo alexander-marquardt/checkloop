@@ -44,6 +44,9 @@ uv run checkloop --dir ~/my-project --changed-only develop
 
 # See what Claude is doing in detail
 uv run checkloop --dir ~/my-project -v
+
+# Clean up AI-generated code slop (on-demand, not part of any tier)
+uv run checkloop --dir ~/my-project --cleanup-ai-slop
 ```
 
 To make `checkloop` available globally (without `uv run`):
@@ -87,6 +90,7 @@ Use `--checks` to pick individual checks, or `--all-checks` as a shortcut for `-
 | `accessibility` | exhaustive | Semantic HTML, ARIA, keyboard nav, colour contrast (WCAG AA). |
 | `api-design` | exhaustive | Consistent naming, HTTP methods, error formats, pagination. |
 | `test-validate` | bookend | Re-runs the full test suite after all checks. Fixes any regressions. Always runs last. |
+| `cleanup-ai-slop` | on-demand | Removes AI-generated noise: redundant docstrings, unnecessary logging, misleading error handling, coverage-driven tests. Only runs when explicitly requested via `--cleanup-ai-slop`. |
 
 ## Why Multi-Check Works
 

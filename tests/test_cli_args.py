@@ -43,6 +43,7 @@ class TestBuildArgumentParser:
         assert ns.dry_run is False
         assert ns.verbose is False
         assert ns.pause == cli_args.DEFAULT_PAUSE_SECONDS
+        assert ns.cleanup_ai_slop is False
 
     def test_dir_is_required(self) -> None:
         with pytest.raises(SystemExit):
@@ -234,26 +235,34 @@ class TestResolveSelectedChecks:
     """Tests for resolve_selected_checks()."""
 
     def test_level_basic(self) -> None:
-        args = argparse.Namespace(all_checks=False, checks=None, level="basic")
+        args = argparse.Namespace(all_checks=False, checks=None, level="basic", cleanup_ai_slop=False)
         result = cli_args.resolve_selected_checks(args)
         ids = [p["id"] for p in result]
         assert ids == checks.TIER_BASIC
 
     def test_all_checks(self) -> None:
-        args = argparse.Namespace(all_checks=True, checks=None, level=None)
+        args = argparse.Namespace(all_checks=True, checks=None, level=None, cleanup_ai_slop=False)
         result = cli_args.resolve_selected_checks(args)
-        assert len(result) == len(checks.CHECKS)
+        assert len(result) == len(checks.TIER_EXHAUSTIVE)
 
     def test_checks_override_level(self) -> None:
-        args = argparse.Namespace(all_checks=False, checks=["security"], level="exhaustive")
+        args = argparse.Namespace(all_checks=False, checks=["security"], level="exhaustive", cleanup_ai_slop=False)
         result = cli_args.resolve_selected_checks(args)
         assert len(result) == 1
         assert result[0]["id"] == "security"
 
+    def test_cleanup_ai_slop_flag_adds_check(self) -> None:
+        args = argparse.Namespace(all_checks=False, checks=None, level="basic", cleanup_ai_slop=True)
+        result = cli_args.resolve_selected_checks(args)
+        ids = [p["id"] for p in result]
+        assert "cleanup-ai-slop" in ids
+        for basic_id in checks.TIER_BASIC:
+            assert basic_id in ids
+
     def test_all_checks_flag(self) -> None:
         args = make_mock_cli_args(all_checks=True, checks=None, level=None)
         result = cli_args.resolve_selected_checks(args)
-        assert len(result) == len(checks.CHECKS)
+        assert len(result) == len(checks.TIER_EXHAUSTIVE)
 
     def test_explicit_checks_override_level(self) -> None:
         args = make_mock_cli_args(all_checks=False, checks=["security"], level="basic")

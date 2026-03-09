@@ -51,6 +51,7 @@ def make_mock_cli_args(*, dry_run: bool = False, **overrides: Any) -> mock.Magic
         "dry_run": dry_run,
         "changed_only": None,
         "no_resume": False,
+        "cleanup_ai_slop": False,
     }
     defaults.update(overrides)
     for key, value in defaults.items():

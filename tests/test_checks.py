@@ -169,9 +169,18 @@ class TestTierConsistency:
             for check_id in tier_ids:
                 assert check_id in checks.CHECK_IDS, f"{check_id} from tier {tier_name} not in CHECK_IDS"
 
-    def test_exhaustive_tier_includes_all_checks(self) -> None:
-        """The exhaustive tier should include every defined check."""
-        assert set(checks.TIER_EXHAUSTIVE) == set(checks.CHECK_IDS)
+    def test_exhaustive_tier_includes_all_tier_checks(self) -> None:
+        """The exhaustive tier should include every check except on-demand ones."""
+        on_demand = checks._ON_DEMAND_ONLY
+        assert set(checks.TIER_EXHAUSTIVE) == set(checks.CHECK_IDS) - on_demand
+
+    def test_on_demand_checks_not_in_any_tier(self) -> None:
+        """On-demand checks should not appear in any tier."""
+        for tier_name, tier_ids in checks.TIERS.items():
+            for on_demand_id in checks._ON_DEMAND_ONLY:
+                assert on_demand_id not in tier_ids, (
+                    f"On-demand check '{on_demand_id}' found in tier '{tier_name}'"
+                )
 
     def test_basic_is_subset_of_thorough(self) -> None:
         assert set(checks.TIER_BASIC).issubset(set(checks.TIER_THOROUGH))

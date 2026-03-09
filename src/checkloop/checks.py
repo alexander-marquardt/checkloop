@@ -44,6 +44,44 @@ CHECKS: list[CheckDef] = [
             "Report what you found and fixed."
         ),
     },
+    # --- On-demand only (not in any tier) ---
+    # Positioned after test-fix so that when combined with other checks,
+    # cleanup runs first and later checks can catch any regressions it introduces.
+    {
+        "id": "cleanup-ai-slop",
+        "label": "Remove AI-Generated Code Slop",
+        "prompt": (
+            "Your job is to REMOVE unnecessary code, not add anything. "
+            "Go through the codebase and delete AI-generated slop:\n\n"
+            "1. Remove docstrings that merely restate what the function name and signature already "
+            "communicate. If the function is called get_user_by_id(user_id: int) -> User, a docstring "
+            "saying 'Get a user by their ID' adds nothing — delete it. KEEP module-level docstrings "
+            "that explain design strategy, class docstrings that explain intent or relationships, "
+            "and function docstrings that explain non-obvious behavior, side effects, or complex "
+            "return values.\n\n"
+            "2. Remove logger.debug() calls that log function entry or arguments already visible in "
+            "request context or stack traces. Delete logging on hot paths (query builders, inner loops, "
+            "per-item processing). Keep logging only at system boundaries (API entry/exit, external "
+            "service calls, error paths).\n\n"
+            "3. Remove try/except blocks that wrap code that cannot actually raise the caught exception "
+            "(e.g. wrapping a pure data structure construction in try/except, or catching ConnectionError "
+            "around code that doesn't do I/O). Misleading error handling is worse than none.\n\n"
+            "4. Remove defensive null/None/undefined checks where the type system already guarantees "
+            "the value is non-nullable. Remove type: ignore comments that were added to force invalid "
+            "inputs in tests.\n\n"
+            "5. Remove tests that exist only to hit coverage numbers — tests that pass None where types "
+            "say str, tests for unreachable error paths, tests with near-duplicate names like "
+            "test_boundary_conditions.py / test_boundary_edge_cases.py / test_edge_case_boundaries.py. "
+            "Consolidate overlapping test files into focused, well-named ones.\n\n"
+            "6. Remove unnecessary inline comments that describe what the code obviously does "
+            "(e.g. '# Initialize the logger' above logger = logging.getLogger(__name__)).\n\n"
+            "7. Revert any operational config changes that were made in the name of 'improvement' but "
+            "actually change runtime behavior — things like CORS tightening, retry policy changes, "
+            "timeout changes, or dependency removals where the dependency is still used.\n\n"
+            "Run the full test suite after cleanup to ensure nothing broke. "
+            "Report what you removed and how many lines were deleted."
+        ),
+    },
     # --- Basic tier (default) ---
     {
         "id": "readability",
@@ -60,8 +98,13 @@ CHECKS: list[CheckDef] = [
             "related functions together and use imports to reconnect them. "
             "Apply the same standard to test files: split large test files "
             "so each module has a corresponding focused test file. "
-            "Add inline comments only where logic is non-obvious — do NOT add docstrings "
-            "to functions whose purpose is already clear from their name and signature. "
+            "Add module-level docstrings that explain the module's purpose and design strategy. "
+            "Add class docstrings that explain intent, relationships, or non-obvious behaviour. "
+            "Do NOT add docstrings to functions whose purpose is already clear from their "
+            "name and signature — a function called get_user_by_id(user_id: int) -> User "
+            "does not need a docstring saying 'Get a user by their ID'. "
+            "Add inline comments where logic is non-obvious, but not to restate what "
+            "the code already says. "
             "Ensure consistent formatting. "
             "Do NOT change any behaviour — only improve clarity."
         ),
@@ -73,7 +116,13 @@ CHECKS: list[CheckDef] = [
             "Find repeated or near-repeated logic. "
             "Extract shared helpers, base classes, or utility modules to eliminate "
             "duplication. Consolidate config values or magic numbers into constants. "
+            "Where a module mixes multiple concerns (e.g. data models, API serialization, "
+            "and validation in one file), consider extracting each concern into a focused "
+            "module — but only when the separation makes each piece independently testable "
+            "or reusable. "
             "Ensure each concept has a single canonical home in the code. "
+            "Do NOT extract helpers for code that is only duplicated 2-3 lines or used in "
+            "only 2 places — three similar lines is better than a premature abstraction. "
             "Do NOT change observable behaviour — only reduce repetition."
         ),
     },
@@ -83,6 +132,10 @@ CHECKS: list[CheckDef] = [
         "prompt": (
             "Write behaviour-driven tests that verify what the code does, not how it's implemented. "
             "Cover: happy paths, meaningful edge cases, and real error conditions. "
+            "Test correctness of complex logic — regex patterns, parsing, serialization, "
+            "validation rules — not just that code runs without error. "
+            "Write unit tests that can run without external services (databases, APIs) by "
+            "using mocks or fixtures. Write integration tests separately for end-to-end flows. "
             "Do NOT write tests for defensive paths that can't actually happen "
             "(e.g. passing None where the type says str, or catching exceptions from code "
             "that can't raise them). Do NOT use # type: ignore to force invalid inputs. "
@@ -100,10 +153,15 @@ CHECKS: list[CheckDef] = [
             "Add or improve documentation: "
             "update (or create) a README section describing what was built, "
             "and document any non-obvious environment variables or config. "
-            "Add docstrings/JSDoc only to public functions and classes whose purpose "
-            "is NOT already obvious from their name and signature. "
-            "Do NOT add blanket docstrings to every function — if the name is self-documenting, "
-            "a docstring just adds clutter. Prefer comments that explain WHY, not WHAT."
+            "Add module-level docstrings that explain the module's role, design strategy, "
+            "and how it fits into the larger system. "
+            "Add class docstrings that explain intent, usage patterns, or non-obvious behaviour. "
+            "Add function/method docstrings only where the name and signature don't tell the full "
+            "story — e.g. complex return values, side effects, important preconditions, or "
+            "non-obvious parameter semantics. "
+            "Do NOT add docstrings that merely restate the function name "
+            "(e.g. 'Get a user by their ID' on get_user_by_id). "
+            "Prefer comments that explain WHY and design rationale, not WHAT the code does."
         ),
     },
     # --- Thorough tier ---
@@ -130,6 +188,10 @@ CHECKS: list[CheckDef] = [
             "N+1 queries, O(N²) algorithms that could be O(N) or O(N log N), "
             "missing indexes, unnecessary re-renders, "
             "blocking I/O that could be async, large allocations in loops. "
+            "Add caching (@cache, @lru_cache, memoization) for expensive computations "
+            "that are called repeatedly with the same inputs — especially compiled regexes, "
+            "schema introspection, and config loading. Only cache where the inputs are "
+            "stable and the cache won't grow unbounded. "
             "Fix anything significant and add a comment explaining the optimisation."
         ),
     },
@@ -140,6 +202,9 @@ CHECKS: list[CheckDef] = [
             "Audit error handling. "
             "Ensure I/O operations, network calls, and parsing steps "
             "have proper try/except (or try/catch) with meaningful error messages. "
+            "Where multiple call sites handle the same external service errors (e.g. database, "
+            "API clients, message queues), consider centralizing error handling into a shared "
+            "helper that logs context and raises a consistent application-level error. "
             "Only add error handling where the code can MEANINGFULLY respond to the error — "
             "do NOT wrap code in try/except when the wrapped call cannot actually raise "
             "(e.g. a function that just builds a data structure, or a connection registration "
@@ -155,8 +220,13 @@ CHECKS: list[CheckDef] = [
             "Add or fix type annotations (Python type hints, TypeScript types, JSDoc @param/@returns). "
             "Replace uses of Any, Object, or untyped collections with precise types. "
             "Ensure function signatures, return types, and class attributes are all typed. "
+            "Where the framework supports it, use types for runtime validation at API boundaries "
+            "(e.g. Annotated types with FastAPI/Pydantic constraints, Zod schemas, or "
+            "class-validator decorators) — this makes the type system enforce input validation. "
             "Run the type checker (mypy, tsc, etc.) if available and fix any errors. "
-            "Do NOT change runtime behaviour — only improve type coverage."
+            "Do NOT add complex generic types or multi-line type aliases that hurt readability — "
+            "a simple Any is better than a 3-line generic constraint that is harder to understand. "
+            "Do NOT change runtime behaviour beyond adding input validation at system boundaries."
         ),
     },
     # --- Exhaustive tier ---
@@ -168,6 +238,9 @@ CHECKS: list[CheckDef] = [
             "off-by-one errors, empty/null/undefined inputs, integer overflow, "
             "empty collections, zero-length strings, negative numbers where unsigned expected, "
             "concurrent modification, and Unicode/encoding edge cases. "
+            "Only fix edge cases that can realistically occur in production usage. "
+            "Do NOT add defensive handling for inputs that the type system already prevents "
+            "(e.g. null checks where the type is non-nullable, bounds checks on validated input). "
             "Fix any issues and add tests for the edge cases you find."
         ),
     },
@@ -190,6 +263,7 @@ CHECKS: list[CheckDef] = [
             "Audit the project's dependencies for issues. "
             "Identify unused dependencies and remove them, but ONLY if they are truly unused — "
             "verify that no source file imports the package before removing it. "
+            "Also verify the package is not used as a CLI tool, plugin, or runtime server. "
             "Do NOT remove a dependency if any code still imports or references it. "
             "Check for outdated packages with known vulnerabilities. "
             "Flag dependencies that are unmaintained or have better alternatives. "
@@ -246,6 +320,8 @@ CHECKS: list[CheckDef] = [
             "Check for: consistent naming conventions, predictable parameter ordering, "
             "appropriate HTTP methods and status codes, consistent error response formats, "
             "proper use of pagination, versioning where needed, and idempotency of mutating operations. "
+            "Do NOT rename endpoints, change HTTP methods, or alter response shapes — "
+            "these are breaking changes. Focus on parameter validation and error response consistency. "
             "Fix inconsistencies and document any breaking changes."
         ),
     },
@@ -278,10 +354,15 @@ _CORE_BASIC: list[str] = ["readability", "dry", "tests", "docs"]
 _CORE_THOROUGH: list[str] = ["security", "perf", "errors", "types"]
 _CORE_EXHAUSTIVE: list[str] = ["edge-cases", "complexity", "deps", "logging", "concurrency", "accessibility", "api-design"]
 
+# Checks that are only run when explicitly requested via --checks, never included in tiers.
+_ON_DEMAND_ONLY: set[str] = {"cleanup-ai-slop"}
+
 # Public tier lists — used by --level and exposed for programmatic access.
 TIER_BASIC: list[str] = _BOOKEND_FIRST_CHECKS + _CORE_BASIC + _BOOKEND_LAST_CHECKS
 TIER_THOROUGH: list[str] = _BOOKEND_FIRST_CHECKS + _CORE_BASIC + _CORE_THOROUGH + _BOOKEND_LAST_CHECKS
-TIER_EXHAUSTIVE: list[str] = CHECK_IDS  # all checks (already ordered correctly)
+TIER_EXHAUSTIVE: list[str] = [
+    cid for cid in CHECK_IDS if cid not in _ON_DEMAND_ONLY
+]
 
 # Maps tier name (used by --level) to the list of check IDs for that tier.
 TIERS: dict[str, list[str]] = {
@@ -299,6 +380,9 @@ FULL_CODEBASE_SCOPE: str = (
     "IMPORTANT: Respect the existing codebase style. Do NOT make changes that create "
     "large diffs for marginal improvement. Avoid blanket additions (docstrings on every "
     "function, logger.debug in every method, try/except around code that can't fail). "
+    "Comments and docstrings that explain non-obvious design decisions, module-level "
+    "strategies, or complex interactions ARE valuable — the goal is to avoid restating "
+    "what is already obvious from the code, not to avoid all documentation. "
     "Every change should be clearly justified — if in doubt, leave the existing code alone. "
 )
 """Default scope prefix prepended to every check when --changed-only is not used."""
