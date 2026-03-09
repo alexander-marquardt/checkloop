@@ -146,6 +146,17 @@ def _print_stats_footer(
     print()
 
 
+def _row_colour(row: SummaryRow) -> str:
+    """Return the ANSI colour code for a summary row based on its outcome."""
+    if row["kill_reason"]:
+        return RED
+    if row["exit_code"] != 0:
+        return YELLOW
+    if row["made_changes"]:
+        return GREEN
+    return DIM
+
+
 def print_run_summary_table(
     results: list[SummaryRow],
     total_elapsed: str,
@@ -187,16 +198,7 @@ def print_run_summary_table(
         kill = str(row["kill_reason"] or "—")[:14]
         lines = str(row["lines_changed"]) if row["lines_changed"] is not None else "—"
         duration = str(row["duration"])
-
-        # Colour the row based on outcome
-        if row["kill_reason"]:
-            colour = RED
-        elif row["exit_code"] != 0:
-            colour = YELLOW
-        elif row["made_changes"]:
-            colour = GREEN
-        else:
-            colour = DIM
+        colour = _row_colour(row)
 
         print(f"  {colour}{check_id:<20s} {cycle:>2s}  {exit_code:>4s}  {kill:<14s}  {lines:>7s}  {duration:>8s}{RESET}")
 

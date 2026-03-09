@@ -124,6 +124,24 @@ def _print_event(event: dict[str, Any], check_start_time: float) -> None:
     printer(event, elapsed_prefix)
 
 
+def _process_single_line(line_str: str, check_start_time: float, debug: bool) -> None:
+    """Parse and display a single JSONL line from subprocess output."""
+    if not line_str:
+        return
+    try:
+        parsed = json.loads(line_str)
+        if not isinstance(parsed, dict):
+            logger.debug("Skipping non-object JSON value: %s", type(parsed).__name__)
+            return
+        _print_event(parsed, check_start_time)
+    except json.JSONDecodeError:
+        logger.debug("Skipping non-JSON line from subprocess: %.120s", line_str)
+        if debug:
+            print(f"{DIM}{line_str}{RESET}")
+    except Exception as exc:
+        logger.warning("Failed to process JSONL event: %s (line: %.120s)", exc, line_str, exc_info=True)
+
+
 def process_jsonl_buffer(
     output_buffer: bytearray,
     check_start_time: float,
@@ -160,20 +178,7 @@ def process_jsonl_buffer(
         del output_buffer[:last_newline + 1]
         for line_bytes in complete_lines_bytes.split(b"\n"):
             line_str = line_bytes.decode("utf-8", errors="replace").strip()
-            if not line_str:
-                continue
-            try:
-                parsed = json.loads(line_str)
-                if not isinstance(parsed, dict):
-                    logger.debug("Skipping non-object JSON value: %s", type(parsed).__name__)
-                    continue
-                _print_event(parsed, check_start_time)
-            except json.JSONDecodeError:
-                logger.debug("Skipping non-JSON line from subprocess: %.120s", line_str)
-                if debug:
-                    print(f"{DIM}{line_str}{RESET}")
-            except Exception as exc:
-                logger.warning("Failed to process JSONL event: %s (line: %.120s)", exc, line_str, exc_info=True)
+            _process_single_line(line_str, check_start_time, debug)
     if max_buffer_size > 0 and len(output_buffer) > max_buffer_size:
         logger.warning("Output buffer exceeded %d bytes — truncating", max_buffer_size)
         output_buffer.clear()

@@ -117,6 +117,33 @@ def _resolve_path_safe(path_str: str) -> str | None:
         return None
 
 
+def _validate_checkpoint_match(
+    checkpoint: CheckpointData,
+    workdir: str,
+    selected_checks: list[CheckDef],
+) -> str | None:
+    """Check that a checkpoint matches the current run configuration.
+
+    Returns a human-readable mismatch reason, or None if the checkpoint is valid.
+    """
+    resolved_saved = _resolve_path_safe(checkpoint.get("workdir", ""))
+    if resolved_saved is None:
+        return "Checkpoint has invalid workdir"
+    resolved_current = _resolve_path_safe(workdir)
+    if resolved_current is None:
+        return "Cannot resolve current workdir"
+    if resolved_saved != resolved_current:
+        logger.warning("Checkpoint workdir mismatch: saved=%s, current=%s", resolved_saved, resolved_current)
+        return "Checkpoint found but workdir differs"
+
+    saved_ids = checkpoint.get("check_ids", [])
+    current_ids = [c["id"] for c in selected_checks]
+    if saved_ids != current_ids:
+        return "Checkpoint found but check selection differs"
+
+    return None
+
+
 def _try_resume_from_checkpoint(
     workdir: str,
     selected_checks: list[CheckDef],
@@ -131,28 +158,9 @@ def _try_resume_from_checkpoint(
     if checkpoint is None:
         return None
 
-    # Guard against a checkpoint from a different project directory being
-    # loaded (e.g. if the file was copied or the directory was renamed).
-    resolved_saved = _resolve_path_safe(checkpoint.get("workdir", ""))
-    if resolved_saved is None:
-        print_status("Checkpoint has invalid workdir — starting fresh.", YELLOW)
-        clear_checkpoint(workdir)
-        return None
-    resolved_current = _resolve_path_safe(workdir)
-    if resolved_current is None:
-        print_status("Cannot resolve current workdir — starting fresh.", YELLOW)
-        clear_checkpoint(workdir)
-        return None
-    if resolved_saved != resolved_current:
-        print_status("Checkpoint found but workdir differs — starting fresh.", YELLOW)
-        logger.warning("Checkpoint workdir mismatch: saved=%s, current=%s", resolved_saved, resolved_current)
-        clear_checkpoint(workdir)
-        return None
-
-    saved_ids = checkpoint.get("check_ids", [])
-    current_ids = [c["id"] for c in selected_checks]
-    if saved_ids != current_ids:
-        print_status("Checkpoint found but check selection differs — starting fresh.", YELLOW)
+    mismatch = _validate_checkpoint_match(checkpoint, workdir, selected_checks)
+    if mismatch:
+        print_status(f"{mismatch} — starting fresh.", YELLOW)
         clear_checkpoint(workdir)
         return None
 

@@ -127,9 +127,10 @@ def _build_check_prompt(check: CheckDef, args: argparse.Namespace) -> str:
     Prepends the scope prefix (--changed-only file list or the default
     "review ALL code" instruction) and appends commit-message rules.
     """
-    scope_prefix = getattr(args, "changed_files_prefix", "") or FULL_CODEBASE_SCOPE
+    changed_files_prefix = getattr(args, "changed_files_prefix", "")
+    scope_prefix = changed_files_prefix or FULL_CODEBASE_SCOPE
     prompt = scope_prefix + check["prompt"] + COMMIT_MESSAGE_INSTRUCTIONS
-    scope_mode = "changed-only" if getattr(args, "changed_files_prefix", "") else "full-codebase"
+    scope_mode = "changed-only" if changed_files_prefix else "full-codebase"
     logger.debug("Built prompt for check '%s': scope=%s, length=%d chars", check["id"], scope_mode, len(prompt))
     return prompt
 
