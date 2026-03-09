@@ -44,7 +44,6 @@ class TestRunSingleCheckNoCommit:
     """Tests for run_single_check when git commit returns no changes."""
 
     def test_no_commit_after_check(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """When git_commit_all returns False, the no-commit debug path is hit."""
         check_def: CheckDef = make_check("readability", "Readability", "review code")
         args = make_suite_args(dry_run=False)
 
@@ -60,7 +59,6 @@ class TestRunSingleCheckEdgeCases:
     """Edge cases for run_single_check."""
 
     def test_idle_timeout_kill_does_not_trigger_memory_fix(self) -> None:
-        """KILL_REASON_IDLE should NOT trigger _run_memory_fix."""
         check_def = CheckDef(id="test", label="Test", prompt="do test")
         args = make_suite_args(dry_run=False)
         idle_result = CheckResult(exit_code=-9, kill_reason=process.KILL_REASON_IDLE)
@@ -71,7 +69,6 @@ class TestRunSingleCheckEdgeCases:
             mock_fix.assert_not_called()
 
     def test_timeout_kill_does_not_trigger_memory_fix(self) -> None:
-        """KILL_REASON_TIMEOUT should NOT trigger _run_memory_fix."""
         check_def = CheckDef(id="test", label="Test", prompt="do test")
         args = make_suite_args(dry_run=False)
         timeout_result = CheckResult(exit_code=-9, kill_reason=process.KILL_REASON_TIMEOUT)
@@ -86,7 +83,6 @@ class TestInvokeClaudeExceptionInRunSingleCheck:
     """Tests for run_single_check when _invoke_claude raises an unexpected exception."""
 
     def test_invoke_claude_exception_returns_error_outcome(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """When _invoke_claude raises, run_single_check catches it and returns exit_code=-1."""
         check_def = CheckDef(id="readability", label="Readability", prompt="review code")
         args = make_suite_args(dry_run=False)
 
@@ -127,7 +123,6 @@ class TestReportCheckChanges:
         assert "10 lines changed" in capsys.readouterr().out
 
     def test_sha_after_none_assumes_changes(self) -> None:
-        """When git_head_sha returns None after a check, assume changes were made."""
         with mock.patch.object(check_runner, "git_head_sha", return_value=None):
             made, lines, pct = check_runner._report_check_changes("/tmp", "test", "sha1")
         assert made is True
@@ -201,7 +196,6 @@ class TestBuildCheckPromptEdgeCases:
     """Edge cases for _build_check_prompt."""
 
     def test_empty_changed_files_prefix_uses_full_scope(self) -> None:
-        """When changed_files_prefix is empty string, full codebase scope is used."""
         from checkloop.checks import FULL_CODEBASE_SCOPE
         check = CheckDef(id="test", label="Test", prompt="review")
         args = make_suite_args(changed_files_prefix="")
@@ -209,7 +203,6 @@ class TestBuildCheckPromptEdgeCases:
         assert prompt.startswith(FULL_CODEBASE_SCOPE)
 
     def test_changed_files_prefix_prepended(self) -> None:
-        """When changed_files_prefix is set, it replaces the full scope prefix."""
         check = CheckDef(id="test", label="Test", prompt="review")
         args = make_suite_args(changed_files_prefix="ONLY THESE: a.py\n\n")
         prompt = check_runner._build_check_prompt(check, args)
@@ -217,7 +210,6 @@ class TestBuildCheckPromptEdgeCases:
         assert "review" in prompt
 
     def test_missing_changed_files_prefix_attr(self) -> None:
-        """When args doesn't have changed_files_prefix, getattr defaults to ''."""
         from checkloop.checks import FULL_CODEBASE_SCOPE
         check = CheckDef(id="test", label="Test", prompt="review")
         args = make_suite_args()
@@ -235,7 +227,6 @@ class TestMemoryKillFeedbackLoop:
     """Tests for automatic memory-fix follow-up when a check is killed for OOM."""
 
     def test_memory_kill_triggers_fix_check(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """When _invoke_claude returns kill_reason=KILL_REASON_MEMORY, _run_memory_fix is called."""
         check_def = CheckDef(id="readability", label="Readability", prompt="review code")
         args = make_suite_args(dry_run=False, max_memory_mb=4096)
         oom_result = CheckResult(exit_code=-9, kill_reason=process.KILL_REASON_MEMORY)
@@ -246,7 +237,6 @@ class TestMemoryKillFeedbackLoop:
             mock_fix.assert_called_once_with("/tmp", args, False)
 
     def test_no_memory_fix_on_normal_exit(self) -> None:
-        """_run_memory_fix is NOT called when the check exits normally."""
         check_def = CheckDef(id="readability", label="Readability", prompt="review code")
         args = make_suite_args(dry_run=False)
         ok_result = CheckResult(exit_code=0)
@@ -257,7 +247,6 @@ class TestMemoryKillFeedbackLoop:
             mock_fix.assert_not_called()
 
     def test_memory_fix_invokes_claude_with_fix_prompt(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """_run_memory_fix calls _invoke_claude with the memory fix prompt."""
         args = make_suite_args(dry_run=False, max_memory_mb=8192)
 
         with mock.patch.object(check_runner, "_invoke_claude", return_value=CheckResult(exit_code=0)) as mock_invoke:
@@ -267,7 +256,6 @@ class TestMemoryKillFeedbackLoop:
             assert "excessive memory usage" in prompt_used
 
     def test_memory_fix_commits_when_git(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """_run_memory_fix commits changes when is_git=True."""
         args = make_suite_args(dry_run=False, max_memory_mb=4096)
 
         with mock.patch.object(check_runner, "_invoke_claude", return_value=CheckResult(exit_code=0)), \
@@ -278,7 +266,6 @@ class TestMemoryKillFeedbackLoop:
         assert "Committed memory-fix changes" in out
 
     def test_memory_fix_nonzero_exit_warns(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """When the memory-fix check exits non-zero, a warning is printed."""
         args = make_suite_args(dry_run=False, max_memory_mb=4096)
 
         with mock.patch.object(check_runner, "_invoke_claude", return_value=CheckResult(exit_code=1)):
@@ -287,7 +274,6 @@ class TestMemoryKillFeedbackLoop:
         assert "did not complete cleanly" in out
 
     def test_memory_fix_exception_is_caught(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """When _invoke_claude raises inside _run_memory_fix, the exception is caught and logged."""
         args = make_suite_args(dry_run=False, max_memory_mb=4096)
 
         with mock.patch.object(check_runner, "_invoke_claude", side_effect=RuntimeError("boom")):

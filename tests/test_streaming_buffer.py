@@ -100,19 +100,16 @@ class TestProcessJsonlBufferLargeInput:
     """Tests for process_jsonl_buffer with large or boundary-sized inputs."""
 
     def test_single_newline_only(self) -> None:
-        """A buffer with only a newline produces no output and clears."""
         buf = bytearray(b"\n")
         remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=False)
         assert remainder == bytearray()
 
     def test_multiple_consecutive_newlines(self) -> None:
-        """Multiple newlines are treated as empty lines and skipped."""
         buf = bytearray(b"\n\n\n\n")
         remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=False)
         assert remainder == bytearray()
 
     def test_json_with_escaped_newlines_in_string(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """JSON value containing escaped newlines should parse correctly."""
         event = json.dumps({"type": "system", "message": "line1\\nline2"})
         buf = bytearray((event + "\n").encode())
         remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=False)
@@ -124,7 +121,6 @@ class TestProcessJsonlBufferMixedContent:
     """Tests for process_jsonl_buffer with mixed valid/invalid content."""
 
     def test_mixed_valid_and_invalid(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """Mix of valid and invalid lines should process valid ones."""
         valid_event = json.dumps({"type": "system", "message": "hello"})
         buf = bytearray(f"invalid\n{valid_event}\n".encode())
         result = streaming.process_jsonl_buffer(buf, 0.0, False)
@@ -137,7 +133,6 @@ class TestProcessJsonlBufferEventErrors:
     """Tests for process_jsonl_buffer when _print_event raises TypeError/KeyError/AttributeError."""
 
     def test_type_error_in_print_event_logged(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """When _print_event raises TypeError, the line is logged and processing continues."""
         valid_event = json.dumps({"type": "system", "message": "hello"})
         buf = bytearray((valid_event + "\n").encode())
         with unittest.mock.patch.object(streaming, "_print_event", side_effect=TypeError("bad type")):
@@ -145,7 +140,6 @@ class TestProcessJsonlBufferEventErrors:
         assert remainder == bytearray()
 
     def test_key_error_in_print_event_logged(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """When _print_event raises KeyError, the line is logged and processing continues."""
         valid_event = json.dumps({"type": "tool_use", "tool": "Read"})
         buf = bytearray((valid_event + "\n").encode())
         with unittest.mock.patch.object(streaming, "_print_event", side_effect=KeyError("missing key")):
@@ -153,7 +147,6 @@ class TestProcessJsonlBufferEventErrors:
         assert remainder == bytearray()
 
     def test_attribute_error_in_print_event_logged(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """When _print_event raises AttributeError, the line is logged and processing continues."""
         valid_event = json.dumps({"type": "result", "result": "done"})
         buf = bytearray((valid_event + "\n").encode())
         with unittest.mock.patch.object(streaming, "_print_event", side_effect=AttributeError("no attr")):
@@ -164,38 +157,7 @@ class TestProcessJsonlBufferEventErrors:
 class TestProcessJsonlBufferNonDictJson:
     """Edge cases for process_jsonl_buffer with valid JSON that isn't a dict."""
 
-    def test_json_array_skipped_without_exception(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """A JSON array is valid JSON but not a stream event dict — skipped via type check."""
-        buf = bytearray(b'[1, 2, 3]\n')
-        remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=False)
-        assert remainder == bytearray()
-        # Verify no output was produced (the non-dict value is silently skipped)
-        assert capsys.readouterr().out == ""
-
-    def test_json_number_does_not_crash(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """A JSON number is valid JSON but not a dict."""
-        buf = bytearray(b'42\n')
-        remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=False)
-        assert remainder == bytearray()
-
-    def test_json_string_does_not_crash(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """A JSON string is valid JSON but not a dict."""
-        buf = bytearray(b'"hello"\n')
-        remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=False)
-        assert remainder == bytearray()
-
-    def test_json_null_does_not_crash(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """A JSON null is valid JSON but not a dict."""
-        buf = bytearray(b'null\n')
-        remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=False)
-        assert remainder == bytearray()
-
-    def test_json_boolean_does_not_crash(self, capsys: pytest.CaptureFixture[str]) -> None:
-        buf = bytearray(b'true\n')
-        remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=False)
-
-    def test_non_dict_json_does_not_call_print_event(self) -> None:
-        """Non-dict JSON values should be skipped before reaching _print_event."""
+    def test_non_dict_json_skipped(self) -> None:
         buf = bytearray(b'42\n"hello"\n[1,2]\nnull\ntrue\n')
         with unittest.mock.patch.object(streaming, "_print_event") as mock_print:
             remainder = streaming.process_jsonl_buffer(buf, time.time(), debug=False)
@@ -207,7 +169,6 @@ class TestProcessJsonlBufferMaxBufferDisabled:
     """Test process_jsonl_buffer when max_buffer_size is 0 (disabled)."""
 
     def test_zero_max_buffer_size_does_not_truncate(self) -> None:
-        """When max_buffer_size=0, buffer is never truncated regardless of size."""
         big_buf = bytearray(b"x" * 100_000)
         result = streaming.process_jsonl_buffer(
             big_buf, 0.0, False, max_buffer_size=0,
@@ -219,7 +180,6 @@ class TestProcessJsonlBufferMaxBufferEnforced:
     """Tests for process_jsonl_buffer when max_buffer_size is exceeded."""
 
     def test_buffer_cleared_when_exceeding_limit(self) -> None:
-        """When incomplete data exceeds max_buffer_size, the buffer is cleared."""
         # 500 bytes of incomplete data (no newline) exceeds a 100-byte limit
         big_buf = bytearray(b"x" * 500)
         result = streaming.process_jsonl_buffer(
@@ -228,7 +188,6 @@ class TestProcessJsonlBufferMaxBufferEnforced:
         assert len(result) == 0
 
     def test_buffer_not_cleared_when_under_limit(self) -> None:
-        """When incomplete data is under max_buffer_size, the buffer is preserved."""
         small_buf = bytearray(b"partial")
         result = streaming.process_jsonl_buffer(
             small_buf, 0.0, False, max_buffer_size=1000,
@@ -236,7 +195,6 @@ class TestProcessJsonlBufferMaxBufferEnforced:
         assert result == bytearray(b"partial")
 
     def test_buffer_cleared_after_processing_complete_lines(self) -> None:
-        """Complete lines are processed first, then remaining data is checked against limit."""
         event = json.dumps({"type": "system", "message": "ok"})
         # Complete line + oversized remainder
         buf = bytearray(f"{event}\n".encode() + b"x" * 500)

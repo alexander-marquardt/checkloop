@@ -109,7 +109,6 @@ def find_session_pids(session_id: int) -> list[int]:
 # --- Orphan and straggler cleanup --------------------------------------------
 
 def kill_pids(pids: list[int], sig: signal.Signals = signal.SIGKILL) -> int:
-    """Send a signal to each PID, ignoring already-dead processes."""
     killed = 0
     for pid in pids:
         try:

@@ -87,10 +87,6 @@ def _add_file_log_handler(workdir: str) -> None:
     """
     log_path = Path(workdir) / ".checkloop-run.log"
     try:
-        # Create/truncate with restricted permissions (owner read/write only)
-        # before handing off to FileHandler. The log captures DEBUG-level
-        # content including prompts and file paths that should not be
-        # world-readable on shared systems.
         fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         os.close(fd)
         file_handler = logging.FileHandler(str(log_path), mode="a", encoding="utf-8")

@@ -33,14 +33,12 @@ SHARED_ARG_DEFAULTS: dict[str, Any] = dict(
 
 
 def make_suite_args(*, dry_run: bool = True, **overrides: Any) -> argparse.Namespace:
-    """Build an argparse.Namespace for _run_check_suite / run_single_check."""
     defaults = {**SHARED_ARG_DEFAULTS, "dry_run": dry_run}
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
 
 
 def make_mock_cli_args(*, dry_run: bool = False, **overrides: Any) -> mock.MagicMock:
-    """Build a MagicMock with all attributes main() reads from parsed args."""
     args = mock.MagicMock()
     defaults: dict[str, Any] = {
         **SHARED_ARG_DEFAULTS,
@@ -64,11 +62,6 @@ def make_git_result(
     stdout: str | bytes = "",
     stderr: str = "",
 ) -> mock.MagicMock:
-    """Build a mock subprocess result mimicking git command output.
-
-    Used throughout git, monitoring, and process tests to avoid
-    repeating ``mock.MagicMock(returncode=..., stdout=...)`` inline.
-    """
     return mock.MagicMock(returncode=returncode, stdout=stdout, stderr=stderr)
 
 
@@ -109,16 +102,10 @@ def patch_suite_git(
 
 
 def make_check(check_id: str, label: str = "", prompt: str = "p") -> CheckDef:
-    """Build a CheckDef for use in tests."""
     return CheckDef(id=check_id, label=label or check_id, prompt=prompt)
 
 
 def make_summary_row(**overrides: Any) -> SummaryRow:
-    """Build a SummaryRow dict with sensible defaults.
-
-    Used across test_terminal classes to avoid repeating the full
-    TypedDict construction inline.
-    """
     defaults: dict[str, Any] = dict(
         check_id="chk", label="Check", cycle=1, exit_code=0,
         kill_reason=None, made_changes=False, lines_changed=0,
@@ -129,12 +116,6 @@ def make_summary_row(**overrides: Any) -> SummaryRow:
 
 
 def make_checkpoint_data(**overrides: Any) -> CheckpointData:
-    """Build a valid CheckpointData with sensible defaults.
-
-    All fields have reasonable defaults so callers only need to specify the
-    values they care about. Used across test_checkpoint, test_suite, and
-    test_cli to avoid repeating the full TypedDict construction inline.
-    """
     data: CheckpointData = {
         "version": overrides.pop("version", 1),
         "started_at": overrides.pop("started_at", "2026-03-08T12:00:00+00:00"),
@@ -153,12 +134,6 @@ def make_checkpoint_data(**overrides: Any) -> CheckpointData:
 
 
 def assert_checkpoint_field_rejected(tmp_path: Path, **overrides: Any) -> None:
-    """Write a checkpoint with field overrides and assert load_checkpoint rejects it.
-
-    Builds a valid checkpoint via make_checkpoint_data, applies *overrides*
-    (which should contain at least one invalid value), writes it to disk,
-    and asserts that load_checkpoint returns None.
-    """
     overrides.setdefault("workdir", str(tmp_path))
     raw: dict[str, Any] = dict(make_checkpoint_data(**overrides))
     path = tmp_path / checkpoint._CHECKPOINT_FILENAME

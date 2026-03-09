@@ -189,7 +189,6 @@ class TestPromptResume:
         assert result is True
 
     def test_readline_oserror_returns_false(self, tmp_path: Path) -> None:
-        """When readline raises OSError, prompt_resume returns False."""
         data = make_checkpoint_data(workdir=str(tmp_path))
         checkpoint.save_checkpoint(str(tmp_path), data)
         with mock.patch("sys.stdin") as mock_stdin:
@@ -277,30 +276,22 @@ class TestSaveCheckpointErrors:
     """Tests for save_checkpoint error handling paths."""
 
     def test_write_error_unlinks_temp_file(self, tmp_path: Path) -> None:
-        """When json.dump raises during write, the temp file is cleaned up and no exception propagates."""
         data = make_checkpoint_data(workdir=str(tmp_path))
         with mock.patch("json.dump", side_effect=TypeError("not serializable")):
-            # Should not raise — TypeError is now caught and logged as best-effort
             checkpoint.save_checkpoint(str(tmp_path), data)
-        # Temp files should have been cleaned up
         remaining = list(tmp_path.glob(".checkloop-ckpt-*.tmp"))
         assert remaining == []
 
     def test_oserror_during_replace_logs_warning_and_cleans_up(self, tmp_path: Path) -> None:
-        """When os.replace raises OSError, save_checkpoint cleans up the temp file and logs a warning."""
         data = make_checkpoint_data(workdir=str(tmp_path))
         with mock.patch("os.replace", side_effect=OSError("permission denied")):
-            # Should not raise — the OSError is caught and logged
             checkpoint.save_checkpoint(str(tmp_path), data)
-        # Temp files should have been cleaned up
         remaining = list(tmp_path.glob(".checkloop-ckpt-*.tmp"))
         assert remaining == []
 
     def test_oserror_during_save_logs_warning(self, tmp_path: Path) -> None:
-        """When mkstemp raises OSError, save_checkpoint logs a warning instead of crashing."""
         data = make_checkpoint_data(workdir=str(tmp_path))
         with mock.patch("tempfile.mkstemp", side_effect=OSError("disk full")):
-            # Should not raise
             checkpoint.save_checkpoint(str(tmp_path), data)
 
 
@@ -312,9 +303,7 @@ class TestClearCheckpointErrors:
     """Tests for clear_checkpoint error handling."""
 
     def test_oserror_during_clear_logs_warning(self, tmp_path: Path) -> None:
-        """When unlink raises OSError, clear_checkpoint logs a warning."""
         with mock.patch.object(Path, "unlink", side_effect=OSError("permission denied")):
-            # Should not raise
             checkpoint.clear_checkpoint(str(tmp_path))
 
 
@@ -326,7 +315,6 @@ class TestPromptResumeSelectError:
     """Tests for prompt_resume when select() raises."""
 
     def test_select_oserror_returns_false(self, tmp_path: Path) -> None:
-        """When select.select raises OSError, prompt_resume returns False."""
         data = make_checkpoint_data(workdir=str(tmp_path))
         checkpoint.save_checkpoint(str(tmp_path), data)
         with mock.patch("sys.stdin") as mock_stdin:
@@ -336,7 +324,6 @@ class TestPromptResumeSelectError:
         assert result is False
 
     def test_select_valueerror_returns_false(self, tmp_path: Path) -> None:
-        """When select.select raises ValueError, prompt_resume returns False."""
         data = make_checkpoint_data(workdir=str(tmp_path))
         checkpoint.save_checkpoint(str(tmp_path), data)
         with mock.patch("sys.stdin") as mock_stdin:
@@ -354,11 +341,9 @@ class TestSaveCheckpointUnlinkFailure:
     """Test that os.unlink failure in the cleanup path is handled."""
 
     def test_unlink_oserror_during_write_error_cleanup(self, tmp_path: Path) -> None:
-        """When json.dump fails AND os.unlink also fails, save_checkpoint still handles it gracefully."""
         data = make_checkpoint_data(workdir=str(tmp_path))
         with mock.patch("json.dump", side_effect=TypeError("not serializable")):
             with mock.patch("os.unlink", side_effect=OSError("permission denied")):
-                # Should not raise — TypeError is caught and logged as best-effort
                 checkpoint.save_checkpoint(str(tmp_path), data)
 
 
@@ -505,19 +490,16 @@ class TestLoadCheckpointAdditionalEdgeCases:
     """Additional edge cases for load_checkpoint()."""
 
     def test_checkpoint_json_string(self, tmp_path: Path) -> None:
-        """A JSON string should be rejected."""
         cp_file = tmp_path / ".checkloop-checkpoint.json"
         cp_file.write_text('"hello"')
         assert checkpoint.load_checkpoint(str(tmp_path)) is None
 
     def test_checkpoint_empty_file(self, tmp_path: Path) -> None:
-        """An empty file should be rejected (invalid JSON)."""
         cp_file = tmp_path / ".checkloop-checkpoint.json"
         cp_file.write_text("")
         assert checkpoint.load_checkpoint(str(tmp_path)) is None
 
     def test_checkpoint_binary_content(self, tmp_path: Path) -> None:
-        """Binary content should be handled gracefully."""
         cp_file = tmp_path / ".checkloop-checkpoint.json"
         cp_file.write_bytes(b"\x00\x01\x02\x03")
         assert checkpoint.load_checkpoint(str(tmp_path)) is None
@@ -531,7 +513,6 @@ class TestSaveCheckpointAdditionalEdgeCases:
     """Additional edge cases for save_checkpoint()."""
 
     def test_save_and_load_roundtrip_with_unicode(self, tmp_path: Path) -> None:
-        """Unicode in workdir path should survive save/load."""
         data = make_checkpoint_data(
             workdir=str(tmp_path),
             started_at="2026-03-08T12:00:00+00:00",

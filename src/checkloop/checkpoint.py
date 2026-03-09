@@ -76,7 +76,6 @@ def _checkpoint_path(workdir: str) -> Path:
 # --- Save / Load / Clear -----------------------------------------------------
 
 def _unlink_quietly(path: str) -> None:
-    """Remove a file, ignoring errors if it no longer exists."""
     try:
         os.unlink(path)
     except OSError as exc:

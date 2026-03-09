@@ -135,7 +135,6 @@ def _spawn_claude_process(
 
 
 def _read_stdout_chunk(stdout: IO[bytes]) -> bytes:
-    """Read a chunk from stdout, preferring non-blocking read1 when available."""
     try:
         # BufferedReader.read1() returns available data without blocking for the
         # full chunk size. Fall back to os.read() for raw file descriptors.
@@ -347,7 +346,6 @@ def _stream_process_output(
 # --- Process group cleanup ----------------------------------------------------
 
 def _signal_process_group(pgid: int, sig: signal.Signals) -> None:
-    """Send a signal to a process group, ignoring errors if already gone."""
     try:
         os.killpg(pgid, sig)
     except OSError as exc:

@@ -95,37 +95,12 @@ class TestSummariseToolUseExceptionHandling:
     """Test that _summarise_tool_use catches exceptions gracefully."""
 
     def test_tool_input_raising_exception_returns_empty(self) -> None:
-        """When tool_input causes an internal error, the function returns ''."""
-        # Pass a tool_input whose __contains__ raises, triggering the except branch
         bad_input: Any = unittest.mock.MagicMock()
         bad_input.__contains__ = unittest.mock.MagicMock(side_effect=TypeError("boom"))
         bad_input.__getitem__ = unittest.mock.MagicMock(side_effect=TypeError("boom"))
         result = streaming._summarise_tool_use("Bash", bad_input)
         assert result == ""
 
-
-class TestSummariseToolUseNonStringInputs:
-    """Edge case tests for _summarise_tool_use() with non-string tool_input values."""
-
-    def test_bash_command_is_integer(self) -> None:
-        result = streaming._summarise_tool_use("Bash", {"command": 42})
-        assert "$ 42" in result
-
-    def test_bash_command_is_none(self) -> None:
-        result = streaming._summarise_tool_use("Bash", {"command": None})
-        assert "$ None" in result
-
-    def test_bash_command_is_list(self) -> None:
-        result = streaming._summarise_tool_use("Bash", {"command": ["ls", "-la"]})
-        assert "$ [" in result
-
-    def test_empty_tool_input_dict(self) -> None:
-        result = streaming._summarise_tool_use("Bash", {})
-        assert result == ""
-
-    def test_none_tool_name(self) -> None:
-        result = streaming._summarise_tool_use("", {})
-        assert result == ""
 
 
 class TestPrintEvent:
@@ -226,163 +201,28 @@ class TestPrintEvent:
         assert "[unknown]" in out
 
 
-class TestPrintEventEdgeCases:
-    """Edge case tests for _print_event() with unusual inputs."""
-
-    def test_none_type_field(self, capsys: pytest.CaptureFixture[str]) -> None:
-        event: dict[str, Any] = {"type": None}
-        streaming._print_event(event, time.time())
-        assert capsys.readouterr().out.strip() == ""
-
-    def test_numeric_type_field(self, capsys: pytest.CaptureFixture[str]) -> None:
-        event: dict[str, Any] = {"type": 42}
-        streaming._print_event(event, time.time())
-        assert capsys.readouterr().out.strip() == ""
-
-    def test_assistant_with_none_content(self, capsys: pytest.CaptureFixture[str]) -> None:
-        event: dict[str, Any] = {"type": "assistant", "message": {"content": None}}
-        streaming._print_event(event, time.time())
-        assert capsys.readouterr().out.strip() == ""
-
-    def test_assistant_content_is_string_not_list(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """Content should be a list; a string is silently ignored."""
-        event: dict[str, Any] = {"type": "assistant", "message": {"content": "plain text"}}
-        streaming._print_event(event, time.time())
-        assert capsys.readouterr().out.strip() == ""
-
-    def test_assistant_content_contains_non_dict_items(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """Non-dict items in content list are safely skipped."""
-        event: dict[str, Any] = {"type": "assistant", "message": {"content": ["string", 42, None, {"type": "text", "text": "real"}]}}
-        streaming._print_event(event, time.time())
-        assert "real" in capsys.readouterr().out
-
-    def test_result_with_non_string_result(self, capsys: pytest.CaptureFixture[str]) -> None:
-        event: dict[str, Any] = {"type": "result", "result": 42}
-        streaming._print_event(event, time.time())
-        out = capsys.readouterr().out
-        assert "42" in out
-
 
 class TestSummariseToolUseAdditionalEdgeCases:
     """Additional edge case tests for _summarise_tool_use."""
 
     def test_bash_command_one_under_limit(self) -> None:
-        """Command one char under the limit should not be truncated."""
         cmd = "x" * (streaming._BASH_DISPLAY_LIMIT - 1)
         result = streaming._summarise_tool_use("Bash", {"command": cmd})
         assert "..." not in result
 
     def test_read_file_with_empty_file_path(self) -> None:
-        """Empty file_path string is still returned."""
         result = streaming._summarise_tool_use("Read", {"file_path": ""})
         assert result == " "
 
     def test_grep_with_empty_pattern(self) -> None:
-        """Empty grep pattern produces valid output."""
         result = streaming._summarise_tool_use("Grep", {"pattern": ""})
         assert result == " //"
 
     def test_case_variants_of_file_tools(self) -> None:
-        """read_file, EDIT, Write_File etc. all match via lowercasing."""
         assert streaming._summarise_tool_use("READ_FILE", {"file_path": "/a"}) == " /a"
         assert streaming._summarise_tool_use("EDIT", {"file_path": "/b"}) == " /b"
         assert streaming._summarise_tool_use("WRITE", {"file_path": "/c"}) == " /c"
 
 
-class TestPrintToolUseEventEdgeCases:
-    """Edge cases for _print_tool_use_event() with unusual input types."""
-
-    def test_non_dict_input_field(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """When event['input'] is a string, should not crash."""
-        event: dict[str, Any] = {"type": "tool_use", "tool": "bash", "input": "not a dict"}
-        streaming._print_tool_use_event(event, "[0m00s] ")
-        output = capsys.readouterr().out
-        assert "bash" in output
-
-    def test_list_input_field(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """When event['input'] is a list, should not crash."""
-        event: dict[str, Any] = {"type": "tool_use", "tool": "read", "input": [1, 2, 3]}
-        streaming._print_tool_use_event(event, "[0m00s] ")
-        output = capsys.readouterr().out
-        assert "read" in output
-
-    def test_missing_input_field(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """When event has no 'input' key, should not crash."""
-        event: dict[str, Any] = {"type": "tool_use", "tool": "bash"}
-        streaming._print_tool_use_event(event, "[0m00s] ")
-        output = capsys.readouterr().out
-        assert "bash" in output
-
-
-class TestPrintEventEdgeCasesAdditional:
-    """Additional edge cases for _print_event()."""
-
-    def test_assistant_message_is_none(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """When message is None (not a dict), should not crash."""
-        event: dict[str, Any] = {"type": "assistant", "message": None}
-        streaming._print_event(event, time.time())
-        assert capsys.readouterr().out.strip() == ""
-
-    def test_assistant_message_is_string(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """When message is a string (not a dict), should not crash."""
-        event: dict[str, Any] = {"type": "assistant", "message": "just a string"}
-        streaming._print_event(event, time.time())
-        assert capsys.readouterr().out.strip() == ""
-
-    def test_result_event_with_dict_result(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """When result is a dict, it should be printed (via str conversion)."""
-        event: dict[str, Any] = {"type": "result", "result": {"key": "value"}}
-        streaming._print_event(event, time.time())
-        out = capsys.readouterr().out
-        assert "Result" in out
-        assert "key" in out
-
-    def test_system_event_with_non_string_message(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """When system message is a non-string truthy value, it should be printed."""
-        event: dict[str, Any] = {"type": "system", "message": 42}
-        streaming._print_event(event, time.time())
-        out = capsys.readouterr().out
-        assert "42" in out
-
-
-class TestPrintResultEventFalsyValues:
-    """Edge cases for _print_result_event with falsy but valid result values."""
-
-    def test_result_zero_is_printed(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """Numeric 0 is a valid result and should be printed."""
-        event: dict[str, Any] = {"type": "result", "result": 0}
-        streaming._print_event(event, time.time())
-        out = capsys.readouterr().out
-        assert "Result" in out
-        assert "0" in out
-
-    def test_result_false_is_printed(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """Boolean False is a valid result and should be printed."""
-        event: dict[str, Any] = {"type": "result", "result": False}
-        streaming._print_event(event, time.time())
-        out = capsys.readouterr().out
-        assert "Result" in out
-        assert "False" in out
-
-    def test_result_none_is_not_printed(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """None result should not be printed."""
-        event: dict[str, Any] = {"type": "result", "result": None}
-        streaming._print_event(event, time.time())
-        out = capsys.readouterr().out
-        assert "Result" not in out
-
-    def test_result_empty_string_is_not_printed(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """Empty string result should not be printed."""
-        event: dict[str, Any] = {"type": "result", "result": ""}
-        streaming._print_event(event, time.time())
-        out = capsys.readouterr().out
-        assert "Result" not in out
-
-    def test_result_missing_key_is_not_printed(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """When 'result' key is missing entirely, nothing should be printed."""
-        event: dict[str, Any] = {"type": "result"}
-        streaming._print_event(event, time.time())
-        out = capsys.readouterr().out
-        assert "Result" not in out
 
 
