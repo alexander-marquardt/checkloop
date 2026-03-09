@@ -54,8 +54,13 @@ def format_duration(total_seconds: float) -> str:
 
 
 def fatal(msg: str) -> NoReturn:
-    """Log an error, print it in red, and exit with code 1."""
-    logger.error("%s", msg)
+    """Log an error, print it in red, and exit with code 1.
+
+    When called from within an exception handler, the active traceback is
+    included in the log entry so the full context is captured in the log
+    file for post-mortem debugging.
+    """
+    logger.error("%s", msg, exc_info=sys.exc_info()[0] is not None)
     print_status(msg, RED)
     sys.exit(1)
 
