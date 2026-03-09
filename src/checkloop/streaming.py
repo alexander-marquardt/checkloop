@@ -27,18 +27,21 @@ _FILE_PATH_TOOL_NAMES: set[str] = {"read", "read_file", "edit", "edit_file", "wr
 
 def _summarise_tool_use(tool_name: str, tool_input: dict[str, Any]) -> str:
     """Return a short human-readable summary for a tool-use event."""
-    normalized_name = tool_name.lower()
-    if normalized_name in _FILE_PATH_TOOL_NAMES and "file_path" in tool_input:
-        return f" {tool_input['file_path']}"
-    if normalized_name == "bash" and "command" in tool_input:
-        command = str(tool_input["command"])
-        if len(command) > _BASH_DISPLAY_LIMIT:
-            return f" $ {command[:_BASH_DISPLAY_LIMIT - 3]}..."
-        return f" $ {command}"
-    if normalized_name == "glob" and "pattern" in tool_input:
-        return f" {tool_input['pattern']}"
-    if normalized_name == "grep" and "pattern" in tool_input:
-        return f" /{tool_input['pattern']}/"
+    try:
+        normalized_name = tool_name.lower()
+        if normalized_name in _FILE_PATH_TOOL_NAMES and "file_path" in tool_input:
+            return f" {tool_input['file_path']}"
+        if normalized_name == "bash" and "command" in tool_input:
+            command = str(tool_input["command"])
+            if len(command) > _BASH_DISPLAY_LIMIT:
+                return f" $ {command[:_BASH_DISPLAY_LIMIT - 3]}..."
+            return f" $ {command}"
+        if normalized_name == "glob" and "pattern" in tool_input:
+            return f" {tool_input['pattern']}"
+        if normalized_name == "grep" and "pattern" in tool_input:
+            return f" /{tool_input['pattern']}/"
+    except Exception as exc:
+        logger.debug("Failed to summarise tool_use event for '%s': %s", tool_name, exc)
     return ""
 
 
@@ -89,6 +92,10 @@ def _print_result_event(event: dict[str, Any], elapsed_prefix: str) -> None:
         if isinstance(result_text, str):
             logger.info("Check result received (length=%d chars)", len(result_text))
             logger.debug("Check result text: %.500s", result_text)
+        else:
+            logger.warning("Unexpected result type %s in result event — converting to string",
+                           type(result_text).__name__)
+            result_text = str(result_text)
         print(f"\n{elapsed_prefix}{GREEN}--- Result ---{RESET}")
         print(result_text)
 

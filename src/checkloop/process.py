@@ -133,6 +133,9 @@ def _spawn_claude_process(
         )
     except OSError as exc:
         fatal(f"Failed to launch claude subprocess: {exc}")
+    except Exception as exc:
+        logger.error("Unexpected error spawning claude subprocess: %s", exc, exc_info=True)
+        fatal(f"Unexpected error launching claude subprocess: {exc}")
 
 
 def _read_stdout_chunk(stdout: IO[bytes]) -> bytes:
@@ -481,6 +484,8 @@ def _execute_claude_process(
                            idle_timeout, process.pid)
             if kill_reason is None:
                 kill_reason = KILL_REASON_IDLE
+        except OSError as exc:
+            logger.warning("process.wait() failed for pid=%d: %s", process.pid, exc)
     finally:
         # Ensure the entire process group is dead on every exit path.
         # Claude may spawn child processes (language servers, etc.) that

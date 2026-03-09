@@ -130,7 +130,13 @@ def _try_resume_from_checkpoint(
         print_status("Checkpoint has invalid workdir — starting fresh.", YELLOW)
         clear_checkpoint(workdir)
         return None
-    resolved_current = str(Path(workdir).resolve())
+    try:
+        resolved_current = str(Path(workdir).resolve())
+    except OSError as exc:
+        logger.warning("Cannot resolve current workdir '%s': %s", workdir, exc)
+        print_status("Cannot resolve current workdir — starting fresh.", YELLOW)
+        clear_checkpoint(workdir)
+        return None
     if resolved_saved != resolved_current:
         print_status("Checkpoint found but workdir differs — starting fresh.", YELLOW)
         logger.warning("Checkpoint workdir mismatch: saved=%s, current=%s", resolved_saved, resolved_current)

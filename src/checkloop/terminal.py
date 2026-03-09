@@ -226,6 +226,8 @@ def _parse_duration(duration_str: str) -> float:
         minutes = int(match.group(2))
         seconds = int(match.group(3))
         total = hours * 3600 + minutes * 60 + seconds
+    elif duration_str.strip():
+        logger.debug("Could not parse duration string: %r — defaulting to 0s", duration_str)
     return total
 
 
