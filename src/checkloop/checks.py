@@ -33,8 +33,15 @@ CHECKS: list[CheckDef] = [
         "prompt": (
             "Find and run the existing test suite for this project. "
             "Use whatever test runner is already configured (pytest, jest, go test, cargo test, etc.). "
+            "Run ALL tests including integration tests — do not skip test categories. "
+            "If some tests require external services (databases, Elasticsearch, Redis, etc.) that are "
+            "unavailable, report this explicitly and list which test files/categories could not be run. "
+            "Do not treat 'skipped due to missing service' as equivalent to 'passing'. "
             "If tests fail, diagnose and fix the root cause in the SOURCE code — not by weakening or "
-            "deleting the tests. Re-run until all existing tests pass. "
+            "deleting the tests. "
+            "Also fix pre-existing flaky tests where the fix is obvious — for example, timing assertions "
+            "that fail when operations complete within the same millisecond (relax `assert a > b` to "
+            "`assert a >= b`, or add a small `time.sleep(0.01)` before the assertion). "
             "Do NOT write new tests in this step — only fix failures in the existing suite. "
             "Report what you found and fixed."
         ),
@@ -349,6 +356,9 @@ CHECKS: list[CheckDef] = [
         "label": "Validate All Tests Pass",
         "prompt": (
             "Run the FULL test suite (including any tests written or modified during earlier checks). "
+            "Run ALL test categories including integration tests — do not skip any. "
+            "If some tests require external services that are unavailable, report this explicitly "
+            "rather than treating skipped tests as passing. "
             "If any tests fail, diagnose whether the failure is due to a bug in the source code "
             "or a bad test. Fix the root cause — prefer fixing source code over weakening tests. "
             "Re-run until all tests pass. "
