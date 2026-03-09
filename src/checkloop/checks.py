@@ -39,44 +39,6 @@ CHECKS: list[CheckDef] = [
             "Report what you found and fixed."
         ),
     },
-    # --- On-demand only (not in any tier) ---
-    # Positioned after test-fix so that when combined with other checks,
-    # cleanup runs first and later checks can catch any regressions it introduces.
-    {
-        "id": "cleanup-ai-slop",
-        "label": "Remove AI-Generated Code Slop",
-        "prompt": (
-            "Your job is to REMOVE unnecessary code, not add anything. "
-            "Go through the codebase and delete AI-generated slop:\n\n"
-            "1. Remove docstrings that merely restate what the function name and signature already "
-            "communicate. If the function is called get_user_by_id(user_id: int) -> User, a docstring "
-            "saying 'Get a user by their ID' adds nothing — delete it. KEEP module-level docstrings "
-            "that explain design strategy, class docstrings that explain intent or relationships, "
-            "and function docstrings that explain non-obvious behavior, side effects, or complex "
-            "return values.\n\n"
-            "2. Remove logger.debug() calls that log function entry or arguments already visible in "
-            "request context or stack traces. Delete logging on hot paths (query builders, inner loops, "
-            "per-item processing). Keep logging only at system boundaries (API entry/exit, external "
-            "service calls, error paths).\n\n"
-            "3. Remove try/except blocks that wrap code that cannot actually raise the caught exception "
-            "(e.g. wrapping a pure data structure construction in try/except, or catching ConnectionError "
-            "around code that doesn't do I/O). Misleading error handling is worse than none.\n\n"
-            "4. Remove defensive null/None/undefined checks where the type system already guarantees "
-            "the value is non-nullable. Remove type: ignore comments that were added to force invalid "
-            "inputs in tests.\n\n"
-            "5. Remove tests that exist only to hit coverage numbers — tests that pass None where types "
-            "say str, tests for unreachable error paths, tests with near-duplicate names like "
-            "test_boundary_conditions.py / test_boundary_edge_cases.py / test_edge_case_boundaries.py. "
-            "Consolidate overlapping test files into focused, well-named ones.\n\n"
-            "6. Remove unnecessary inline comments that describe what the code obviously does "
-            "(e.g. '# Initialize the logger' above logger = logging.getLogger(__name__)).\n\n"
-            "7. Revert any operational config changes that were made in the name of 'improvement' but "
-            "actually change runtime behavior — things like CORS tightening, retry policy changes, "
-            "timeout changes, or dependency removals where the dependency is still used.\n\n"
-            "Run the full test suite after cleanup to ensure nothing broke. "
-            "Report what you removed and how many lines were deleted."
-        ),
-    },
     # --- Basic tier (default) ---
     {
         "id": "readability",
@@ -134,8 +96,12 @@ CHECKS: list[CheckDef] = [
             "Do NOT write tests for defensive paths that can't actually happen "
             "(e.g. passing None where the type says str, or catching exceptions from code "
             "that can't raise them). Do NOT use # type: ignore to force invalid inputs. "
-            "Avoid overlapping test files with near-identical names — each test file should have "
-            "a clear, distinct purpose. "
+            "Do NOT create test files named test_*_coverage.py or test_*_extended.py — these "
+            "suggest coverage-chasing, not behaviour testing. Do NOT organize tests by source "
+            "file line numbers or add comments referencing line numbers. "
+            "Each test file should map to a module and test its public behaviour, not mirror its "
+            "internal structure. Avoid overlapping test files with near-identical names — each "
+            "test file should have a clear, distinct purpose. "
             "Use the testing framework already in the project (or pytest/jest if none). "
             "Do NOT remove existing coverage gates or test configuration. "
             "Run the test suite and fix any failures before finishing."
@@ -172,6 +138,9 @@ CHECKS: list[CheckDef] = [
             "Be careful not to break existing behaviour when tightening security — "
             "do NOT change CORS settings, authentication config, retry policies, or "
             "client library options unless there is a clear vulnerability. "
+            "Do NOT add browser security headers (X-Frame-Options, X-Content-Type-Options, "
+            "Content-Security-Policy) to JSON/API-only services that don't serve HTML — "
+            "these headers are ignored by API clients and add misleading complexity. "
             "Tightening security is not the same as changing operational defaults."
         ),
     },
@@ -201,9 +170,11 @@ CHECKS: list[CheckDef] = [
             "API clients, message queues), consider centralizing error handling into a shared "
             "helper that logs context and raises a consistent application-level error. "
             "Only add error handling where the code can MEANINGFULLY respond to the error — "
-            "do NOT wrap code in try/except when the wrapped call cannot actually raise "
-            "(e.g. a function that just builds a data structure, or a connection registration "
-            "that doesn't perform I/O). Misleading error handling is worse than none. "
+            "do NOT wrap code in try/except when the wrapped call cannot actually raise. "
+            "Before adding error handling, READ the called function's source to verify it "
+            "actually performs I/O or can raise the exception you're catching. A function "
+            "named create_connection() might just register a config in a dict without doing "
+            "any I/O — don't assume from the name. Misleading error handling is worse than none. "
             "Add logging only where it would help diagnose production issues."
         ),
     },
@@ -318,6 +289,53 @@ CHECKS: list[CheckDef] = [
             "Do NOT rename endpoints, change HTTP methods, or alter response shapes — "
             "these are breaking changes. Focus on parameter validation and error response consistency. "
             "Fix inconsistencies and document any breaking changes."
+        ),
+    },
+    # --- On-demand only (not in any tier) ---
+    # Positioned right before test-validate so it runs AFTER all other checks.
+    # This ensures cleanup-ai-slop gets the final word — earlier checks (tests,
+    # docs, errors) tend to re-introduce slop that this check removes.
+    {
+        "id": "cleanup-ai-slop",
+        "label": "Remove AI-Generated Code Slop",
+        "prompt": (
+            "Your job is to REMOVE unnecessary code, not add anything. "
+            "Go through the codebase and delete AI-generated slop:\n\n"
+            "1. Remove docstrings that merely restate what the function name and signature already "
+            "communicate. If the function is called get_user_by_id(user_id: int) -> User, a docstring "
+            "saying 'Get a user by their ID' adds nothing — delete it. Remove __init__ docstrings "
+            "that just restate the parameter names. KEEP module-level docstrings "
+            "that explain design strategy, class docstrings that explain intent or relationships, "
+            "and function docstrings that explain non-obvious behavior, side effects, or complex "
+            "return values.\n\n"
+            "2. Remove logger.debug() calls that log function entry or arguments already visible in "
+            "request context or stack traces. Delete logging on hot paths (query builders, inner loops, "
+            "per-item processing). Keep logging only at system boundaries (API entry/exit, external "
+            "service calls, error paths).\n\n"
+            "3. Remove try/except blocks that wrap code that cannot actually raise the caught exception. "
+            "Read the called function's source to check whether it actually performs I/O before assuming "
+            "it can raise IOError/ConnectionError. For example, a function that registers a connection "
+            "in a dict doesn't do I/O even if the word 'connection' is in its name. "
+            "Misleading error handling is worse than none.\n\n"
+            "4. Remove defensive null/None/undefined checks where the type system already guarantees "
+            "the value is non-nullable. Remove type: ignore comments that were added to force invalid "
+            "inputs in tests.\n\n"
+            "5. Remove tests that exist only to hit coverage numbers — tests that pass None where types "
+            "say str, tests for unreachable error paths, tests with near-duplicate names like "
+            "test_boundary_conditions.py / test_boundary_edge_cases.py / test_edge_case_boundaries.py. "
+            "Remove test files with names like test_*_coverage.py or test_*_extended.py that suggest "
+            "iterative AI generation. Remove test files that reference source line numbers in comments. "
+            "Consolidate overlapping test files into focused, well-named ones.\n\n"
+            "6. Remove unnecessary inline comments that describe what the code obviously does "
+            "(e.g. '# Initialize the logger' above logger = logging.getLogger(__name__)).\n\n"
+            "7. Revert any operational config changes that were made in the name of 'improvement' but "
+            "actually change runtime behavior — things like CORS tightening, retry policy changes, "
+            "timeout changes, or dependency removals where the dependency is still used. "
+            "Remove browser security headers (X-Frame-Options, X-Content-Type-Options, CSP) from "
+            "JSON/API-only services that don't serve HTML — these headers are ignored by API clients "
+            "and add misleading complexity.\n\n"
+            "Run the full test suite after cleanup to ensure nothing broke. "
+            "Report what you removed and how many lines were deleted."
         ),
     },
     # --- Bookend: run last ---

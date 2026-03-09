@@ -504,5 +504,6 @@ class TestResolveSelectedChecksOrdering:
         assert "cleanup-ai-slop" in ids
         assert "readability" in ids
         assert "dry" in ids
-        # cleanup-ai-slop is before readability in CHECKS ordering
-        assert ids.index("cleanup-ai-slop") < ids.index("readability")
+        # cleanup-ai-slop is after readability/dry in CHECKS ordering (runs last before test-validate)
+        assert ids.index("cleanup-ai-slop") > ids.index("readability")
+        assert ids.index("cleanup-ai-slop") > ids.index("dry")
