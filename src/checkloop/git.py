@@ -8,6 +8,7 @@ and changed-file listing for the ``--changed-only`` feature.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import subprocess
 import time
@@ -22,6 +23,13 @@ logger = logging.getLogger(__name__)
 _BINARY_CHECK_SIZE = 8192  # bytes to read when checking for null bytes (binary detection)
 _LINE_COUNT_CHUNK_SIZE = 65536  # bytes per chunk when counting newlines
 _GIT_CMD_TIMEOUT = 120  # seconds before a git subprocess is killed to prevent indefinite hangs
+
+# Force English output from git regardless of the user's locale.  Without
+# this, commands like ``git diff --shortstat`` produce localized strings
+# (e.g. German "Einfügungen" instead of "insertions") that break the
+# regex-based ``_parse_shortstat`` parser, causing convergence detection
+# to silently report zero lines changed.
+_GIT_ENV: dict[str, str] = {**os.environ, "LC_ALL": "C"}
 
 
 # --- Low-level git wrappers --------------------------------------------------
@@ -58,6 +66,7 @@ def _git_run(
             text=text,
             check=check,
             timeout=_GIT_CMD_TIMEOUT,
+            env=_GIT_ENV,
         )
     except subprocess.TimeoutExpired as exc:
         logger.error("git %s timed out after %ds (cwd=%s)", args[0] if args else "", _GIT_CMD_TIMEOUT, workdir)

@@ -188,6 +188,23 @@ class TestCountTrackedLinesPathTraversal:
             count = git._count_tracked_lines(str(tmp_path))
             assert count == 2
 
+    def test_absolute_path_outside_workdir_skipped(self, tmp_path: Path) -> None:
+        """An absolute path in git ls-files output is rejected by the path traversal guard.
+
+        In Python, Path('/workdir') / '/etc/passwd' resolves to Path('/etc/passwd'),
+        which is not relative to the workdir and must be skipped.
+        """
+        real_file = tmp_path / "real.txt"
+        real_file.write_text("line1\nline2\n")
+
+        ls_result = mock.MagicMock(
+            returncode=0,
+            stdout=b"real.txt\x00/etc/passwd\x00",
+        )
+        with mock.patch.object(git, "_git_run", return_value=ls_result):
+            count = git._count_tracked_lines(str(tmp_path))
+            assert count == 2
+
 
 class TestCountTrackedLinesGitRunOSError:
     """Test _count_tracked_lines when _git_run raises OSError."""

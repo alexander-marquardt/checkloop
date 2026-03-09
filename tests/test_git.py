@@ -216,3 +216,50 @@ class TestParseShortstatAdditional:
         """Without a space before 'insertion', the regex might not match."""
         result = git._parse_shortstat(" 1 file changed,5 insertions(+)")
         assert result == 5
+
+
+class TestParseShortstatLocalized:
+    """Tests verifying _parse_shortstat fails on non-English git output.
+
+    These document why _git_run forces LC_ALL=C: without it, localized
+    git --shortstat output would cause convergence detection to silently
+    report zero lines changed.
+    """
+
+    def test_german_locale_returns_zero_without_fix(self) -> None:
+        """German git output uses 'Einfügungen' and 'Löschung', not matched by regex."""
+        german = " 3 Dateien geändert, 20 Einfügungen(+), 10 Löschungen(-)"
+        assert git._parse_shortstat(german) == 0
+
+    def test_french_locale_returns_zero_without_fix(self) -> None:
+        """French git output uses 'insertions' (matches!) but 'suppressions' (doesn't)."""
+        french = " 3 fichiers modifiés, 20 insertions(+), 10 suppressions(-)"
+        # 'insertions' matches the English regex, but 'suppressions' does not
+        assert git._parse_shortstat(french) == 20  # only insertions matched
+
+    def test_japanese_locale_returns_zero_without_fix(self) -> None:
+        """Japanese git output uses completely different characters."""
+        japanese = " 3個のファイル変更, 20行追加(+), 10行削除(-)"
+        assert git._parse_shortstat(japanese) == 0
+
+
+class TestGitRunLocaleEnv:
+    """Tests verifying _git_run passes LC_ALL=C to git subprocesses."""
+
+    def test_git_run_passes_lc_all_c(self) -> None:
+        """_git_run should set LC_ALL=C in the subprocess environment."""
+        with mock.patch("subprocess.run", return_value=make_git_result()) as mock_run:
+            git._git_run("/tmp", "status")
+        call_kwargs = mock_run.call_args[1]
+        assert "env" in call_kwargs
+        assert call_kwargs["env"].get("LC_ALL") == "C"
+
+    def test_git_env_preserves_path(self) -> None:
+        """The git env should preserve PATH and other important variables."""
+        import os
+        assert "PATH" in git._GIT_ENV
+        assert git._GIT_ENV["PATH"] == os.environ.get("PATH", "")
+
+    def test_git_env_overrides_lc_all(self) -> None:
+        """LC_ALL=C should be set regardless of parent environment."""
+        assert git._GIT_ENV["LC_ALL"] == "C"
