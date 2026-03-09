@@ -361,6 +361,31 @@ class TestComputeSummaryStatsEdgeCases:
         stats = terminal.compute_summary_stats(rows)
         assert stats.total_lines == 42
 
+    def test_killed_with_exit_code_zero(self) -> None:
+        """A check killed (has kill_reason) but with exit_code=0 counts as succeeded AND killed."""
+        row = make_summary_row(exit_code=0, kill_reason="memory_limit", made_changes=True, lines_changed=50)
+        stats = terminal.compute_summary_stats([row])
+        assert stats.succeeded == 1
+        assert stats.killed == 1
+        assert stats.failed == 0
+
+    def test_all_checks_failed(self) -> None:
+        rows = [
+            make_summary_row(exit_code=1),
+            make_summary_row(exit_code=2),
+            make_summary_row(exit_code=127),
+        ]
+        stats = terminal.compute_summary_stats(rows)
+        assert stats.succeeded == 0
+        assert stats.failed == 3
+
+    def test_negative_exit_code(self) -> None:
+        """Negative exit code (signal kill) is treated as failure."""
+        row = make_summary_row(exit_code=-9)
+        stats = terminal.compute_summary_stats([row])
+        assert stats.succeeded == 0
+        assert stats.failed == 1
+
 
 class TestFormatDurationAdditional:
     """Additional edge cases for format_duration()."""
@@ -408,35 +433,6 @@ class TestParseDurationEdgeCases:
             formatted = terminal.format_duration(secs)
             parsed = terminal._parse_duration(formatted)
             assert parsed == secs, f"Round-trip failed for {secs}: '{formatted}' → {parsed}"
-
-
-class TestComputeSummaryStatsEdgeCasesNew:
-    """Additional edge cases for compute_summary_stats."""
-
-    def test_killed_with_exit_code_zero(self) -> None:
-        """A check killed (has kill_reason) but with exit_code=0 counts as succeeded AND killed."""
-        row = make_summary_row(exit_code=0, kill_reason="memory_limit", made_changes=True, lines_changed=50)
-        stats = terminal.compute_summary_stats([row])
-        assert stats.succeeded == 1
-        assert stats.killed == 1
-        assert stats.failed == 0
-
-    def test_all_checks_failed(self) -> None:
-        rows = [
-            make_summary_row(exit_code=1),
-            make_summary_row(exit_code=2),
-            make_summary_row(exit_code=127),
-        ]
-        stats = terminal.compute_summary_stats(rows)
-        assert stats.succeeded == 0
-        assert stats.failed == 3
-
-    def test_negative_exit_code(self) -> None:
-        """Negative exit code (signal kill) is treated as failure."""
-        row = make_summary_row(exit_code=-9)
-        stats = terminal.compute_summary_stats([row])
-        assert stats.succeeded == 0
-        assert stats.failed == 1
 
 
 class TestParseDurationWhitespace:

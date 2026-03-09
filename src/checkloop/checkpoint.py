@@ -315,7 +315,6 @@ def build_checkpoint(
     prev_change_pct: float | None,
     started_at: str | None = None,
 ) -> CheckpointData:
-    """Construct a CheckpointData dict from current suite state."""
     return CheckpointData(
         version=_CHECKPOINT_VERSION,
         started_at=started_at or datetime.now(timezone.utc).isoformat(),

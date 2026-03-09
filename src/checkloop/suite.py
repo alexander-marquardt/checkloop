@@ -296,7 +296,6 @@ def _run_check_suite(
         all_outcomes = []
 
     def _save_after_check(check_index: int, changed: set[str]) -> None:
-        """Checkpoint callback — invoked after each check completes."""
         try:
             data = build_checkpoint(
                 workdir=workdir,

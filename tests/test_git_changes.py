@@ -221,6 +221,18 @@ class TestBuildChangedFilesPrefixEdgeCases:
         result = git.build_changed_files_prefix([long_name])
         assert long_name in result
 
+    def test_files_with_newlines_in_names(self) -> None:
+        """File names containing newlines should not break the prefix format."""
+        result = git.build_changed_files_prefix(["file\nname.py"])
+        assert "1 file(s)" in result
+
+    def test_many_files(self) -> None:
+        """A large number of changed files should all appear in the prefix."""
+        files = [f"src/file_{i}.py" for i in range(100)]
+        result = git.build_changed_files_prefix(files)
+        assert "100 file(s)" in result
+        assert "file_99.py" in result
+
 
 # =============================================================================
 # git._git_run — exception chaining
@@ -323,22 +335,6 @@ class TestCountLinesChangedEdgeCases:
 # =============================================================================
 
 
-class TestBuildChangedFilesPrefixNewEdgeCases:
-    """Additional edge cases for build_changed_files_prefix."""
-
-    def test_files_with_newlines_in_names(self) -> None:
-        """File names containing newlines should not break the prefix format."""
-        result = git.build_changed_files_prefix(["file\nname.py"])
-        assert "1 file(s)" in result
-
-    def test_many_files(self) -> None:
-        """A large number of changed files should all appear in the prefix."""
-        files = [f"src/file_{i}.py" for i in range(100)]
-        result = git.build_changed_files_prefix(files)
-        assert "100 file(s)" in result
-        assert "file_99.py" in result
-
-
 # =============================================================================
 # git.detect_default_branch — additional edge cases
 # =============================================================================
@@ -362,7 +358,7 @@ class TestDetectDefaultBranchEdgeCases:
 # =============================================================================
 
 
-class TestCountTrackedLinesEdgeCasesNew:
+class TestCountTrackedLinesEdgeCases:
     """Additional edge cases for _count_tracked_lines."""
 
     def test_git_ls_files_nonzero_returncode_with_bytes_stderr(self) -> None:

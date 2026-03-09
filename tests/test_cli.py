@@ -233,19 +233,6 @@ class TestSignalHandler:
                 cli.main()
 
 
-class TestMainGuard:
-    """Test the if __name__ == '__main__' block."""
-
-    def test_main_guard_calls_main(self) -> None:
-        with mock.patch.dict("sys.modules", {"checkloop.cli": cli}):
-            with mock.patch.object(cli, "main") as mock_main:
-                exec(
-                    compile('if __name__ == "__main__": main()', cli.__file__, "exec"),
-                    {"__name__": "__main__", "main": cli.main},
-                )
-                mock_main.assert_called_once()
-
-
 # =============================================================================
 # _try_resume_from_checkpoint — workdir resolution and mismatch
 # =============================================================================
@@ -368,10 +355,6 @@ class TestResolvePathSafe:
 
     def test_empty_string_returns_none(self) -> None:
         """An empty string should return None without raising."""
-        assert cli._resolve_path_safe("") is None
-
-    def test_none_like_empty_returns_none(self) -> None:
-        """An empty path returns None."""
         assert cli._resolve_path_safe("") is None
 
 

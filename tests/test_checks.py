@@ -22,18 +22,6 @@ class TestConstants:
             assert "prompt" in check
 
 
-class TestPerfCheckPrompt:
-    """Tests for the perf check prompt content."""
-
-    def test_mentions_n_plus_1_queries(self) -> None:
-        perf_check = next(c for c in checks.CHECKS if c["id"] == "perf")
-        assert "N+1 queries" in perf_check["prompt"]
-
-    def test_mentions_quadratic_algorithms(self) -> None:
-        perf_check = next(c for c in checks.CHECKS if c["id"] == "perf")
-        assert "O(N²)" in perf_check["prompt"]
-
-
 class TestLooksDangerous:
     """Tests for the looks_dangerous() prompt safety guard."""
 

@@ -477,6 +477,25 @@ class TestFormatCheckpointSummaryEdgeCases:
         summary = checkpoint._format_checkpoint_summary(data)
         assert "first-check" in summary
 
+    def test_single_active_check_at_zero(self) -> None:
+        """Single-element active list, index 0 — next check is the only one."""
+        data = make_checkpoint_data(
+            current_check_index=0,
+            active_check_ids=["only-check"],
+        )
+        summary = checkpoint._format_checkpoint_summary(data)
+        assert "only-check" in summary
+        assert "check 0/1 completed" in summary
+
+    def test_all_completed_single_check(self) -> None:
+        """When only one check exists and it's completed."""
+        data = make_checkpoint_data(
+            current_check_index=1,
+            active_check_ids=["only-check"],
+        )
+        summary = checkpoint._format_checkpoint_summary(data)
+        assert "done" in summary
+
 
 # =============================================================================
 # load_checkpoint — additional edge cases
@@ -557,28 +576,3 @@ class TestCheckpointRoundtripEdgeCases:
         assert loaded["convergence_threshold"] == 100.0
 
 
-# =============================================================================
-# _format_checkpoint_summary — additional edge cases
-# =============================================================================
-
-class TestFormatCheckpointSummaryEdgeCasesNew:
-    """Additional edge cases for _format_checkpoint_summary."""
-
-    def test_single_active_check_at_zero(self) -> None:
-        """Single-element active list, index 0 — next check is the only one."""
-        data = make_checkpoint_data(
-            current_check_index=0,
-            active_check_ids=["only-check"],
-        )
-        summary = checkpoint._format_checkpoint_summary(data)
-        assert "only-check" in summary
-        assert "check 0/1 completed" in summary
-
-    def test_all_completed_single_check(self) -> None:
-        """When only one check exists and it's completed."""
-        data = make_checkpoint_data(
-            current_check_index=1,
-            active_check_ids=["only-check"],
-        )
-        summary = checkpoint._format_checkpoint_summary(data)
-        assert "done" in summary

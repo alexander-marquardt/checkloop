@@ -194,10 +194,6 @@ class TestParseShortstatEdgeCases:
         text = f" 1 file changed, {2**31} insertions(+)"
         assert git._parse_shortstat(text) == 2**31
 
-
-class TestParseShortstatAdditional:
-    """Additional edge cases for _parse_shortstat()."""
-
     def test_negative_number_before_insertion(self) -> None:
         """\\d+ matches digits after the minus sign (git never outputs negatives)."""
         assert git._parse_shortstat(" 1 file changed, -5 insertions(+)") == 5
