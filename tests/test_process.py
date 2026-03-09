@@ -46,6 +46,26 @@ class TestBuildClaudeCommand:
         assert "review 'code' with \"quotes\" & $vars" in cmd
 
 
+class TestSanitizedEnv:
+    """Tests for SANITIZED_ENV — environment stripping for subprocesses."""
+
+    def test_claudecode_key_stripped(self) -> None:
+        """CLAUDECODE env var must be removed to prevent nested-invocation refusal."""
+        assert "CLAUDECODE" not in process.SANITIZED_ENV
+
+    def test_path_preserved(self) -> None:
+        """PATH must be preserved so subprocess can find the claude binary."""
+        import os
+        assert process.SANITIZED_ENV.get("PATH") == os.environ.get("PATH")
+
+    def test_other_env_vars_preserved(self) -> None:
+        """Non-CLAUDECODE env vars should pass through unchanged."""
+        import os
+        for key in ("HOME", "USER", "LANG"):
+            if key in os.environ:
+                assert process.SANITIZED_ENV.get(key) == os.environ[key]
+
+
 class TestCheckIdleTimeout:
     """Tests for _check_idle_timeout() boundary conditions."""
 

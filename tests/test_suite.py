@@ -294,3 +294,119 @@ class TestPrintCycleSummary:
         assert capsys.readouterr().out == ""
 
 
+# =============================================================================
+# _print_summary — single-cycle branch
+# =============================================================================
+
+class TestPrintSummarySingleCycle:
+    """Tests for _print_summary when outcomes span a single cycle."""
+
+    def test_single_cycle_calls_run_summary_table(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """When outcomes are all from one cycle, print_run_summary_table is called."""
+        outcomes = [
+            suite.CheckOutcome(
+                check_id="a", label="A", cycle=1, exit_code=0, kill_reason=None,
+                made_changes=True, lines_changed=10, change_pct=1.0, duration_seconds=5.0,
+            ),
+            suite.CheckOutcome(
+                check_id="b", label="B", cycle=1, exit_code=0, kill_reason=None,
+                made_changes=False, lines_changed=0, change_pct=0.0, duration_seconds=3.0,
+            ),
+        ]
+        with mock.patch.object(suite, "print_run_summary_table") as mock_table:
+            suite._print_summary(outcomes, "0m08s")
+            mock_table.assert_called_once()
+            call_kwargs = mock_table.call_args
+            assert call_kwargs[1]["banner_title"] == "Run Summary"
+
+    def test_empty_outcomes_does_not_print(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Empty outcomes should produce no output."""
+        suite._print_summary([], "0m00s")
+        assert capsys.readouterr().out == ""
+
+
+# =============================================================================
+# run_suite_with_error_handling — generic exception prints partial results
+# =============================================================================
+
+class TestRunSuiteWithErrorHandlingPartialResults:
+    """Tests for run_suite_with_error_handling printing partial results on error."""
+
+    def test_generic_exception_prints_partial_results_and_reraises(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """When _run_check_suite raises a generic exception, partial results
+        are printed before re-raising."""
+        selected_checks: list[CheckDef] = [
+            make_check("a", "A", "do a"),
+            make_check("b", "B", "do b"),
+        ]
+        args = make_suite_args(dry_run=False)
+
+        def fill_outcomes_then_crash(
+            checks: list[CheckDef], *a: object, all_outcomes: list[suite.CheckOutcome] | None = None, **kw: object,
+        ) -> list[suite.CheckOutcome]:
+            if all_outcomes is not None:
+                all_outcomes.append(suite.CheckOutcome(
+                    check_id="a", label="A", cycle=1, exit_code=0, kill_reason=None,
+                    made_changes=True, lines_changed=10, change_pct=1.0, duration_seconds=5.0,
+                ))
+            raise ValueError("unexpected crash")
+
+        with mock.patch.object(suite, "_run_check_suite", side_effect=fill_outcomes_then_crash):
+            with pytest.raises(ValueError, match="unexpected crash"):
+                suite.run_suite_with_error_handling(
+                    selected_checks, 1, "/tmp", args, 0.1,
+                )
+        out = capsys.readouterr().out
+        assert "Unexpected error" in out
+        # Partial result from check "a" should appear in summary
+        assert "A" in out
+
+    def test_keyboard_interrupt_prints_partial_results(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """KeyboardInterrupt should print partial results before exiting."""
+        selected_checks: list[CheckDef] = [make_check("a", "A", "do a")]
+        args = make_suite_args(dry_run=False)
+
+        def fill_then_interrupt(
+            checks: list[CheckDef], *a: object, all_outcomes: list[suite.CheckOutcome] | None = None, **kw: object,
+        ) -> list[suite.CheckOutcome]:
+            if all_outcomes is not None:
+                all_outcomes.append(suite.CheckOutcome(
+                    check_id="a", label="A", cycle=1, exit_code=0, kill_reason=None,
+                    made_changes=True, lines_changed=42, change_pct=2.0, duration_seconds=10.0,
+                ))
+            raise KeyboardInterrupt
+
+        with mock.patch.object(suite, "_run_check_suite", side_effect=fill_then_interrupt):
+            with pytest.raises(SystemExit) as exc_info:
+                suite.run_suite_with_error_handling(
+                    selected_checks, 1, "/tmp", args, 0.1,
+                )
+            assert exc_info.value.code == 130
+        out = capsys.readouterr().out
+        assert "Interrupted" in out
+
+
+# =============================================================================
+# Multi-cycle convergence early stop integration
+# =============================================================================
+
+class TestMultiCycleConvergenceEarlyStop:
+    """Integration test for convergence causing early cycle termination."""
+
+    def test_convergence_stops_after_first_cycle(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """When changes are below threshold after cycle 1, cycle 2 should not run."""
+        selected_checks: list[CheckDef] = [make_check("a", "A", "do a")]
+        args = make_suite_args(dry_run=False)
+        # SHAs: base for cycle 1, before check, after check (different = changes), convergence check
+        with patch_suite_git(["base1", "sha1", "sha2", "sha2"], lines_changed=1, total_tracked=10000):
+            # 1 line in 10000 = 0.01%, below 0.1% threshold
+            suite._run_check_suite(selected_checks, 3, "/tmp", args, convergence_threshold=0.1)
+        out = capsys.readouterr().out
+        assert "Converged" in out
+        assert "Cycle 2" not in out
+
+

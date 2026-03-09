@@ -428,6 +428,34 @@ class TestDisplayPreRunWarning:
 
 
 # =============================================================================
+# _build_permission_warning — return value structure
+# =============================================================================
+
+class TestBuildPermissionWarning:
+    """Tests for _build_permission_warning() return value structure."""
+
+    def test_skip_permissions_warning_uses_red(self) -> None:
+        warning = cli_args._build_permission_warning(skip_permissions=True)
+        assert warning.colour == cli_args.RED
+        assert "ENABLED" in warning.heading
+        assert any("without asking" in line for line in warning.body_lines)
+        assert "Starting in" in warning.countdown_message
+
+    def test_no_skip_permissions_warning_uses_yellow(self) -> None:
+        warning = cli_args._build_permission_warning(skip_permissions=False)
+        assert warning.colour == cli_args.YELLOW
+        assert "without" in warning.heading.lower()
+        assert any("FAIL or HANG" in line for line in warning.body_lines)
+        assert "Continuing anyway" in warning.countdown_message
+
+    def test_countdown_seconds_in_message(self) -> None:
+        """Both warning variants should reference the countdown duration."""
+        for skip in (True, False):
+            warning = cli_args._build_permission_warning(skip)
+            assert str(cli_args._WARNING_COUNTDOWN_SECONDS) in warning.countdown_message
+
+
+# =============================================================================
 # print_run_summary — optional fields
 # =============================================================================
 
