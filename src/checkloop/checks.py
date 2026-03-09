@@ -22,11 +22,6 @@ class CheckDef(TypedDict):
 
 # --- Check definitions --------------------------------------------------------
 #
-# Each entry is a CheckDef with keys:
-#   id:     Short identifier used on the CLI (e.g. "readability", "dry").
-#   label:  Human-readable name shown in banners and summaries.
-#   prompt: The review prompt sent to Claude Code for this check.
-#
 # Ordering matters: bookend checks (test-fix, test-validate) are first and
 # last; the remaining checks are grouped by tier (basic -> thorough -> exhaustive).
 

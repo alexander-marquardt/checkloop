@@ -62,7 +62,6 @@ _LOG_FORMAT = f"%(asctime)s [%(levelname)s] [run={_RUN_ID}] %(name)s: %(message)
 
 
 def _configure_logging(args: argparse.Namespace) -> None:
-    """Set up logging based on --verbose / --debug flags."""
     debug: bool = getattr(args, "debug", False)
     verbose: bool = getattr(args, "verbose", False)
     if debug:

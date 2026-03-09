@@ -515,3 +515,61 @@ class TestCheckBufferOverflow:
         buf = bytearray()
         result = process_jsonl_buffer(buf, time.time(), False, max_buffer_size=1024)
         assert len(result) == 0
+
+
+# =============================================================================
+# _check_resource_limits — combined behavior
+# =============================================================================
+
+class TestCheckResourceLimitsCombined:
+    """Tests for _check_resource_limits() which combines idle, hard timeout, and memory checks."""
+
+    def _make_mock_process(self) -> mock.MagicMock:
+        proc = mock.MagicMock()
+        proc.pid = 12345
+        return proc
+
+    def test_no_limits_exceeded(self) -> None:
+        """When all limits are within bounds, returns None kill_reason."""
+        proc = self._make_mock_process()
+        now = time.time()
+        kill_reason, last_mem = process._check_resource_limits(
+            proc, check_start_time=now, last_output_time=now,
+            idle_timeout=300, check_timeout=0, max_memory_mb=0,
+            last_memory_check=now,
+        )
+        assert kill_reason is None
+
+    def test_idle_timeout_detected_first(self) -> None:
+        """Idle timeout should be detected before hard timeout or memory."""
+        proc = self._make_mock_process()
+        now = time.time()
+        kill_reason, _ = process._check_resource_limits(
+            proc, check_start_time=now - 10, last_output_time=now - 400,
+            idle_timeout=300, check_timeout=600, max_memory_mb=8192,
+            last_memory_check=now,
+        )
+        assert kill_reason == process.KILL_REASON_IDLE
+
+    def test_hard_timeout_when_not_idle(self) -> None:
+        """Hard timeout should be detected when idle timeout hasn't triggered."""
+        proc = self._make_mock_process()
+        now = time.time()
+        kill_reason, _ = process._check_resource_limits(
+            proc, check_start_time=now - 700, last_output_time=now,
+            idle_timeout=300, check_timeout=600, max_memory_mb=0,
+            last_memory_check=now,
+        )
+        assert kill_reason == process.KILL_REASON_TIMEOUT
+
+    def test_memory_limit_when_no_timeout(self) -> None:
+        """Memory limit should be detected when timeouts haven't triggered."""
+        proc = self._make_mock_process()
+        now = time.time()
+        with mock.patch.object(process, "measure_session_rss_mb", return_value=10000.0):
+            kill_reason, _ = process._check_resource_limits(
+                proc, check_start_time=now, last_output_time=now,
+                idle_timeout=300, check_timeout=0, max_memory_mb=8192,
+                last_memory_check=now - 20,  # past the check interval
+            )
+        assert kill_reason == process.KILL_REASON_MEMORY

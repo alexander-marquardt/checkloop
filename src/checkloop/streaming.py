@@ -26,7 +26,6 @@ _FILE_PATH_TOOL_NAMES: set[str] = {"read", "read_file", "edit", "edit_file", "wr
 # --- Tool-use summaries ------------------------------------------------------
 
 def _summarise_tool_use(tool_name: str, tool_input: dict[str, Any]) -> str:
-    """Return a short human-readable summary for a tool-use event."""
     try:
         normalized_name = tool_name.lower()
         if normalized_name in _FILE_PATH_TOOL_NAMES and "file_path" in tool_input:
@@ -48,7 +47,6 @@ def _summarise_tool_use(tool_name: str, tool_input: dict[str, Any]) -> str:
 # --- Event printers -----------------------------------------------------------
 
 def _print_assistant_event(event: dict[str, Any], elapsed_prefix: str) -> None:
-    """Print text blocks from an assistant response event."""
     message = event.get("message")
     if not isinstance(message, dict):
         logger.debug("Unexpected message type in assistant event: %s (expected dict)",
@@ -69,24 +67,20 @@ def _print_assistant_event(event: dict[str, Any], elapsed_prefix: str) -> None:
 
 
 def _print_tool_use_event(event: dict[str, Any], elapsed_prefix: str) -> None:
-    """Print a tool invocation with its name and a short summary of inputs."""
     tool_name = event.get("tool", event.get("name", "unknown"))
     raw_input = event.get("input")
     tool_input = raw_input if isinstance(raw_input, dict) else {}
     detail = _summarise_tool_use(tool_name, tool_input)
-    logger.debug("Tool invocation: %s%s", tool_name, detail)
     print(f"{elapsed_prefix}{BLUE}[{tool_name}]{RESET}{detail}")
 
 
 def _print_system_event(event: dict[str, Any], elapsed_prefix: str) -> None:
-    """Print a system-level message (e.g. initialisation status)."""
     system_message = event.get("message", "")
     if system_message:
         print(f"{elapsed_prefix}{DIM}{system_message}{RESET}")
 
 
 def _print_result_event(event: dict[str, Any], elapsed_prefix: str) -> None:
-    """Print the final result summary from a completed check."""
     result_text = event.get("result")
     if result_text is not None and result_text != "":
         if isinstance(result_text, str):
@@ -113,7 +107,6 @@ _EVENT_TYPE_HANDLERS: dict[str, _EventHandler] = {
 
 
 def _print_event(event: dict[str, Any], check_start_time: float) -> None:
-    """Parse a stream-json event and dispatch to the appropriate printer."""
     event_type = event.get("type", "")
     printer = _EVENT_TYPE_HANDLERS.get(event_type)
     if printer is None:
@@ -125,7 +118,6 @@ def _print_event(event: dict[str, Any], check_start_time: float) -> None:
 
 
 def _process_single_line(line_str: str, check_start_time: float, debug: bool) -> None:
-    """Parse and display a single JSONL line from subprocess output."""
     if not line_str:
         return
     try:

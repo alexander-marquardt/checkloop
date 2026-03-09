@@ -126,7 +126,6 @@ class _SuiteState:
 
 
 def _build_suite_state(resume_from: CheckpointData | None) -> _SuiteState:
-    """Initialize suite state from a checkpoint or from scratch."""
     state = _SuiteState(started_at=datetime.now(timezone.utc).isoformat())
     if resume_from is None:
         return state
@@ -332,7 +331,6 @@ def _print_cycle_summary(
 
 
 def _print_summary(outcomes: list[CheckOutcome], total_elapsed: str) -> None:
-    """Print and log the overall summary table if there are any outcomes to show."""
     if not outcomes:
         return
     summary_dicts = [outcome.to_summary_row() for outcome in outcomes]

@@ -50,7 +50,6 @@ DEFAULT_CONVERGENCE_THRESHOLD = 0.1
 # --- Argument parsing ---------------------------------------------------------
 
 def build_argument_parser() -> argparse.ArgumentParser:
-    """Create and configure the CLI argument parser."""
     tier_names = ", ".join(TIERS)
     parser = argparse.ArgumentParser(
         description="Autonomous multi-check code review using Claude Code.",
@@ -183,7 +182,6 @@ def print_run_summary(
     max_memory_mb: int = 0,
     check_timeout: int = 0,
 ) -> None:
-    """Print a summary of the configured check run before starting."""
     print(f"\n{BOLD}checkloop{RESET}")
     print(f"  Directory    : {workdir}")
     print(f"  Checks       : {', '.join(check['id'] for check in selected_checks)}")
@@ -214,7 +212,6 @@ def resolve_working_directory(dir_arg: str) -> str:
 
 
 def validate_arguments(args: argparse.Namespace) -> None:
-    """Exit with an error if any CLI arguments have invalid values."""
     if args.idle_timeout < 1:
         fatal("--idle-timeout must be at least 1 second")
     if args.pause < 0:
@@ -247,7 +244,6 @@ def resolve_changed_files_prefix(args: argparse.Namespace, workdir: str) -> str:
 
 
 def resolve_selected_checks(args: argparse.Namespace) -> list[CheckDef]:
-    """Determine which checks to run based on CLI arguments."""
     if args.all_checks:
         selected_ids = set(TIERS["exhaustive"])
     elif args.checks:
@@ -276,7 +272,6 @@ class _PermissionWarning(NamedTuple):
 
 
 def _build_permission_warning(skip_permissions: bool) -> _PermissionWarning:
-    """Build the warning message components based on permission mode."""
     if skip_permissions:
         return _PermissionWarning(
             colour=RED,

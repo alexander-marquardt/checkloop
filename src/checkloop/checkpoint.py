@@ -70,7 +70,6 @@ class CheckpointData(TypedDict):
 # --- Path helpers ------------------------------------------------------------
 
 def _checkpoint_path(workdir: str) -> Path:
-    """Return the path to the checkpoint file for a given workdir."""
     return Path(workdir) / _CHECKPOINT_FILENAME
 
 
@@ -241,7 +240,6 @@ def clear_checkpoint(workdir: str) -> None:
 # --- Resume prompt -----------------------------------------------------------
 
 def _format_checkpoint_summary(data: CheckpointData) -> str:
-    """Build a human-readable summary of checkpoint state."""
     started = data["started_at"]
     cycle = data["current_cycle"]
     num_cycles = data["num_cycles"]

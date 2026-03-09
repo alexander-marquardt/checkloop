@@ -91,7 +91,6 @@ _SANITIZED_ENV: dict[str, str] = {k: v for k, v in os.environ.items() if k != "C
 # --- Claude command construction ----------------------------------------------
 
 def _build_claude_command(prompt: str, skip_permissions: bool) -> list[str]:
-    """Assemble the CLI command list for invoking Claude Code."""
     cmd = ["claude"]
     if skip_permissions:
         cmd.append("--dangerously-skip-permissions")
@@ -155,7 +154,6 @@ def _drain_remaining_stdout(
     check_start_time: float,
     debug: bool,
 ) -> bytearray:
-    """Read all remaining data from stdout after the process has exited."""
     try:
         while True:
             remaining = os.read(stdout.fileno(), _DRAIN_CHUNK_SIZE)
@@ -244,7 +242,6 @@ def _flush_and_close_stdout(
     check_start_time: float,
     debug: bool,
 ) -> None:
-    """Flush any remaining partial line and close the stdout pipe."""
     # Append a newline to force any trailing incomplete JSONL line through the parser
     output_buffer.extend(b"\n")
     process_jsonl_buffer(output_buffer, check_start_time, debug)

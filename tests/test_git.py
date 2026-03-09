@@ -280,3 +280,39 @@ class TestGetChangedFilesEdgeCases:
             result = git.get_changed_files("/tmp", "")
             mock_stdout.assert_not_called()
             assert result == []
+
+
+class TestGitCommitAllPathspecExcludes:
+    """Tests verifying that git_commit_all excludes checkloop's own files."""
+
+    def test_add_command_includes_pathspec_excludes(self) -> None:
+        """git add should include pathspec excludes to prevent staging checkloop files."""
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                make_git_result(),                       # git add
+                make_git_result(returncode=1),           # git diff --cached --quiet
+                make_git_result(),                       # git commit
+                make_git_result(stdout="abc123\n"),       # git rev-parse HEAD
+            ]
+            git.git_commit_all("/tmp", "test commit")
+        # First call is git add — verify pathspec excludes are present
+        add_call_args = mock_run.call_args_list[0][0][0]
+        assert ":(exclude).checkloop-run.log" in add_call_args
+        assert ":(exclude).checkloop-checkpoint.json" in add_call_args
+
+    def test_pathspec_excludes_constant_is_nonempty(self) -> None:
+        """The pathspec excludes list should contain at least the log and checkpoint files."""
+        assert len(git._CHECKLOOP_PATHSPEC_EXCLUDES) >= 2
+        exclude_str = " ".join(git._CHECKLOOP_PATHSPEC_EXCLUDES)
+        assert "checkloop-run.log" in exclude_str
+        assert "checkloop-checkpoint.json" in exclude_str
+
+
+class TestGitRunTimeout:
+    """Tests for _git_run timeout handling."""
+
+    def test_timeout_raises_oserror(self) -> None:
+        """When git times out, _git_run raises OSError with a descriptive message."""
+        with mock.patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="git", timeout=120)):
+            with pytest.raises(OSError, match="timed out"):
+                git._git_run("/tmp", "status")

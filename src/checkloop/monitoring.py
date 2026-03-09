@@ -41,7 +41,6 @@ def _run_cmd_quiet(cmd: list[str]) -> subprocess.CompletedProcess[str] | None:
 
 
 def _parse_int_lines(stdout: str) -> list[int]:
-    """Parse each non-empty line of *stdout* as an integer, skipping failures."""
     values: list[int] = []
     for line in stdout.strip().splitlines():
         stripped = line.strip()
@@ -92,7 +91,6 @@ def measure_session_rss_mb(session_id: int) -> float:
 # --- Process discovery --------------------------------------------------------
 
 def _run_pgrep(*args: str) -> list[int]:
-    """Run pgrep with the given arguments and return parsed PIDs."""
     result = _run_cmd_quiet(["pgrep", *args])
     if result is None or result.returncode != 0:
         return []
@@ -195,7 +193,6 @@ def kill_session_stragglers(session_id: int) -> int:
 
 
 def _warn_and_kill_orphan_processes(child_pids: list[int]) -> None:
-    """Warn about surviving child processes and kill them."""
     print_status(f"  Warning: {len(child_pids)} child process(es) still alive — killing.", YELLOW)
     # Pass pids directly to avoid a second pgrep subprocess spawn.
     killed = _kill_orphaned_children(child_pids)
@@ -204,7 +201,6 @@ def _warn_and_kill_orphan_processes(child_pids: list[int]) -> None:
 
 
 def _sweep_previous_sessions() -> None:
-    """Kill any surviving processes from sessions of previous checks."""
     still_active: list[int] = []
     for sid in previous_session_ids:
         try:

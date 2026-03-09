@@ -54,7 +54,6 @@ def _git_run(
     check: bool = False,
     text: bool = True,
 ) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
-    """Run a git command in *workdir* with captured output."""
     logger.debug("git %s (cwd=%s)", " ".join(args), workdir)
     try:
         return subprocess.run(
@@ -251,7 +250,6 @@ _total_lines_cache: dict[str, int] = {}
 
 
 def _cached_total_tracked_lines(workdir: str) -> int:
-    """Return cached total line count for all tracked files in *workdir*."""
     try:
         cache_key = str(Path(workdir).resolve())
     except OSError as exc:

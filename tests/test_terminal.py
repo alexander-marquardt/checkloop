@@ -456,3 +456,84 @@ class TestParseDurationWhitespace:
 
     def test_newline_whitespace(self) -> None:
         assert terminal._parse_duration("\n0m01s\n") == 1.0
+
+
+class TestComputeCycleSummariesNonContiguous:
+    """Tests for compute_cycle_summaries with non-contiguous cycle numbers."""
+
+    def test_gap_in_cycle_numbers(self) -> None:
+        """Cycles 1 and 3 (no cycle 2) should produce two summaries in order."""
+        rows = [
+            make_summary_row(cycle=1, made_changes=True, lines_changed=50, duration="1m00s"),
+            make_summary_row(cycle=3, made_changes=True, lines_changed=20, duration="2m00s"),
+        ]
+        summaries = terminal.compute_cycle_summaries(rows)
+        assert len(summaries) == 2
+        assert summaries[0].cycle == 1
+        assert summaries[1].cycle == 3
+        assert summaries[0].total_lines == 50
+        assert summaries[1].total_lines == 20
+
+    def test_multiple_rows_same_cycle_aggregated(self) -> None:
+        """Multiple rows with the same cycle should be grouped together."""
+        rows = [
+            make_summary_row(cycle=2, made_changes=True, lines_changed=10, exit_code=0, duration="0m30s"),
+            make_summary_row(cycle=2, made_changes=False, lines_changed=0, exit_code=1, duration="0m20s"),
+            make_summary_row(cycle=2, made_changes=True, lines_changed=5, exit_code=0, kill_reason="timeout", duration="0m10s"),
+        ]
+        summaries = terminal.compute_cycle_summaries(rows)
+        assert len(summaries) == 1
+        s = summaries[0]
+        assert s.total_checks == 3
+        assert s.succeeded == 2
+        assert s.failed == 1
+        assert s.killed == 1
+        assert s.total_lines == 15
+        assert s.with_changes == 2
+
+
+class TestOverallSummaryTableFailureColouring:
+    """Tests for print_overall_summary_table row colour based on failures."""
+
+    def test_row_with_failures_uses_red(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Cycle rows with failed checks should use RED colouring."""
+        rows = [
+            make_summary_row(cycle=1, exit_code=1, made_changes=True, lines_changed=10, duration="1m00s"),
+        ]
+        terminal.print_overall_summary_table(rows, "1m00s")
+        out = capsys.readouterr().out
+        assert terminal.RED in out
+
+    def test_row_without_failures_uses_blue(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Cycle rows with no failures should use BLUE colouring."""
+        rows = [
+            make_summary_row(cycle=1, exit_code=0, made_changes=True, lines_changed=10, duration="1m00s"),
+        ]
+        terminal.print_overall_summary_table(rows, "1m00s")
+        out = capsys.readouterr().out
+        assert terminal.BLUE in out
+
+
+class TestRowColour:
+    """Tests for _row_colour() logic."""
+
+    def test_killed_is_red(self) -> None:
+        row = make_summary_row(kill_reason="memory_limit")
+        assert terminal._row_colour(row) == terminal.RED
+
+    def test_nonzero_exit_is_yellow(self) -> None:
+        row = make_summary_row(exit_code=1, kill_reason=None)
+        assert terminal._row_colour(row) == terminal.YELLOW
+
+    def test_made_changes_is_green(self) -> None:
+        row = make_summary_row(exit_code=0, kill_reason=None, made_changes=True)
+        assert terminal._row_colour(row) == terminal.GREEN
+
+    def test_no_changes_is_dim(self) -> None:
+        row = make_summary_row(exit_code=0, kill_reason=None, made_changes=False)
+        assert terminal._row_colour(row) == terminal.DIM
+
+    def test_kill_reason_takes_priority_over_made_changes(self) -> None:
+        """A killed check that made changes should still show as RED."""
+        row = make_summary_row(exit_code=0, kill_reason="idle_timeout", made_changes=True)
+        assert terminal._row_colour(row) == terminal.RED

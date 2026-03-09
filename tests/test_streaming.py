@@ -585,3 +585,34 @@ class TestPrintResultEventFalsyValues:
         streaming._print_event(event, time.time())
         out = capsys.readouterr().out
         assert "Result" not in out
+
+
+class TestProcessJsonlBufferMaxBufferEnforced:
+    """Tests for process_jsonl_buffer when max_buffer_size is exceeded."""
+
+    def test_buffer_cleared_when_exceeding_limit(self) -> None:
+        """When incomplete data exceeds max_buffer_size, the buffer is cleared."""
+        # 500 bytes of incomplete data (no newline) exceeds a 100-byte limit
+        big_buf = bytearray(b"x" * 500)
+        result = streaming.process_jsonl_buffer(
+            big_buf, 0.0, False, max_buffer_size=100,
+        )
+        assert len(result) == 0
+
+    def test_buffer_not_cleared_when_under_limit(self) -> None:
+        """When incomplete data is under max_buffer_size, the buffer is preserved."""
+        small_buf = bytearray(b"partial")
+        result = streaming.process_jsonl_buffer(
+            small_buf, 0.0, False, max_buffer_size=1000,
+        )
+        assert result == bytearray(b"partial")
+
+    def test_buffer_cleared_after_processing_complete_lines(self) -> None:
+        """Complete lines are processed first, then remaining data is checked against limit."""
+        event = json.dumps({"type": "system", "message": "ok"})
+        # Complete line + oversized remainder
+        buf = bytearray(f"{event}\n".encode() + b"x" * 500)
+        result = streaming.process_jsonl_buffer(
+            buf, 0.0, False, max_buffer_size=100,
+        )
+        assert len(result) == 0

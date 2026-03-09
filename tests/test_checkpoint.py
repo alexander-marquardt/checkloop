@@ -158,6 +158,47 @@ class TestPromptResume:
                 result = checkpoint.prompt_resume(str(tmp_path))
         assert result is False
 
+    def test_user_says_yes_full_word(self, tmp_path: Path) -> None:
+        data = make_checkpoint_data(workdir=str(tmp_path))
+        checkpoint.save_checkpoint(str(tmp_path), data)
+        with mock.patch("sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = True
+            mock_stdin.readline.return_value = "yes\n"
+            with mock.patch("select.select", return_value=([mock_stdin], [], [])):
+                result = checkpoint.prompt_resume(str(tmp_path))
+        assert result is True
+
+    def test_user_says_YES_uppercase(self, tmp_path: Path) -> None:
+        data = make_checkpoint_data(workdir=str(tmp_path))
+        checkpoint.save_checkpoint(str(tmp_path), data)
+        with mock.patch("sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = True
+            mock_stdin.readline.return_value = "YES\n"
+            with mock.patch("select.select", return_value=([mock_stdin], [], [])):
+                result = checkpoint.prompt_resume(str(tmp_path))
+        assert result is True
+
+    def test_user_says_Y_uppercase(self, tmp_path: Path) -> None:
+        data = make_checkpoint_data(workdir=str(tmp_path))
+        checkpoint.save_checkpoint(str(tmp_path), data)
+        with mock.patch("sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = True
+            mock_stdin.readline.return_value = "Y\n"
+            with mock.patch("select.select", return_value=([mock_stdin], [], [])):
+                result = checkpoint.prompt_resume(str(tmp_path))
+        assert result is True
+
+    def test_readline_oserror_returns_false(self, tmp_path: Path) -> None:
+        """When readline raises OSError, prompt_resume returns False."""
+        data = make_checkpoint_data(workdir=str(tmp_path))
+        checkpoint.save_checkpoint(str(tmp_path), data)
+        with mock.patch("sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = True
+            mock_stdin.readline.side_effect = OSError("broken pipe")
+            with mock.patch("select.select", return_value=([mock_stdin], [], [])):
+                result = checkpoint.prompt_resume(str(tmp_path))
+        assert result is False
+
 
 # =============================================================================
 # build_checkpoint
@@ -374,6 +415,41 @@ class TestBuildCheckpointEdgeCases:
         )
         assert result["changed_this_cycle"] == ["a", "b", "c"]
         assert result["previously_changed_ids"] == ["a", "m", "z"]
+
+    def test_default_started_at_is_utc_iso(self) -> None:
+        """When started_at is not provided, it defaults to a UTC ISO timestamp."""
+        result = checkpoint.build_checkpoint(
+            workdir="/tmp",
+            check_ids=["a"],
+            num_cycles=1,
+            convergence_threshold=0.0,
+            current_cycle=1,
+            current_check_index=0,
+            active_check_ids=["a"],
+            changed_this_cycle=set(),
+            previously_changed_ids=None,
+            prev_change_pct=None,
+        )
+        # ISO 8601 UTC timestamps contain "T" and a timezone indicator
+        assert "T" in result["started_at"]
+        assert "+" in result["started_at"] or "Z" in result["started_at"]
+
+    def test_explicit_started_at_preserved(self) -> None:
+        """When started_at is provided, it is used verbatim."""
+        result = checkpoint.build_checkpoint(
+            workdir="/tmp",
+            check_ids=["a"],
+            num_cycles=1,
+            convergence_threshold=0.0,
+            current_cycle=1,
+            current_check_index=0,
+            active_check_ids=["a"],
+            changed_this_cycle=set(),
+            previously_changed_ids=None,
+            prev_change_pct=None,
+            started_at="2026-01-01T00:00:00+00:00",
+        )
+        assert result["started_at"] == "2026-01-01T00:00:00+00:00"
 
 
 # =============================================================================

@@ -447,3 +447,34 @@ class TestPrintRunSummaryOptionalFields:
         out = capsys.readouterr().out
         assert "Memory limit" in out
         assert "4096MB" in out
+
+
+# =============================================================================
+# resolve_selected_checks — ordering
+# =============================================================================
+
+class TestResolveSelectedChecksOrdering:
+    """Tests that resolve_selected_checks preserves the canonical CHECKS ordering."""
+
+    def test_checks_follow_canonical_order(self) -> None:
+        """Selected checks should appear in the same order as CHECKS, not insertion order."""
+        args = make_mock_cli_args(all_checks=False, checks=["tests", "readability", "security"], level=None)
+        result = cli_args.resolve_selected_checks(args)
+        ids = [c["id"] for c in result]
+        # Canonical order: readability comes before tests, tests before security
+        assert ids.index("readability") < ids.index("tests")
+        assert ids.index("tests") < ids.index("security")
+
+    def test_cleanup_ai_slop_with_explicit_checks(self) -> None:
+        """--cleanup-ai-slop combined with --checks adds the check while preserving order."""
+        args = make_mock_cli_args(
+            all_checks=False, checks=["readability", "dry"], level=None,
+            cleanup_ai_slop=True,
+        )
+        result = cli_args.resolve_selected_checks(args)
+        ids = [c["id"] for c in result]
+        assert "cleanup-ai-slop" in ids
+        assert "readability" in ids
+        assert "dry" in ids
+        # cleanup-ai-slop is before readability in CHECKS ordering
+        assert ids.index("cleanup-ai-slop") < ids.index("readability")

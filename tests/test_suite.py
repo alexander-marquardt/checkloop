@@ -410,3 +410,107 @@ class TestPrintSummaryMultiCycle:
             mock_overall.assert_called_once()
             summary_dicts = mock_overall.call_args[0][0]
             assert len(summary_dicts) == 2
+
+
+# =============================================================================
+# _print_cycle_summary — single-cycle suppression
+# =============================================================================
+
+class TestPrintCycleSummary:
+    """Tests for _print_cycle_summary() output suppression."""
+
+    def test_single_cycle_does_not_print(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """With num_cycles=1, per-cycle summary is suppressed to avoid redundancy."""
+        outcomes = [
+            suite.CheckOutcome(
+                check_id="a", label="A", cycle=1, exit_code=0, kill_reason=None,
+                made_changes=True, lines_changed=10, change_pct=1.0, duration_seconds=5.0,
+            ),
+        ]
+        suite._print_cycle_summary(outcomes, cycle=1, num_cycles=1)
+        out = capsys.readouterr().out
+        assert out == ""
+
+    def test_multi_cycle_prints_summary(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """With num_cycles>1, per-cycle summary is printed."""
+        outcomes = [
+            suite.CheckOutcome(
+                check_id="a", label="A", cycle=1, exit_code=0, kill_reason=None,
+                made_changes=True, lines_changed=10, change_pct=1.0, duration_seconds=5.0,
+            ),
+        ]
+        suite._print_cycle_summary(outcomes, cycle=1, num_cycles=3)
+        out = capsys.readouterr().out
+        assert "Cycle 1/3 Summary" in out
+
+    def test_empty_outcomes_does_not_print(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """With empty outcomes, nothing is printed regardless of cycle count."""
+        suite._print_cycle_summary([], cycle=1, num_cycles=3)
+        assert capsys.readouterr().out == ""
+
+
+# =============================================================================
+# _resolve_cycle_checks — ordering preservation
+# =============================================================================
+
+class TestResolveCycleChecksOrdering:
+    """Tests for _resolve_cycle_checks ordering when resuming."""
+
+    def test_resume_preserves_checkpoint_order(self) -> None:
+        """Resumed checks should follow the checkpoint's active_check_ids order,
+        not the selected_checks order."""
+        state = suite._SuiteState()
+        state.resume_active_check_ids = ["dry", "readability", "tests"]
+        state.start_check_index = 0
+        state.resume_changed = set()
+        # selected_checks in a different order than checkpoint
+        selected = [make_check("readability"), make_check("tests"), make_check("dry")]
+        active, start_idx, changed = suite._resolve_cycle_checks(selected, state)
+        ids = [c["id"] for c in active]
+        assert ids == ["dry", "readability", "tests"]
+
+    def test_resume_state_consumed_after_first_call(self) -> None:
+        """After _resolve_cycle_checks consumes resume state, subsequent calls return fresh state."""
+        state = suite._SuiteState()
+        state.resume_active_check_ids = ["a", "b"]
+        state.start_check_index = 1
+        state.resume_changed = {"a"}
+        selected = [make_check("a"), make_check("b")]
+
+        # First call consumes resume state
+        active1, idx1, changed1 = suite._resolve_cycle_checks(selected, state)
+        assert idx1 == 1
+        assert changed1 == {"a"}
+
+        # Second call returns fresh state
+        active2, idx2, changed2 = suite._resolve_cycle_checks(selected, state)
+        assert idx2 == 0
+        assert changed2 is None
+
+
+# =============================================================================
+# _print_summary — single-cycle uses run_summary_table
+# =============================================================================
+
+class TestPrintSummarySingleCycle:
+    """Tests for _print_summary when outcomes are from a single cycle."""
+
+    def test_single_cycle_uses_run_summary_table(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Single-cycle outcomes should call print_run_summary_table, not print_overall_summary_table."""
+        outcomes = [
+            suite.CheckOutcome(
+                check_id="a", label="A", cycle=1, exit_code=0, kill_reason=None,
+                made_changes=True, lines_changed=10, change_pct=1.0, duration_seconds=5.0,
+            ),
+        ]
+        with mock.patch.object(suite, "print_run_summary_table") as mock_run, \
+             mock.patch.object(suite, "print_overall_summary_table") as mock_overall:
+            suite._print_summary(outcomes, "0m05s")
+            mock_run.assert_called_once()
+            mock_overall.assert_not_called()
+            assert mock_run.call_args.kwargs.get("banner_title") == "Run Summary"
+
+    def test_empty_outcomes_prints_nothing(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Empty outcomes should produce no output."""
+        suite._print_summary([], "0m00s")
+        assert capsys.readouterr().out == ""

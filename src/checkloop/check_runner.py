@@ -67,7 +67,6 @@ class CheckOutcome:
     duration_seconds: float
 
     def to_summary_row(self) -> SummaryRow:
-        """Convert to a SummaryRow for print_run_summary_table."""
         return SummaryRow(
             check_id=self.check_id,
             label=self.label,
@@ -92,7 +91,6 @@ def _make_outcome(
     lines_changed: int | None = None,
     change_pct: float | None = None,
 ) -> CheckOutcome:
-    """Build a CheckOutcome with the common fields filled in from context."""
     return CheckOutcome(
         check_id=check["id"],
         label=check["label"],
@@ -142,7 +140,6 @@ def _invoke_claude(
     workdir: str,
     args: argparse.Namespace,
 ) -> CheckResult:
-    """Call run_claude with the standard set of arguments from args."""
     return run_claude(
         prompt,
         workdir,

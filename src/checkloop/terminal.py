@@ -30,7 +30,6 @@ RULE_WIDTH = 72  # character width for banner horizontal rules
 
 
 def print_banner(title: str, colour: str = CYAN) -> None:
-    """Print a prominent section header with horizontal rules."""
     horizontal_rule = "\u2500" * RULE_WIDTH  # ─
     print(f"\n{colour}{BOLD}{horizontal_rule}")
     print(f"  {title}")
@@ -38,7 +37,6 @@ def print_banner(title: str, colour: str = CYAN) -> None:
 
 
 def print_status(msg: str, colour: str = DIM) -> None:
-    """Print a coloured status message to the terminal."""
     print(f"{colour}{msg}{RESET}")
 
 
@@ -152,7 +150,6 @@ def _print_stats_footer(
 
 
 def _row_colour(row: SummaryRow) -> str:
-    """Return the ANSI colour code for a summary row based on its outcome."""
     if row["kill_reason"]:
         return RED
     if row["exit_code"] != 0:
