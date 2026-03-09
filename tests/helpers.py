@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any, cast
 from unittest import mock
 
-from checkloop import check_runner, process, suite
+from checkloop import check_runner, checkpoint, process, suite
 from checkloop.checks import CheckDef
 from checkloop.checkpoint import CheckpointData
 from checkloop.cli_args import DEFAULT_CONVERGENCE_THRESHOLD
@@ -145,3 +147,17 @@ def make_checkpoint_data(**overrides: Any) -> CheckpointData:
         "prev_change_pct": overrides.pop("prev_change_pct", None),
     }
     return data
+
+
+def assert_checkpoint_field_rejected(tmp_path: Path, **overrides: Any) -> None:
+    """Write a checkpoint with field overrides and assert load_checkpoint rejects it.
+
+    Builds a valid checkpoint via make_checkpoint_data, applies *overrides*
+    (which should contain at least one invalid value), writes it to disk,
+    and asserts that load_checkpoint returns None.
+    """
+    overrides.setdefault("workdir", str(tmp_path))
+    raw: dict[str, Any] = dict(make_checkpoint_data(**overrides))
+    path = tmp_path / checkpoint._CHECKPOINT_FILENAME
+    path.write_text(json.dumps(raw))
+    assert checkpoint.load_checkpoint(str(tmp_path)) is None

@@ -12,7 +12,7 @@ import pytest
 
 from checkloop import checkpoint
 from checkloop.checkpoint import CheckpointData
-from tests.helpers import make_checkpoint_data
+from tests.helpers import assert_checkpoint_field_rejected, make_checkpoint_data
 
 
 # =============================================================================
@@ -70,10 +70,7 @@ class TestLoadCheckpointEdgeCases:
         assert checkpoint.load_checkpoint(str(tmp_path)) is None
 
     def test_wrong_version_returns_none(self, tmp_path: Path) -> None:
-        data = make_checkpoint_data(version=999)
-        path = tmp_path / checkpoint._CHECKPOINT_FILENAME
-        path.write_text(json.dumps(data))
-        assert checkpoint.load_checkpoint(str(tmp_path)) is None
+        assert_checkpoint_field_rejected(tmp_path, version=999)
 
     def test_missing_required_keys_returns_none(self, tmp_path: Path) -> None:
         path = tmp_path / checkpoint._CHECKPOINT_FILENAME

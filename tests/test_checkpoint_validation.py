@@ -21,7 +21,7 @@ from checkloop.checkpoint import (
     _is_strict_number,
     _is_string_list,
 )
-from tests.helpers import make_checkpoint_data
+from tests.helpers import assert_checkpoint_field_rejected, make_checkpoint_data
 
 
 # =============================================================================
@@ -33,31 +33,19 @@ class TestHasValidFieldTypes:
 
     def test_invalid_int_field_rejects(self, tmp_path: Path) -> None:
         """Checkpoint with non-int current_cycle is rejected."""
-        data = make_checkpoint_data(workdir=str(tmp_path), current_cycle="not_an_int")
-        path = tmp_path / checkpoint._CHECKPOINT_FILENAME
-        path.write_text(json.dumps(data))
-        assert checkpoint.load_checkpoint(str(tmp_path)) is None
+        assert_checkpoint_field_rejected(tmp_path, current_cycle="not_an_int")
 
     def test_int_below_minimum_rejects(self, tmp_path: Path) -> None:
         """Checkpoint with current_cycle < 1 is rejected."""
-        data = make_checkpoint_data(workdir=str(tmp_path), current_cycle=0)
-        path = tmp_path / checkpoint._CHECKPOINT_FILENAME
-        path.write_text(json.dumps(data))
-        assert checkpoint.load_checkpoint(str(tmp_path)) is None
+        assert_checkpoint_field_rejected(tmp_path, current_cycle=0)
 
     def test_invalid_list_field_rejects(self, tmp_path: Path) -> None:
         """Checkpoint with non-list check_ids is rejected."""
-        data = make_checkpoint_data(workdir=str(tmp_path), check_ids="not_a_list")
-        path = tmp_path / checkpoint._CHECKPOINT_FILENAME
-        path.write_text(json.dumps(data))
-        assert checkpoint.load_checkpoint(str(tmp_path)) is None
+        assert_checkpoint_field_rejected(tmp_path, check_ids="not_a_list")
 
     def test_invalid_workdir_type_rejects(self, tmp_path: Path) -> None:
         """Checkpoint with non-string workdir is rejected."""
-        data = make_checkpoint_data(workdir=12345)
-        path = tmp_path / checkpoint._CHECKPOINT_FILENAME
-        path.write_text(json.dumps(data))
-        assert checkpoint.load_checkpoint(str(tmp_path)) is None
+        assert_checkpoint_field_rejected(tmp_path, workdir=12345)
 
 
 # =============================================================================
@@ -73,60 +61,33 @@ class TestFieldTypeEdgeCases:
         In Python, isinstance(True, int) is True because bool is a subclass
         of int, so we must explicitly reject booleans.
         """
-        raw: dict[str, Any] = dict(make_checkpoint_data(workdir=str(tmp_path)))
-        raw["current_cycle"] = True  # JSON true
-        path = tmp_path / checkpoint._CHECKPOINT_FILENAME
-        path.write_text(json.dumps(raw))
-        assert checkpoint.load_checkpoint(str(tmp_path)) is None
+        assert_checkpoint_field_rejected(tmp_path, current_cycle=True)
 
     def test_boolean_false_rejected_as_int(self, tmp_path: Path) -> None:
         """JSON false should not pass as a valid integer field."""
-        raw: dict[str, Any] = dict(make_checkpoint_data(workdir=str(tmp_path)))
-        raw["current_check_index"] = False  # JSON false (== 0, which is the minimum)
-        path = tmp_path / checkpoint._CHECKPOINT_FILENAME
-        path.write_text(json.dumps(raw))
-        assert checkpoint.load_checkpoint(str(tmp_path)) is None
+        assert_checkpoint_field_rejected(tmp_path, current_check_index=False)
 
     def test_empty_check_ids_rejected(self, tmp_path: Path) -> None:
         """Checkpoint with empty check_ids list should be rejected."""
-        raw: dict[str, Any] = dict(make_checkpoint_data(workdir=str(tmp_path)))
-        raw["check_ids"] = []
-        path = tmp_path / checkpoint._CHECKPOINT_FILENAME
-        path.write_text(json.dumps(raw))
-        assert checkpoint.load_checkpoint(str(tmp_path)) is None
+        assert_checkpoint_field_rejected(tmp_path, check_ids=[])
 
     def test_empty_active_check_ids_rejected(self, tmp_path: Path) -> None:
         """Checkpoint with empty active_check_ids list should be rejected."""
-        raw: dict[str, Any] = dict(make_checkpoint_data(workdir=str(tmp_path)))
-        raw["active_check_ids"] = []
-        path = tmp_path / checkpoint._CHECKPOINT_FILENAME
-        path.write_text(json.dumps(raw))
-        assert checkpoint.load_checkpoint(str(tmp_path)) is None
+        assert_checkpoint_field_rejected(tmp_path, active_check_ids=[])
 
     def test_non_string_items_in_check_ids_rejected(self, tmp_path: Path) -> None:
         """Checkpoint with non-string items in check_ids should be rejected."""
-        raw: dict[str, Any] = dict(make_checkpoint_data(workdir=str(tmp_path)))
-        raw["check_ids"] = [1, 2, 3]
-        path = tmp_path / checkpoint._CHECKPOINT_FILENAME
-        path.write_text(json.dumps(raw))
-        assert checkpoint.load_checkpoint(str(tmp_path)) is None
+        assert_checkpoint_field_rejected(tmp_path, check_ids=[1, 2, 3])
 
     def test_non_string_items_in_active_check_ids_rejected(self, tmp_path: Path) -> None:
         """Checkpoint with non-string items in active_check_ids should be rejected."""
-        raw: dict[str, Any] = dict(make_checkpoint_data(workdir=str(tmp_path)))
-        raw["active_check_ids"] = [True, None]
-        path = tmp_path / checkpoint._CHECKPOINT_FILENAME
-        path.write_text(json.dumps(raw))
-        assert checkpoint.load_checkpoint(str(tmp_path)) is None
+        assert_checkpoint_field_rejected(tmp_path, active_check_ids=[True, None])
 
     def test_check_index_exceeds_active_ids_length(self, tmp_path: Path) -> None:
         """Checkpoint with current_check_index > len(active_check_ids) should be rejected."""
-        raw: dict[str, Any] = dict(make_checkpoint_data(workdir=str(tmp_path)))
-        raw["active_check_ids"] = ["a", "b"]
-        raw["current_check_index"] = 3  # only 2 items in active list
-        path = tmp_path / checkpoint._CHECKPOINT_FILENAME
-        path.write_text(json.dumps(raw))
-        assert checkpoint.load_checkpoint(str(tmp_path)) is None
+        assert_checkpoint_field_rejected(
+            tmp_path, active_check_ids=["a", "b"], current_check_index=3,
+        )
 
     def test_check_index_equal_to_length_is_valid(self, tmp_path: Path) -> None:
         """current_check_index == len(active_check_ids) means 'all completed' and is valid."""
@@ -143,51 +104,27 @@ class TestFieldTypeEdgeCases:
 
     def test_mixed_types_in_check_ids_rejected(self, tmp_path: Path) -> None:
         """Checkpoint with mixed string/non-string items in check_ids should be rejected."""
-        raw: dict[str, Any] = dict(make_checkpoint_data(workdir=str(tmp_path)))
-        raw["check_ids"] = ["valid", 42, "also-valid"]
-        path = tmp_path / checkpoint._CHECKPOINT_FILENAME
-        path.write_text(json.dumps(raw))
-        assert checkpoint.load_checkpoint(str(tmp_path)) is None
+        assert_checkpoint_field_rejected(tmp_path, check_ids=["valid", 42, "also-valid"])
 
     def test_non_string_started_at_rejected(self, tmp_path: Path) -> None:
         """Checkpoint with non-string started_at should be rejected."""
-        raw: dict[str, Any] = dict(make_checkpoint_data(workdir=str(tmp_path)))
-        raw["started_at"] = 12345
-        path = tmp_path / checkpoint._CHECKPOINT_FILENAME
-        path.write_text(json.dumps(raw))
-        assert checkpoint.load_checkpoint(str(tmp_path)) is None
+        assert_checkpoint_field_rejected(tmp_path, started_at=12345)
 
     def test_null_started_at_rejected(self, tmp_path: Path) -> None:
         """Checkpoint with null started_at should be rejected."""
-        raw: dict[str, Any] = dict(make_checkpoint_data(workdir=str(tmp_path)))
-        raw["started_at"] = None
-        path = tmp_path / checkpoint._CHECKPOINT_FILENAME
-        path.write_text(json.dumps(raw))
-        assert checkpoint.load_checkpoint(str(tmp_path)) is None
+        assert_checkpoint_field_rejected(tmp_path, started_at=None)
 
     def test_string_convergence_threshold_rejected(self, tmp_path: Path) -> None:
         """Checkpoint with string convergence_threshold should be rejected."""
-        raw: dict[str, Any] = dict(make_checkpoint_data(workdir=str(tmp_path)))
-        raw["convergence_threshold"] = "not_a_number"
-        path = tmp_path / checkpoint._CHECKPOINT_FILENAME
-        path.write_text(json.dumps(raw))
-        assert checkpoint.load_checkpoint(str(tmp_path)) is None
+        assert_checkpoint_field_rejected(tmp_path, convergence_threshold="not_a_number")
 
     def test_boolean_convergence_threshold_rejected(self, tmp_path: Path) -> None:
         """Checkpoint with boolean convergence_threshold should be rejected."""
-        raw: dict[str, Any] = dict(make_checkpoint_data(workdir=str(tmp_path)))
-        raw["convergence_threshold"] = True
-        path = tmp_path / checkpoint._CHECKPOINT_FILENAME
-        path.write_text(json.dumps(raw))
-        assert checkpoint.load_checkpoint(str(tmp_path)) is None
+        assert_checkpoint_field_rejected(tmp_path, convergence_threshold=True)
 
     def test_null_convergence_threshold_rejected(self, tmp_path: Path) -> None:
         """Checkpoint with null convergence_threshold should be rejected."""
-        raw: dict[str, Any] = dict(make_checkpoint_data(workdir=str(tmp_path)))
-        raw["convergence_threshold"] = None
-        path = tmp_path / checkpoint._CHECKPOINT_FILENAME
-        path.write_text(json.dumps(raw))
-        assert checkpoint.load_checkpoint(str(tmp_path)) is None
+        assert_checkpoint_field_rejected(tmp_path, convergence_threshold=None)
 
     def test_valid_int_convergence_threshold_accepted(self, tmp_path: Path) -> None:
         """Checkpoint with integer convergence_threshold (e.g. 0) should be accepted."""
@@ -199,19 +136,11 @@ class TestFieldTypeEdgeCases:
 
     def test_string_prev_change_pct_rejected(self, tmp_path: Path) -> None:
         """Checkpoint with string prev_change_pct should be rejected."""
-        raw: dict[str, Any] = dict(make_checkpoint_data(workdir=str(tmp_path)))
-        raw["prev_change_pct"] = "bad"
-        path = tmp_path / checkpoint._CHECKPOINT_FILENAME
-        path.write_text(json.dumps(raw))
-        assert checkpoint.load_checkpoint(str(tmp_path)) is None
+        assert_checkpoint_field_rejected(tmp_path, prev_change_pct="bad")
 
     def test_boolean_prev_change_pct_rejected(self, tmp_path: Path) -> None:
         """Checkpoint with boolean prev_change_pct should be rejected."""
-        raw: dict[str, Any] = dict(make_checkpoint_data(workdir=str(tmp_path)))
-        raw["prev_change_pct"] = True
-        path = tmp_path / checkpoint._CHECKPOINT_FILENAME
-        path.write_text(json.dumps(raw))
-        assert checkpoint.load_checkpoint(str(tmp_path)) is None
+        assert_checkpoint_field_rejected(tmp_path, prev_change_pct=True)
 
     def test_null_prev_change_pct_accepted(self, tmp_path: Path) -> None:
         """Checkpoint with null prev_change_pct should be accepted (means not yet computed)."""
@@ -223,19 +152,11 @@ class TestFieldTypeEdgeCases:
 
     def test_non_list_previously_changed_ids_rejected(self, tmp_path: Path) -> None:
         """Checkpoint with non-list previously_changed_ids (when not None) should be rejected."""
-        raw: dict[str, Any] = dict(make_checkpoint_data(workdir=str(tmp_path)))
-        raw["previously_changed_ids"] = "not_a_list"
-        path = tmp_path / checkpoint._CHECKPOINT_FILENAME
-        path.write_text(json.dumps(raw))
-        assert checkpoint.load_checkpoint(str(tmp_path)) is None
+        assert_checkpoint_field_rejected(tmp_path, previously_changed_ids="not_a_list")
 
     def test_previously_changed_ids_with_non_string_items_rejected(self, tmp_path: Path) -> None:
         """Checkpoint with non-string items in previously_changed_ids should be rejected."""
-        raw: dict[str, Any] = dict(make_checkpoint_data(workdir=str(tmp_path)))
-        raw["previously_changed_ids"] = [1, 2, 3]
-        path = tmp_path / checkpoint._CHECKPOINT_FILENAME
-        path.write_text(json.dumps(raw))
-        assert checkpoint.load_checkpoint(str(tmp_path)) is None
+        assert_checkpoint_field_rejected(tmp_path, previously_changed_ids=[1, 2, 3])
 
     def test_null_previously_changed_ids_accepted(self, tmp_path: Path) -> None:
         """Checkpoint with null previously_changed_ids should be accepted."""
