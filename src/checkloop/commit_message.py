@@ -20,7 +20,7 @@ _COMMIT_MSG_TIMEOUT = 60  # seconds to wait for Claude to generate a commit mess
 
 
 def generate_commit_message(
-    diff_text: str, workdir: str, *, skip_permissions: bool = False,
+    diff_text: str, workdir: str, *, skip_permissions: bool = False, model: str | None = None,
 ) -> str | None:
     """Ask Claude to write a commit message summarizing a diff.
 
@@ -37,6 +37,8 @@ def generate_commit_message(
     cmd = ["claude"]
     if skip_permissions:
         cmd.append("--dangerously-skip-permissions")
+    if model:
+        cmd += ["--model", model]
     cmd += ["-p", prompt]
     logger.info("Generating commit message for uncommitted changes (diff_len=%d)", len(diff_text))
     try:

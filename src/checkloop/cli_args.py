@@ -164,6 +164,13 @@ def build_argument_parser() -> argparse.ArgumentParser:
             "(redundant docstrings, unnecessary logging, misleading error handling, etc.)."
         ),
     )
+    parser.add_argument(
+        "--model", "-m", default=None, metavar="MODEL",
+        help=(
+            "Claude model to use. Accepts aliases (e.g. 'sonnet', 'opus') or full model IDs "
+            "(e.g. 'claude-sonnet-4-6'). Defaults to Claude Code's own default if not set."
+        ),
+    )
 
     return parser
 

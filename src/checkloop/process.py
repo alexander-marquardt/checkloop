@@ -90,10 +90,12 @@ SANITIZED_ENV: dict[str, str] = {k: v for k, v in os.environ.items() if k != "CL
 
 # --- Claude command construction ----------------------------------------------
 
-def _build_claude_command(prompt: str, skip_permissions: bool) -> list[str]:
+def _build_claude_command(prompt: str, skip_permissions: bool, model: str | None = None) -> list[str]:
     cmd = ["claude"]
     if skip_permissions:
         cmd.append("--dangerously-skip-permissions")
+    if model:
+        cmd += ["--model", model]
     cmd += ["-p", prompt, "--output-format", "stream-json", "--verbose"]
     return cmd
 
@@ -394,6 +396,7 @@ def run_claude(
     idle_timeout: int = DEFAULT_IDLE_TIMEOUT,
     check_timeout: int = DEFAULT_CHECK_TIMEOUT,
     max_memory_mb: int = DEFAULT_MAX_MEMORY_MB,
+    model: str | None = None,
 ) -> CheckResult:
     """Run a single Claude Code check.
 
@@ -421,10 +424,10 @@ def run_claude(
         the reason (``KILL_REASON_MEMORY``, ``KILL_REASON_TIMEOUT``, or
         ``KILL_REASON_IDLE``).
     """
-    cmd = _build_claude_command(prompt, skip_permissions)
-    logger.info("run_claude: workdir=%s, prompt_len=%d, skip_permissions=%s, idle_timeout=%d, "
+    cmd = _build_claude_command(prompt, skip_permissions, model)
+    logger.info("run_claude: workdir=%s, prompt_len=%d, skip_permissions=%s, model=%s, idle_timeout=%d, "
                 "check_timeout=%d, max_memory_mb=%d",
-                workdir, len(prompt), skip_permissions, idle_timeout, check_timeout, max_memory_mb)
+                workdir, len(prompt), skip_permissions, model, idle_timeout, check_timeout, max_memory_mb)
     logger.debug("run_claude prompt: %.1000s", prompt)
     print_status(f"$ {' '.join(cmd[:3])} [prompt omitted for brevity]", DIM)
 

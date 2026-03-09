@@ -147,6 +147,7 @@ def _invoke_claude(
         debug=args.debug,
         check_timeout=args.check_timeout,
         max_memory_mb=args.max_memory_mb,
+        model=getattr(args, "model", None),
     )
 
 
