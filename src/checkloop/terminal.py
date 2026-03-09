@@ -265,7 +265,7 @@ def compute_cycle_summaries(results: list[SummaryRow]) -> list[CycleSummary]:
 def _parse_duration(duration_str: str) -> float:
     """Parse a duration string like '2m30s' or '1h02m30s' back to seconds."""
     total = 0.0
-    match = re.match(r"(?:(\d+)h)?(\d+)m(\d+)s", duration_str)
+    match = re.match(r"(?:(\d+)h)?(\d+)m(\d+)s", duration_str.strip())
     if match:
         hours = int(match.group(1) or 0)
         minutes = int(match.group(2))

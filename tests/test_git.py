@@ -263,3 +263,20 @@ class TestGitRunLocaleEnv:
     def test_git_env_overrides_lc_all(self) -> None:
         """LC_ALL=C should be set regardless of parent environment."""
         assert git._GIT_ENV["LC_ALL"] == "C"
+
+
+class TestGetChangedFilesEdgeCases:
+    """Edge cases for get_changed_files with empty/whitespace base_ref."""
+
+    def test_empty_base_ref_returns_empty(self) -> None:
+        assert git.get_changed_files("/tmp", "") == []
+
+    def test_whitespace_base_ref_returns_empty(self) -> None:
+        assert git.get_changed_files("/tmp", "   ") == []
+
+    def test_none_like_empty_base_ref(self) -> None:
+        """An empty string base_ref should not invoke git merge-base."""
+        with mock.patch.object(git, "_git_stdout") as mock_stdout:
+            result = git.get_changed_files("/tmp", "")
+            mock_stdout.assert_not_called()
+            assert result == []

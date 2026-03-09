@@ -87,8 +87,8 @@ def _print_system_event(event: dict[str, Any], elapsed_prefix: str) -> None:
 
 def _print_result_event(event: dict[str, Any], elapsed_prefix: str) -> None:
     """Print the final result summary from a completed check."""
-    result_text = event.get("result", "")
-    if result_text:
+    result_text = event.get("result")
+    if result_text is not None and result_text != "":
         if isinstance(result_text, str):
             logger.info("Check result received (length=%d chars)", len(result_text))
             logger.debug("Check result text: %.500s", result_text)

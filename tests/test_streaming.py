@@ -544,3 +544,44 @@ class TestProcessJsonlBufferMaxBufferDisabled:
             big_buf, 0.0, False, max_buffer_size=0,
         )
         assert len(result) == 100_000
+
+
+class TestPrintResultEventFalsyValues:
+    """Edge cases for _print_result_event with falsy but valid result values."""
+
+    def test_result_zero_is_printed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Numeric 0 is a valid result and should be printed."""
+        event: dict[str, Any] = {"type": "result", "result": 0}
+        streaming._print_event(event, time.time())
+        out = capsys.readouterr().out
+        assert "Result" in out
+        assert "0" in out
+
+    def test_result_false_is_printed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Boolean False is a valid result and should be printed."""
+        event: dict[str, Any] = {"type": "result", "result": False}
+        streaming._print_event(event, time.time())
+        out = capsys.readouterr().out
+        assert "Result" in out
+        assert "False" in out
+
+    def test_result_none_is_not_printed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """None result should not be printed."""
+        event: dict[str, Any] = {"type": "result", "result": None}
+        streaming._print_event(event, time.time())
+        out = capsys.readouterr().out
+        assert "Result" not in out
+
+    def test_result_empty_string_is_not_printed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Empty string result should not be printed."""
+        event: dict[str, Any] = {"type": "result", "result": ""}
+        streaming._print_event(event, time.time())
+        out = capsys.readouterr().out
+        assert "Result" not in out
+
+    def test_result_missing_key_is_not_printed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """When 'result' key is missing entirely, nothing should be printed."""
+        event: dict[str, Any] = {"type": "result"}
+        streaming._print_event(event, time.time())
+        out = capsys.readouterr().out
+        assert "Result" not in out

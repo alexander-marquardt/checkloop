@@ -437,3 +437,22 @@ class TestComputeSummaryStatsEdgeCasesNew:
         stats = terminal.compute_summary_stats([row])
         assert stats.succeeded == 0
         assert stats.failed == 1
+
+
+class TestParseDurationWhitespace:
+    """Tests for _parse_duration handling of leading/trailing whitespace."""
+
+    def test_leading_whitespace(self) -> None:
+        assert terminal._parse_duration("  2m30s") == 150.0
+
+    def test_trailing_whitespace(self) -> None:
+        assert terminal._parse_duration("2m30s  ") == 150.0
+
+    def test_leading_and_trailing_whitespace(self) -> None:
+        assert terminal._parse_duration("  1h02m30s  ") == 3750.0
+
+    def test_tab_whitespace(self) -> None:
+        assert terminal._parse_duration("\t5m00s\t") == 300.0
+
+    def test_newline_whitespace(self) -> None:
+        assert terminal._parse_duration("\n0m01s\n") == 1.0

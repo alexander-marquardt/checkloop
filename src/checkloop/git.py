@@ -281,6 +281,9 @@ def get_changed_files(workdir: str, base_ref: str) -> list[str]:
     to list changed files. Returns an empty list if either command fails.
     """
     start_time = time.time()
+    if not base_ref or not base_ref.strip():
+        logger.warning("get_changed_files called with empty base_ref")
+        return []
     base_sha = _git_stdout(workdir, "merge-base", base_ref, "HEAD")
     if not base_sha:
         logger.warning("Could not determine merge-base for ref '%s'", base_ref)
