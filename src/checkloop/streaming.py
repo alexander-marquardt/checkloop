@@ -56,9 +56,9 @@ def _print_assistant_event(event: dict[str, Any], elapsed_prefix: str) -> None:
         logger.debug("Unexpected content type in assistant event: %s", type(content).__name__)
         return
     text_blocks = [
-        b.get("text", "")
-        for b in content
-        if isinstance(b, dict) and b.get("type") == "text"
+        block.get("text", "")
+        for block in content
+        if isinstance(block, dict) and block.get("type") == "text"
     ]
     for text in text_blocks:
         if text.strip():

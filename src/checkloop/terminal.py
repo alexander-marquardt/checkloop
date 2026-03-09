@@ -107,11 +107,11 @@ class SummaryStats(NamedTuple):
 def compute_summary_stats(results: list[SummaryRow]) -> SummaryStats:
     """Compute aggregate statistics from summary rows."""
     total = len(results)
-    succeeded = sum(1 for r in results if r["exit_code"] == 0)
+    succeeded = sum(1 for row in results if row["exit_code"] == 0)
     failed = total - succeeded
-    killed = sum(1 for r in results if r["kill_reason"] is not None)
-    total_lines = sum(r["lines_changed"] or 0 for r in results)
-    with_changes = sum(1 for r in results if r["made_changes"])
+    killed = sum(1 for row in results if row["kill_reason"] is not None)
+    total_lines = sum(row["lines_changed"] or 0 for row in results)
+    with_changes = sum(1 for row in results if row["made_changes"])
     return SummaryStats(succeeded, failed, killed, total_lines, with_changes)
 
 
@@ -149,20 +149,20 @@ def print_run_summary_table(
     print(f"  {'Check':<20s} {'Cy':>2s}  {'Exit':>4s}  {'Kill Reason':<14s}  {'Lines':>7s}  {'Duration':>8s}")
     print(f"  {'─' * 20} {'─' * 2}  {'─' * 4}  {'─' * 14}  {'─' * 7}  {'─' * 8}")
 
-    for r in results:
-        check_id = str(r["check_id"])[:20]
-        cycle = str(r["cycle"])
-        exit_code = str(r["exit_code"])
-        kill = str(r["kill_reason"] or "—")[:14]
-        lines = str(r["lines_changed"]) if r["lines_changed"] is not None else "—"
-        duration = str(r["duration"])
+    for row in results:
+        check_id = str(row["check_id"])[:20]
+        cycle = str(row["cycle"])
+        exit_code = str(row["exit_code"])
+        kill = str(row["kill_reason"] or "—")[:14]
+        lines = str(row["lines_changed"]) if row["lines_changed"] is not None else "—"
+        duration = str(row["duration"])
 
         # Colour the row based on outcome
-        if r["kill_reason"]:
+        if row["kill_reason"]:
             colour = RED
-        elif r["exit_code"] != 0:
+        elif row["exit_code"] != 0:
             colour = YELLOW
-        elif r["made_changes"]:
+        elif row["made_changes"]:
             colour = GREEN
         else:
             colour = DIM
@@ -194,15 +194,15 @@ class CycleSummary(NamedTuple):
 def compute_cycle_summaries(results: list[SummaryRow]) -> list[CycleSummary]:
     """Group summary rows by cycle and compute per-cycle aggregates."""
     cycles_seen: dict[int, list[SummaryRow]] = {}
-    for r in results:
-        cycles_seen.setdefault(r["cycle"], []).append(r)
+    for row in results:
+        cycles_seen.setdefault(row["cycle"], []).append(row)
 
     summaries: list[CycleSummary] = []
     for cycle_num in sorted(cycles_seen):
         rows = cycles_seen[cycle_num]
         stats = compute_summary_stats(rows)
         total_duration = sum(
-            _parse_duration(r["duration"]) for r in rows
+            _parse_duration(row["duration"]) for row in rows
         )
         summaries.append(CycleSummary(
             cycle=cycle_num,
@@ -253,9 +253,9 @@ def print_overall_summary_table(
           f"{'─' * 7}  {'─' * 7}  {'─' * 8}{RESET}")
 
     prev_lines = 0
-    for cs in cycle_summaries:
+    for cycle_summary in cycle_summaries:
         # Compute delta once; use it for both colour and indicator.
-        delta = cs.total_lines - prev_lines if prev_lines > 0 else 0
+        delta = cycle_summary.total_lines - prev_lines if prev_lines > 0 else 0
         if delta < 0:
             lines_colour = GREEN   # decreasing — converging
         elif delta > 0:
@@ -264,18 +264,18 @@ def print_overall_summary_table(
             lines_colour = BLUE
         delta_str = f" ({delta:+d})" if delta != 0 else ""
 
-        lines_str = f"{cs.total_lines}{delta_str}"
-        changed_str = f"{cs.with_changes}/{cs.total_checks}"
+        lines_str = f"{cycle_summary.total_lines}{delta_str}"
+        changed_str = f"{cycle_summary.with_changes}/{cycle_summary.total_checks}"
 
         # Row colour based on failures
-        row_colour = RED if cs.failed > 0 else BLUE
+        row_colour = RED if cycle_summary.failed > 0 else BLUE
 
-        print(f"  {row_colour}{cs.cycle:>5d}  {cs.total_checks:>6d}  {cs.succeeded:>4d}  "
-              f"{cs.failed:>4d}  {cs.killed:>4d}{RESET}  "
+        print(f"  {row_colour}{cycle_summary.cycle:>5d}  {cycle_summary.total_checks:>6d}  {cycle_summary.succeeded:>4d}  "
+              f"{cycle_summary.failed:>4d}  {cycle_summary.killed:>4d}{RESET}  "
               f"{lines_colour}{lines_str:>7s}{RESET}  "
-              f"{row_colour}{changed_str:>7s}  {cs.duration:>8s}{RESET}")
+              f"{row_colour}{changed_str:>7s}  {cycle_summary.duration:>8s}{RESET}")
 
-        prev_lines = cs.total_lines
+        prev_lines = cycle_summary.total_lines
 
     # Footer
     total_stats = compute_summary_stats(results)

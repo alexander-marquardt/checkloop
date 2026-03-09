@@ -318,8 +318,8 @@ def _print_cycle_summary(
     """
     if not cycle_outcomes or num_cycles <= 1:
         return
-    summary_dicts = [o.to_summary_dict() for o in cycle_outcomes]
-    cycle_duration = format_duration(sum(o.duration_seconds for o in cycle_outcomes))
+    summary_dicts = [outcome.to_summary_dict() for outcome in cycle_outcomes]
+    cycle_duration = format_duration(sum(outcome.duration_seconds for outcome in cycle_outcomes))
     print_run_summary_table(
         summary_dicts, cycle_duration,
         banner_title=f"Cycle {cycle}/{num_cycles} Summary",
@@ -331,7 +331,7 @@ def _print_summary(outcomes: list[CheckOutcome], total_elapsed: str) -> None:
     """Print and log the overall summary table if there are any outcomes to show."""
     if not outcomes:
         return
-    summary_dicts = [o.to_summary_dict() for o in outcomes]
+    summary_dicts = [outcome.to_summary_dict() for outcome in outcomes]
     stats = compute_summary_stats(summary_dicts)
     logger.info(
         "Suite summary: checks=%d, succeeded=%d, failed=%d, killed=%d, "
@@ -339,16 +339,16 @@ def _print_summary(outcomes: list[CheckOutcome], total_elapsed: str) -> None:
         len(outcomes), stats.succeeded, stats.failed, stats.killed,
         stats.total_lines, stats.with_changes, total_elapsed,
     )
-    for o in outcomes:
+    for outcome in outcomes:
         logger.info(
             "  Check outcome: id=%s, cycle=%d, exit_code=%d, kill_reason=%s, "
             "made_changes=%s, lines_changed=%s, duration=%.1fs",
-            o.check_id, o.cycle, o.exit_code, o.kill_reason,
-            o.made_changes, o.lines_changed, o.duration_seconds,
+            outcome.check_id, outcome.cycle, outcome.exit_code, outcome.kill_reason,
+            outcome.made_changes, outcome.lines_changed, outcome.duration_seconds,
         )
     # For multi-cycle runs, show the cross-cycle overview table.
     # For single-cycle runs, just show the per-check detail table.
-    num_cycles = len({o.cycle for o in outcomes})
+    num_cycles = len({outcome.cycle for outcome in outcomes})
     if num_cycles > 1:
         print_overall_summary_table(summary_dicts, total_elapsed)
     else:
