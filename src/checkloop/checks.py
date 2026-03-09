@@ -192,6 +192,9 @@ CHECKS: list[CheckDef] = [
             "Run the type checker (mypy, tsc, etc.) if available and fix any errors. "
             "Do NOT add complex generic types or multi-line type aliases that hurt readability — "
             "a simple Any is better than a 3-line generic constraint that is harder to understand. "
+            "Do NOT change field types on data models, ORM models, or search-engine document classes "
+            "(e.g. Elasticsearch mappings, Pydantic models used for serialization) — changing a field "
+            "type changes the serialized format and breaks existing indexed data. "
             "Do NOT change runtime behaviour beyond adding input validation at system boundaries."
         ),
     },
@@ -401,6 +404,9 @@ FULL_CODEBASE_SCOPE: str = (
     "Do NOT remove blank lines that follow a consistent pattern in the codebase — for example, "
     "blank lines before section separator comments (# ---), or between logical groups. "
     "These are intentional style conventions and removing them may break the project's linter. "
+    "Do NOT change data schemas, database/search-engine mappings, document field types, or "
+    "serialization formats — changing a field from str to int or adding/removing fields breaks "
+    "existing indexed data and causes bulk index errors in tests. "
     "Every change should be clearly justified — if in doubt, leave the existing code alone. "
 )
 """Default scope prefix prepended to every check when --changed-only is not used."""
