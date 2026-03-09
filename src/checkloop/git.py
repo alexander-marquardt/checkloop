@@ -95,14 +95,30 @@ def git_head_sha(workdir: str) -> str | None:
 
 # --- Commit -------------------------------------------------------------------
 
+_CHECKLOOP_PATHSPEC_EXCLUDES: list[str] = [
+    ":(exclude).checkloop-run.log",
+    ":(exclude).checkloop-checkpoint.json",
+    ":(exclude).checkloop-ckpt-*.tmp",
+]
+"""Pathspec excludes to prevent checkloop's own files from being staged.
+
+The log file contains DEBUG-level data (prompts, file paths) that is
+intentionally written with 0o600 permissions.  Committing it into git
+history would permanently expose that sensitive content.
+"""
+
+
 def git_commit_all(workdir: str, message: str) -> bool:
     """Stage and commit any uncommitted changes.
+
+    Excludes checkloop's own files (.checkloop-run.log, checkpoint files)
+    from staging to avoid leaking sensitive operational data into git history.
 
     Returns True if a commit was created (i.e. there were changes to commit).
     """
     start_time = time.time()
     try:
-        _git_run(workdir, "add", "-A", check=True)
+        _git_run(workdir, "add", "-A", "--", *_CHECKLOOP_PATHSPEC_EXCLUDES, check=True)
         if _git_run(workdir, "diff", "--cached", "--quiet").returncode == 0:
             logger.debug("No staged changes — nothing to commit")
             return False
