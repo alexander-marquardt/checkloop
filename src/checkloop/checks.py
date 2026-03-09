@@ -49,7 +49,9 @@ CHECKS: list[CheckDef] = [
         "id": "readability",
         "label": "Readability & Code Quality",
         "prompt": (
-            "Improve naming (variables, functions, classes). "
+            "Improve naming (variables, functions, classes), but only where the current name "
+            "is genuinely confusing — do NOT rename for marginal gains or personal preference, "
+            "as rename churn creates large diffs through hot paths for little value. "
             "Break up any function that does more than one logical thing, "
             "or that requires scrolling to read in full. "
             "Prefer small, named functions where the name removes the need for a comment. "
@@ -58,8 +60,9 @@ CHECKS: list[CheckDef] = [
             "related functions together and use imports to reconnect them. "
             "Apply the same standard to test files: split large test files "
             "so each module has a corresponding focused test file. "
-            "Add or improve inline comments where logic is non-obvious, "
-            "and ensure consistent formatting. "
+            "Add inline comments only where logic is non-obvious — do NOT add docstrings "
+            "to functions whose purpose is already clear from their name and signature. "
+            "Ensure consistent formatting. "
             "Do NOT change any behaviour — only improve clarity."
         ),
     },
@@ -78,12 +81,16 @@ CHECKS: list[CheckDef] = [
         "id": "tests",
         "label": "Write / Improve Tests",
         "prompt": (
-            "Measure and improve test coverage. "
-            "Cover: happy paths, edge cases, and error conditions. "
+            "Write behaviour-driven tests that verify what the code does, not how it's implemented. "
+            "Cover: happy paths, meaningful edge cases, and real error conditions. "
+            "Do NOT write tests for defensive paths that can't actually happen "
+            "(e.g. passing None where the type says str, or catching exceptions from code "
+            "that can't raise them). Do NOT use # type: ignore to force invalid inputs. "
+            "Avoid overlapping test files with near-identical names — each test file should have "
+            "a clear, distinct purpose. "
             "Use the testing framework already in the project (or pytest/jest if none). "
-            "Target >=90% line coverage. "
-            "Run the test suite and fix any failures before finishing. "
-            "Report the final coverage figure when done."
+            "Do NOT remove existing coverage gates or test configuration. "
+            "Run the test suite and fix any failures before finishing."
         ),
     },
     {
@@ -92,8 +99,11 @@ CHECKS: list[CheckDef] = [
         "prompt": (
             "Add or improve documentation: "
             "update (or create) a README section describing what was built, "
-            "add docstrings/JSDoc to public functions and classes, "
-            "and document any non-obvious environment variables or config."
+            "and document any non-obvious environment variables or config. "
+            "Add docstrings/JSDoc only to public functions and classes whose purpose "
+            "is NOT already obvious from their name and signature. "
+            "Do NOT add blanket docstrings to every function — if the name is self-documenting, "
+            "a docstring just adds clutter. Prefer comments that explain WHY, not WHAT."
         ),
     },
     # --- Thorough tier ---
@@ -105,7 +115,11 @@ CHECKS: list[CheckDef] = [
             "Look for: injection vulnerabilities, insecure defaults, "
             "hardcoded secrets, missing input validation, "
             "overly broad permissions, and unsafe dependencies. "
-            "Fix any issues you find and explain what you changed."
+            "Fix any issues you find and explain what you changed. "
+            "Be careful not to break existing behaviour when tightening security — "
+            "do NOT change CORS settings, authentication config, retry policies, or "
+            "client library options unless there is a clear vulnerability. "
+            "Tightening security is not the same as changing operational defaults."
         ),
     },
     {
@@ -126,7 +140,11 @@ CHECKS: list[CheckDef] = [
             "Audit error handling. "
             "Ensure I/O operations, network calls, and parsing steps "
             "have proper try/except (or try/catch) with meaningful error messages. "
-            "Add logging where it would help diagnose production issues."
+            "Only add error handling where the code can MEANINGFULLY respond to the error — "
+            "do NOT wrap code in try/except when the wrapped call cannot actually raise "
+            "(e.g. a function that just builds a data structure, or a connection registration "
+            "that doesn't perform I/O). Misleading error handling is worse than none. "
+            "Add logging only where it would help diagnose production issues."
         ),
     },
     {
@@ -170,7 +188,9 @@ CHECKS: list[CheckDef] = [
         "label": "Dependency Hygiene",
         "prompt": (
             "Audit the project's dependencies for issues. "
-            "Identify unused dependencies and remove them. "
+            "Identify unused dependencies and remove them, but ONLY if they are truly unused — "
+            "verify that no source file imports the package before removing it. "
+            "Do NOT remove a dependency if any code still imports or references it. "
             "Check for outdated packages with known vulnerabilities. "
             "Flag dependencies that are unmaintained or have better alternatives. "
             "Ensure lock files are consistent with declared dependencies. "
@@ -186,6 +206,10 @@ CHECKS: list[CheckDef] = [
             "request/response summaries. Add structured logging with context (request IDs, "
             "user IDs, operation names) where missing. Ensure errors are logged with stack traces. "
             "Remove or downgrade noisy debug logs that would clutter production. "
+            "Do NOT add logger.debug() to every function entry point — avoid logging arguments "
+            "that are already visible in request context or stack traces. "
+            "Do NOT add logging on hot paths (query builders, inner loops, per-item processing) "
+            "where it adds overhead for minimal diagnostic value. "
             "Add metrics or timing instrumentation to performance-critical paths if appropriate."
         ),
     },
@@ -272,6 +296,10 @@ DEFAULT_TIER: str = "basic"
 
 FULL_CODEBASE_SCOPE: str = (
     "Review ALL code in this project (not just recently written code). "
+    "IMPORTANT: Respect the existing codebase style. Do NOT make changes that create "
+    "large diffs for marginal improvement. Avoid blanket additions (docstrings on every "
+    "function, logger.debug in every method, try/except around code that can't fail). "
+    "Every change should be clearly justified — if in doubt, leave the existing code alone. "
 )
 """Default scope prefix prepended to every check when --changed-only is not used."""
 

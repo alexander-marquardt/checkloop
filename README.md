@@ -71,18 +71,18 @@ Use `--checks` to pick individual checks, or `--all-checks` as a shortcut for `-
 | Check | Tier | What it does |
 |-------|------|-------------|
 | `test-fix` | bookend | Runs the existing test suite and fixes any failures in source code. Always runs first. |
-| `readability` | basic | Naming, function size, comments, formatting. No behaviour changes. |
+| `readability` | basic | Naming, function size, comments, formatting. Avoids rename churn. No behaviour changes. |
 | `dry` | basic | Finds repeated logic, extracts helpers, consolidates constants. |
-| `tests` | basic | Targets >=90% coverage. Writes tests, runs them, fixes failures. |
-| `docs` | basic | README, docstrings, config documentation. |
-| `security` | thorough | Injection, hardcoded secrets, input validation, unsafe dependencies. |
+| `tests` | basic | Behaviour-driven tests for happy paths, edge cases, errors. Avoids defensive/impossible paths. |
+| `docs` | basic | README, config docs. Docstrings only where purpose isn't obvious from name. |
+| `security` | thorough | Injection, hardcoded secrets, input validation. Won't change CORS/retry/auth config without a clear vuln. |
 | `perf` | thorough | N+1 queries, O(N²) algorithms, blocking I/O, unnecessary allocations. |
-| `errors` | thorough | try/except coverage, meaningful error messages, logging. |
+| `errors` | thorough | Error handling only where code can meaningfully respond. No wrapping code that can't fail. |
 | `types` | thorough | Type annotations, replace `Any`/untyped code, run type checker. |
 | `edge-cases` | exhaustive | Off-by-one, null/empty inputs, overflow, Unicode edge cases. |
 | `complexity` | exhaustive | Flatten nested conditionals, reduce cyclomatic complexity. |
-| `deps` | exhaustive | Remove unused deps, flag vulnerable/outdated packages. |
-| `logging` | exhaustive | Structured logging, request context, observability gaps. |
+| `deps` | exhaustive | Remove verified-unused deps, flag vulnerable/outdated packages. |
+| `logging` | exhaustive | Structured logging at entry points. No debug logging on hot paths. |
 | `concurrency` | exhaustive | Race conditions, missing locks, async/await correctness. |
 | `accessibility` | exhaustive | Semantic HTML, ARIA, keyboard nav, colour contrast (WCAG AA). |
 | `api-design` | exhaustive | Consistent naming, HTTP methods, error formats, pagination. |
