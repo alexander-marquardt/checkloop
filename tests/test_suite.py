@@ -361,7 +361,7 @@ class TestRunSuiteWithErrorHandlingPartialResults:
         out = capsys.readouterr().out
         assert "Unexpected error" in out
         # Partial result from check "a" should appear in summary
-        assert "A" in out
+        assert "Total lines  : 10" in out
 
     def test_keyboard_interrupt_prints_partial_results(
         self, capsys: pytest.CaptureFixture[str],
