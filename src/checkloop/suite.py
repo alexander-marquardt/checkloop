@@ -34,7 +34,7 @@ from checkloop.git import (
     has_uncommitted_changes,
     is_git_repo,
 )
-from checkloop.process import generate_commit_message
+from checkloop.commit_message import generate_commit_message
 from checkloop.terminal import (
     BOLD,
     CYAN,
