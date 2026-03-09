@@ -44,13 +44,12 @@ from checkloop.checks import (
     looks_dangerous,
 )
 from checkloop.cli import main
-from checkloop.cli_args import DEFAULT_CONVERGENCE_THRESHOLD
+from checkloop.cli_args import DEFAULT_CONVERGENCE_THRESHOLD, DEFAULT_PAUSE_SECONDS
 from checkloop.process import (
     CheckResult,
     DEFAULT_CHECK_TIMEOUT,
     DEFAULT_IDLE_TIMEOUT,
     DEFAULT_MAX_MEMORY_MB,
-    DEFAULT_PAUSE_SECONDS,
     KILL_REASON_IDLE,
     KILL_REASON_MEMORY,
     KILL_REASON_TIMEOUT,

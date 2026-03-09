@@ -67,9 +67,6 @@ class CheckResult:
 DEFAULT_IDLE_TIMEOUT = 300
 """Seconds of silence before killing a subprocess (default for *idle_timeout*)."""
 
-DEFAULT_PAUSE_SECONDS = 2
-"""Seconds to pause between consecutive checks (default for *pause*)."""
-
 DEFAULT_MAX_MEMORY_MB = 8192
 """Max child-tree RSS in MB before killing (default for *max_memory_mb*)."""
 

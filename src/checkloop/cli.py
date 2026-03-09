@@ -223,7 +223,8 @@ def main() -> None:
 
     print_run_summary(
         workdir, selected_checks, num_cycles, total_steps,
-        args.idle_timeout, args.dry_run, convergence_threshold,
+        args.idle_timeout, args.dry_run,
+        convergence_threshold=convergence_threshold,
         max_memory_mb=args.max_memory_mb, check_timeout=args.check_timeout,
     )
 

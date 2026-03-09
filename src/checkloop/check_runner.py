@@ -66,7 +66,7 @@ class CheckOutcome:
     change_pct: float | None
     duration_seconds: float
 
-    def to_summary_dict(self) -> SummaryRow:
+    def to_summary_row(self) -> SummaryRow:
         """Convert to a SummaryRow for print_run_summary_table."""
         return SummaryRow(
             check_id=self.check_id,

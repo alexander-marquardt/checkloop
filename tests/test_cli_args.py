@@ -42,7 +42,7 @@ class TestBuildArgumentParser:
         assert ns.idle_timeout == process.DEFAULT_IDLE_TIMEOUT
         assert ns.dry_run is False
         assert ns.verbose is False
-        assert ns.pause == process.DEFAULT_PAUSE_SECONDS
+        assert ns.pause == cli_args.DEFAULT_PAUSE_SECONDS
 
     def test_dir_is_required(self) -> None:
         with pytest.raises(SystemExit):

@@ -152,11 +152,11 @@ class TestCommitMessageInstructions:
 
 
 # =============================================================================
-# CheckOutcome.to_summary_dict
+# CheckOutcome.to_summary_row
 # =============================================================================
 
-class TestCheckOutcomeToSummaryDict:
-    """Edge cases for CheckOutcome.to_summary_dict()."""
+class TestCheckOutcomeToSummaryRow:
+    """Edge cases for CheckOutcome.to_summary_row()."""
 
     def test_all_none_optional_fields(self) -> None:
         outcome = suite.CheckOutcome(
@@ -165,7 +165,7 @@ class TestCheckOutcomeToSummaryDict:
             made_changes=False, lines_changed=None,
             change_pct=None, duration_seconds=0.0,
         )
-        row = outcome.to_summary_dict()
+        row = outcome.to_summary_row()
         assert row["lines_changed"] is None
         assert row["change_pct"] is None
         assert row["kill_reason"] is None
@@ -178,7 +178,7 @@ class TestCheckOutcomeToSummaryDict:
             made_changes=False, lines_changed=0,
             change_pct=0.0, duration_seconds=0.0,
         )
-        row = outcome.to_summary_dict()
+        row = outcome.to_summary_row()
         assert row["duration"] == "0m00s"
 
     def test_negative_duration(self) -> None:
@@ -189,7 +189,7 @@ class TestCheckOutcomeToSummaryDict:
             made_changes=False, lines_changed=0,
             change_pct=0.0, duration_seconds=-5.0,
         )
-        row = outcome.to_summary_dict()
+        row = outcome.to_summary_row()
         assert row["duration"] == "0m00s"  # format_duration clamps negative to 0
 
 

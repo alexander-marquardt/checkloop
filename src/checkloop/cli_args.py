@@ -35,11 +35,13 @@ from checkloop.process import (
     DEFAULT_CHECK_TIMEOUT,
     DEFAULT_IDLE_TIMEOUT,
     DEFAULT_MAX_MEMORY_MB,
-    DEFAULT_PAUSE_SECONDS,
 )
 from checkloop.terminal import BOLD, RED, RESET, RULE_WIDTH, YELLOW, fatal, print_status
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_PAUSE_SECONDS = 2
+"""Seconds to pause between consecutive checks (default for ``--pause``)."""
 
 DEFAULT_CONVERGENCE_THRESHOLD = 0.1
 """Percent of total lines changed below which cycles stop early (default for ``--convergence-threshold``)."""
@@ -167,6 +169,7 @@ def print_run_summary(
     total_steps: int,
     idle_timeout: int,
     dry_run: bool,
+    *,
     convergence_threshold: float = 0.0,
     max_memory_mb: int = 0,
     check_timeout: int = 0,

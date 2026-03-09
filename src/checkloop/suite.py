@@ -322,7 +322,7 @@ def _print_cycle_summary(
     """
     if not cycle_outcomes or num_cycles <= 1:
         return
-    summary_dicts = [outcome.to_summary_dict() for outcome in cycle_outcomes]
+    summary_dicts = [outcome.to_summary_row() for outcome in cycle_outcomes]
     cycle_duration = format_duration(sum(outcome.duration_seconds for outcome in cycle_outcomes))
     print_run_summary_table(
         summary_dicts, cycle_duration,
@@ -335,7 +335,7 @@ def _print_summary(outcomes: list[CheckOutcome], total_elapsed: str) -> None:
     """Print and log the overall summary table if there are any outcomes to show."""
     if not outcomes:
         return
-    summary_dicts = [outcome.to_summary_dict() for outcome in outcomes]
+    summary_dicts = [outcome.to_summary_row() for outcome in outcomes]
     stats = compute_summary_stats(summary_dicts)
     logger.info(
         "Suite summary: checks=%d, succeeded=%d, failed=%d, killed=%d, "
