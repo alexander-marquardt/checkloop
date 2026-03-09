@@ -123,9 +123,8 @@ def _commit_uncommitted_changes(workdir: str, skip_permissions: bool) -> None:
     else:
         if len(diff) > _MAX_DIFF_LEN:
             diff = diff[:_MAX_DIFF_LEN] + f"\n\n... (truncated, {len(diff) - _MAX_DIFF_LEN} more characters)"
-        message = generate_commit_message(diff, workdir, skip_permissions=skip_permissions)
-        if not message:
-            message = _FALLBACK_COMMIT_MSG
+        generated = generate_commit_message(diff, workdir, skip_permissions=skip_permissions)
+        message = generated if generated else _FALLBACK_COMMIT_MSG
 
     committed = git_commit_all(workdir, message)
     if committed:
