@@ -90,7 +90,8 @@ class TestCheckIdleTimeout:
 
     def test_one_second_over_threshold(self) -> None:
         mock_proc = mock.MagicMock()
-        with mock.patch("time.time", return_value=221.0):
+        with mock.patch("time.time", return_value=221.0), \
+             mock.patch.object(process, "_kill_process_group"):
             result = process._check_idle_timeout(
                 last_output_time=100.0, idle_timeout=120,
                 check_start_time=80.0, process=mock_proc,
