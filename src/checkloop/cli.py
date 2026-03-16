@@ -191,19 +191,13 @@ def _register_cleanup_handlers() -> None:
 # --- Entry point --------------------------------------------------------------
 
 def main() -> None:
-    """CLI entry point: parse arguments and run the configured check suite.
-
-    This is the function invoked by the ``checkloop`` console script defined
-    in ``pyproject.toml``.  It parses CLI flags, resolves the check tier and
-    check list, displays a pre-run summary, then delegates to the check loop.
-    """
     _register_cleanup_handlers()
 
     args = build_argument_parser().parse_args()
     _configure_logging(args)
-    logger.info("checkloop started (run_id=%s)", _RUN_ID)
     workdir = resolve_working_directory(args.dir)
     _add_file_log_handler(workdir)
+    logger.info("checkloop started: run_id=%s, workdir=%s", _RUN_ID, workdir)
     validate_arguments(args)
 
     args.changed_files_prefix = resolve_changed_files_prefix(args, workdir)

@@ -64,19 +64,7 @@ def fatal(msg: str) -> NoReturn:
 
 
 class SummaryRow(TypedDict):
-    """A single row in the post-run summary table.
-
-    Attributes:
-        check_id: Short identifier of the check (e.g. ``"readability"``).
-        label: Human-readable check name shown in banners.
-        cycle: Which cycle this check ran in (1-based).
-        exit_code: Subprocess exit code (0 = success).
-        kill_reason: One of the ``KILL_REASON_*`` constants if killed, else None.
-        made_changes: Whether the check modified any tracked files.
-        lines_changed: Total insertions + deletions, or None if unavailable.
-        change_pct: Percentage of total tracked lines changed, or None.
-        duration: Human-readable elapsed time string (e.g. ``"2m30s"``).
-    """
+    """A single row in the post-run summary table."""
 
     check_id: str
     label: str
@@ -90,15 +78,7 @@ class SummaryRow(TypedDict):
 
 
 class SummaryStats(NamedTuple):
-    """Aggregate statistics computed from a list of SummaryRow dicts.
-
-    Attributes:
-        succeeded: Number of checks that exited with code 0.
-        failed: Number of checks that exited with a non-zero code.
-        killed: Number of checks terminated by a resource limit (timeout or memory).
-        total_lines: Sum of lines changed across all checks.
-        with_changes: Number of checks that modified at least one tracked file.
-    """
+    """Aggregate statistics computed from a list of SummaryRow dicts."""
 
     succeeded: int
     failed: int
@@ -125,11 +105,6 @@ def _print_stats_footer(
     colour: str = "",
     extra_lines: list[str] | None = None,
 ) -> None:
-    """Print the common stats footer shared by both summary tables.
-
-    Displays total checks (with ok/failed/killed breakdown), total lines,
-    elapsed time, and any extra lines inserted before the common stats.
-    """
     c = colour
     r = RESET if colour else ""
     print()
@@ -183,7 +158,6 @@ def print_run_summary_table(
     total_checks = len(results)
     succeeded, failed, killed, total_lines, checks_with_changes = stats
 
-    # Header
     print(f"  {'Check':<20s} {'Cy':>2s}  {'Exit':>4s}  {'Kill Reason':<14s}  {'Lines':>7s}  {'Duration':>8s}")
     print(f"  {'─' * 20} {'─' * 2}  {'─' * 4}  {'─' * 14}  {'─' * 7}  {'─' * 8}")
 
@@ -198,7 +172,6 @@ def print_run_summary_table(
 
         print(f"  {colour}{check_id:<20s} {cycle:>2s}  {exit_code:>4s}  {kill:<14s}  {lines:>7s}  {duration:>8s}{RESET}")
 
-    # Footer
     _print_stats_footer(
         stats, total_checks, total_elapsed,
         extra_lines=[f"  With changes : {checks_with_changes}/{total_checks}"],
@@ -206,18 +179,7 @@ def print_run_summary_table(
 
 
 class CycleSummary(NamedTuple):
-    """Aggregate statistics for a single cycle, used in the overall summary.
-
-    Attributes:
-        cycle: Cycle number (1-based).
-        total_checks: Number of checks executed in this cycle.
-        succeeded: Number of checks that exited with code 0.
-        failed: Number of checks that exited with a non-zero code.
-        killed: Number of checks terminated by a resource limit.
-        total_lines: Sum of lines changed across all checks in this cycle.
-        with_changes: Number of checks that modified at least one tracked file.
-        duration: Human-readable elapsed time string for the cycle (e.g. ``"5m30s"``).
-    """
+    """Aggregate statistics for a single cycle, used in the overall summary."""
 
     cycle: int
     total_checks: int
@@ -290,7 +252,6 @@ def print_overall_summary_table(
 
     print_banner("Overall Summary", BLUE)
 
-    # Header
     print(f"  {BLUE}{'Cycle':>5s}  {'Checks':>6s}  {'OK':>4s}  {'Fail':>4s}  {'Kill':>4s}  "
           f"{'Lines':>7s}  {'Changed':>7s}  {'Duration':>8s}{RESET}")
     print(f"  {BLUE}{'─' * 5}  {'─' * 6}  {'─' * 4}  {'─' * 4}  {'─' * 4}  "
@@ -311,7 +272,6 @@ def print_overall_summary_table(
         lines_str = f"{cycle_summary.total_lines}{delta_str}"
         changed_str = f"{cycle_summary.with_changes}/{cycle_summary.total_checks}"
 
-        # Row colour based on failures
         row_colour = RED if cycle_summary.failed > 0 else BLUE
 
         print(f"  {row_colour}{cycle_summary.cycle:>5d}  {cycle_summary.total_checks:>6d}  {cycle_summary.succeeded:>4d}  "
@@ -321,7 +281,6 @@ def print_overall_summary_table(
 
         prev_lines = cycle_summary.total_lines
 
-    # Footer
     total_stats = compute_summary_stats(results)
     _print_stats_footer(
         total_stats, len(results), total_elapsed,

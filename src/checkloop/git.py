@@ -59,7 +59,6 @@ def _git_run(
     check: bool = False,
     text: bool = True,
 ) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
-    logger.debug("git %s (cwd=%s)", " ".join(args), workdir)
     try:
         return subprocess.run(
             ["git", *args],
@@ -291,6 +290,13 @@ def _cached_total_tracked_lines(workdir: str) -> int:
 # --- Branch and changed-file helpers -----------------------------------------
 
 def detect_default_branch(workdir: str) -> str:
+    """Return the default branch name ('main' or 'master'), falling back to 'main'.
+
+    Probes for 'main' then 'master' via ``git rev-parse --verify``.
+    If neither exists (e.g. unusual branch names), returns 'main' as a
+    best-guess default so ``--changed-only auto`` still produces a usable
+    base ref rather than failing silently.
+    """
     for branch in ("main", "master"):
         if _git_stdout(workdir, "rev-parse", "--verify", f"refs/heads/{branch}") is not None:
             logger.info("Detected default branch: %s", branch)

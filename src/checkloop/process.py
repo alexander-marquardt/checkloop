@@ -41,25 +41,13 @@ logger = logging.getLogger(__name__)
 # --- Kill reasons -------------------------------------------------------------
 
 KILL_REASON_MEMORY = "memory_limit"
-"""Kill reason when the child process tree exceeds the RSS memory limit."""
-
 KILL_REASON_TIMEOUT = "check_timeout"
-"""Kill reason when the hard wall-clock timeout per check is exceeded."""
-
 KILL_REASON_IDLE = "idle_timeout"
-"""Kill reason when the subprocess produces no output for too long."""
 
 
 @dataclass
 class CheckResult:
-    """Result of a single Claude Code check invocation.
-
-    Attributes:
-        exit_code: The subprocess exit code (0 for success, non-zero for failure,
-            -1 if the process never set a return code).
-        kill_reason: One of the ``KILL_REASON_*`` constants if the process was
-            killed, or ``None`` for a normal exit.
-    """
+    """Result of a single Claude Code check invocation."""
 
     exit_code: int
     kill_reason: str | None = None
@@ -113,7 +101,11 @@ def _spawn_claude_process(
     children it spawns (language servers, tool runners, etc.), preventing
     orphaned processes from accumulating memory across many checks.
     """
-    logger.info("Spawning subprocess: %s (cwd=%s)", cmd[:3], workdir)
+    # Slice up to (not including) the -p flag so the prompt text never
+    # appears in INFO-level logs.  The full prompt is logged at DEBUG level
+    # in run_claude() before this function is called.
+    p_idx = cmd.index("-p") if "-p" in cmd else len(cmd)
+    logger.info("Spawning subprocess: %s (cwd=%s)", cmd[:p_idx], workdir)
     try:
         return subprocess.Popen(
             cmd,
@@ -268,6 +260,8 @@ def _check_resource_limits(
         return KILL_REASON_IDLE, last_memory_check
     if _check_hard_timeout(check_start_time, check_timeout, process):
         return KILL_REASON_TIMEOUT, last_memory_check
+    # process.pid == session ID because start_new_session=True makes the
+    # subprocess the session leader (SID = its PID).
     exceeded, last_memory_check = _check_memory_limit(
         process.pid, max_memory_mb, check_start_time, process, last_memory_check,
     )
@@ -429,7 +423,8 @@ def run_claude(
                 "check_timeout=%d, max_memory_mb=%d",
                 workdir, len(prompt), skip_permissions, model, idle_timeout, check_timeout, max_memory_mb)
     logger.debug("run_claude prompt: %.1000s", prompt)
-    print_status(f"$ {' '.join(cmd[:3])} [prompt omitted for brevity]", DIM)
+    p_idx = cmd.index("-p") if "-p" in cmd else len(cmd)
+    print_status(f"$ {' '.join(cmd[:p_idx])} -p [prompt omitted]", DIM)
 
     if dry_run:
         logger.info("Dry-run mode — skipping actual subprocess invocation (workdir=%s)", workdir)

@@ -24,6 +24,9 @@ jobs:
       - name: Type check
         run: uv run python -m mypy src/checkloop
 
+      - name: Run tests
+        run: uv run python -m pytest tests/ -x -q
+
       - name: Verify CLI entry point
         run: uv run checkloop --help
 

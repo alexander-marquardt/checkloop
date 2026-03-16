@@ -410,13 +410,13 @@ class TestDisplayPreRunWarning:
         assert "dangerously-skip-permissions is ENABLED" in out
         assert f"Starting in {cli_args._WARNING_COUNTDOWN_SECONDS} seconds" in out
 
-    def test_skip_permissions_false(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch("time.sleep"):
+    def test_skip_permissions_false_exits(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with pytest.raises(SystemExit) as exc_info:
             cli_args.display_pre_run_warning(skip_permissions=False)
+        assert exc_info.value.code == 1
         out = capsys.readouterr().out
-        assert "Running without --dangerously-skip-permissions" in out
+        assert "--dangerously-skip-permissions is required" in out
         assert "Re-run with" in out
-        assert "Continuing anyway" in out
 
     def test_keyboard_interrupt_exits(self, capsys: pytest.CaptureFixture[str]) -> None:
         with mock.patch("time.sleep", side_effect=KeyboardInterrupt):
@@ -426,33 +426,6 @@ class TestDisplayPreRunWarning:
         out = capsys.readouterr().out
         assert "Aborted" in out
 
-
-# =============================================================================
-# _build_permission_warning — return value structure
-# =============================================================================
-
-class TestBuildPermissionWarning:
-    """Tests for _build_permission_warning() return value structure."""
-
-    def test_skip_permissions_warning_uses_red(self) -> None:
-        warning = cli_args._build_permission_warning(skip_permissions=True)
-        assert warning.colour == cli_args.RED
-        assert "ENABLED" in warning.heading
-        assert any("without asking" in line for line in warning.body_lines)
-        assert "Starting in" in warning.countdown_message
-
-    def test_no_skip_permissions_warning_uses_yellow(self) -> None:
-        warning = cli_args._build_permission_warning(skip_permissions=False)
-        assert warning.colour == cli_args.YELLOW
-        assert "without" in warning.heading.lower()
-        assert any("FAIL or HANG" in line for line in warning.body_lines)
-        assert "Continuing anyway" in warning.countdown_message
-
-    def test_countdown_seconds_in_message(self) -> None:
-        """Both warning variants should reference the countdown duration."""
-        for skip in (True, False):
-            warning = cli_args._build_permission_warning(skip)
-            assert str(cli_args._WARNING_COUNTDOWN_SECONDS) in warning.countdown_message
 
 
 # =============================================================================

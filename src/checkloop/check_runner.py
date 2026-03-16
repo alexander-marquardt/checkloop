@@ -19,10 +19,13 @@ from checkloop.checks import (
     FULL_CODEBASE_SCOPE,
     looks_dangerous,
 )
+from checkloop.commit_message import generate_commit_message
 from checkloop.git import (
     compute_change_stats,
+    get_uncommitted_diff,
     git_commit_all,
     git_head_sha,
+    has_uncommitted_changes,
 )
 from checkloop.process import KILL_REASON_MEMORY, CheckResult, run_claude
 from checkloop.terminal import (
@@ -38,23 +41,22 @@ from checkloop.terminal import (
 logger = logging.getLogger(__name__)
 
 
+def _commit_with_generated_message(workdir: str, args: argparse.Namespace, fallback: str) -> None:
+    """Commit any uncommitted changes using a Claude-generated message, or fallback."""
+    if not has_uncommitted_changes(workdir):
+        return
+    diff = get_uncommitted_diff(workdir)
+    skip = getattr(args, "dangerously_skip_permissions", False)
+    model = getattr(args, "model", None)
+    message = generate_commit_message(diff, workdir, skip_permissions=skip, model=model) or fallback
+    git_commit_all(workdir, message)
+
+
 # --- Per-check outcome tracking -----------------------------------------------
 
 @dataclass
 class CheckOutcome:
-    """Result of a single check execution, used for the post-run summary.
-
-    Attributes:
-        check_id: Short identifier of the check (e.g. ``"readability"``).
-        label: Human-readable check name shown in banners.
-        cycle: Which cycle this check ran in (1-based).
-        exit_code: Subprocess exit code (0 = success).
-        kill_reason: One of the ``KILL_REASON_*`` constants if killed, else None.
-        made_changes: Whether the check modified any tracked files.
-        lines_changed: Total insertions + deletions, or None if unavailable.
-        change_pct: Percentage of total tracked lines changed, or None.
-        duration_seconds: Wall-clock time the check took.
-    """
+    """Result of a single check execution, used for the post-run summary."""
 
     check_id: str
     label: str
@@ -181,9 +183,8 @@ def _run_memory_fix(
             print_status("Memory-fix check completed.", GREEN)
 
         if is_git:
-            committed = git_commit_all(workdir, "Commit uncommitted changes left by memory-fix check")
-            if committed:
-                print_status("  Committed memory-fix changes.", GREEN)
+            _commit_with_generated_message(workdir, args, "Fix excessive memory usage in test suite")
+            print_status("  Committed memory-fix changes.", GREEN)
     except Exception as exc:
         logger.error("Memory-fix follow-up failed: %s", exc, exc_info=True)
         print_status("Memory-fix follow-up failed — continuing with remaining checks.", YELLOW)
@@ -264,12 +265,7 @@ def run_single_check(
         print_status(f"Check '{check['id']}' exited with code {result.exit_code}. Continuing...", YELLOW)
 
     if is_git:
-        committed = git_commit_all(
-            workdir,
-            f"Commit uncommitted changes left by '{check['id']}' check",
-        )
-        if not committed:
-            logger.debug("No uncommitted changes left after check '%s'", check["id"])
+        _commit_with_generated_message(workdir, args, f"Apply {check['id']} check improvements")
     made_changes, lines_changed, change_pct = _report_check_changes(workdir, check["id"], sha_before)
     elapsed = time.time() - check_start
     logger.info("Check '%s' completed: made_changes=%s, lines_changed=%s, duration=%.1fs",

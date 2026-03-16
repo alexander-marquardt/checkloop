@@ -316,10 +316,10 @@ CHECKS: list[CheckDef] = [
             "Fix inconsistencies and document any breaking changes."
         ),
     },
-    # --- On-demand only (not in any tier) ---
-    # Positioned right before test-validate so it runs AFTER all other checks.
-    # This ensures cleanup-ai-slop gets the final word — earlier checks (tests,
-    # docs, errors) tend to re-introduce slop that this check removes.
+    # --- Exhaustive tier — positioned last so it runs AFTER all other checks ---
+    # Earlier checks (tests, docs, errors) tend to re-introduce slop, so
+    # cleanup-ai-slop runs last to get the final word.  It can also be invoked
+    # explicitly via --checks cleanup-ai-slop on any tier.
     {
         "id": "cleanup-ai-slop",
         "label": "Remove AI-Generated Code Slop",

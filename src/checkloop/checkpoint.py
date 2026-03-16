@@ -33,24 +33,6 @@ class CheckpointData(TypedDict):
 
     Persisted after each completed check so the suite can resume from
     the exact point of interruption on the next run.
-
-    Attributes:
-        version: Checkpoint format version (currently 1).
-        started_at: ISO 8601 timestamp when the suite was originally started.
-        workdir: Absolute path to the project directory being reviewed.
-        check_ids: Full ordered list of selected check IDs for this run.
-        num_cycles: Total number of cycles configured.
-        convergence_threshold: Percentage threshold for early-stop convergence.
-        current_cycle: The cycle number that was in progress (1-based).
-        current_check_index: 0-based index of the next check to run within
-            *active_check_ids* for the current cycle.
-        active_check_ids: Ordered list of check IDs scheduled for the current
-            cycle (may differ from *check_ids* if no-op checks were filtered out).
-        changed_this_cycle: Check IDs that produced changes so far this cycle.
-        previously_changed_ids: Check IDs that made changes in the prior cycle,
-            or ``None`` if this is the first cycle.
-        prev_change_pct: Percentage of lines changed in the prior cycle, or
-            ``None`` if not yet computed.
     """
 
     version: int
@@ -150,7 +132,6 @@ _CHECKPOINT_INT_FIELDS: list[tuple[str, int]] = [
 """Integer fields and their minimum valid values for checkpoint validation."""
 
 _CHECKPOINT_LIST_FIELDS: list[str] = ["check_ids", "active_check_ids", "changed_this_cycle"]
-"""Fields that must be lists for checkpoint validation."""
 
 
 def _is_strict_int(value: object, min_value: int = 0) -> bool:

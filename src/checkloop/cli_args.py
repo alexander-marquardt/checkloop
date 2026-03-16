@@ -14,7 +14,6 @@ import shutil
 import sys
 import time
 from pathlib import Path
-from typing import NamedTuple
 
 from checkloop.checks import (
     CHECK_IDS,
@@ -87,7 +86,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--checks", nargs="+", choices=CHECK_IDS, default=None,
         metavar="CHECK",
-        help="Manually select checks (overrides --level)",
+        help="Manually select checks. Alone: runs only these checks. Combined with --level: adds these checks to the tier.",
     )
     parser.add_argument(
         "--all-checks", action="store_true",
@@ -244,6 +243,13 @@ def resolve_changed_files_prefix(args: argparse.Namespace, workdir: str) -> str:
 
 
 def resolve_selected_checks(args: argparse.Namespace) -> list[CheckDef]:
+    """Resolve CLI flags to an ordered list of CheckDef objects.
+
+    When both ``--level`` and ``--checks`` are specified, the manual check
+    list is *added* to the tier rather than replacing it.  This lets the user
+    append a single out-of-tier check (e.g. ``--checks cleanup-ai-slop``) to
+    a standard tier without rewriting the full check list.
+    """
     if args.all_checks:
         selected_ids = set(TIERS["exhaustive"])
     elif args.checks and args.level:
@@ -264,11 +270,10 @@ _PYTHON_PROJECT_MARKERS: list[str] = ["pyproject.toml", "setup.py", "setup.cfg",
 
 
 def _is_python_project(workdir: str) -> bool:
-    """Return True if the target directory looks like a Python project."""
     root = Path(workdir)
     if any((root / marker).exists() for marker in _PYTHON_PROJECT_MARKERS):
         return True
-    return bool(list(root.glob("*.py")))
+    return any(root.glob("*.py"))
 
 
 def warn_if_mypy_unavailable(workdir: str) -> None:
@@ -287,58 +292,36 @@ def warn_if_mypy_unavailable(workdir: str) -> None:
 _WARNING_COUNTDOWN_SECONDS = 5  # countdown seconds before starting review
 
 
-class _PermissionWarning(NamedTuple):
-    """Components of the pre-run permission warning message."""
-
-    colour: str
-    heading: str
-    body_lines: list[str]
-    countdown_message: str
-
-
-def _build_permission_warning(skip_permissions: bool) -> _PermissionWarning:
-    if skip_permissions:
-        return _PermissionWarning(
-            colour=RED,
-            heading="WARNING: --dangerously-skip-permissions is ENABLED",
-            body_lines=[
-                "Claude Code will execute ALL actions without asking for approval.",
-                "This includes writing files, running shell commands, and deleting code.",
-                "Make sure you have committed or backed up your work before proceeding.",
-            ],
-            countdown_message=f"Starting in {_WARNING_COUNTDOWN_SECONDS} seconds (Ctrl+C to abort)...",
-        )
-    return _PermissionWarning(
-        colour=YELLOW,
-        heading="WARNING: Running without --dangerously-skip-permissions",
-        body_lines=[
-            "Claude Code requires interactive permission prompts to write files,",
-            "but checkloop cannot relay those prompts (stdin is disconnected).",
-            "Checks that modify code will likely FAIL or HANG.",
-            "",
-            "Re-run with:",
-            f"  {BOLD}checkloop --dangerously-skip-permissions ...{RESET}{YELLOW}",
-        ],
-        countdown_message=f"Continuing anyway in {_WARNING_COUNTDOWN_SECONDS} seconds (Ctrl+C to abort)...",
-    )
-
 
 def display_pre_run_warning(skip_permissions: bool) -> None:
-    """Show a warning about permissions and count down before starting.
+    """Enforce --dangerously-skip-permissions and show a countdown warning.
 
-    With ``--dangerously-skip-permissions``, warns that all actions will run
-    without approval.  Without it, warns that checks will likely hang because
-    checkloop cannot relay interactive permission prompts.  Either way, the
-    user has 5 seconds to Ctrl+C before the suite begins.
+    Exits immediately if ``--dangerously-skip-permissions`` is not set —
+    checkloop cannot relay interactive permission prompts, so running without
+    it wastes tokens on checks that will fail or hang.
+
+    With the flag set, shows a red warning and gives the user 5 seconds to
+    Ctrl+C before the suite begins.
     """
-    warning = _build_permission_warning(skip_permissions)
+    if not skip_permissions:
+        print(f"\n{RED}{BOLD}{'=' * RULE_WIDTH}")
+        print(f"  ERROR: --dangerously-skip-permissions is required")
+        print(f"{'=' * RULE_WIDTH}{RESET}")
+        print(f"{RED}  checkloop cannot relay interactive permission prompts (stdin is disconnected).")
+        print(f"  Without this flag, checks that modify code will fail or hang, wasting tokens.")
+        print(f"")
+        print(f"  Re-run with:")
+        print(f"    {BOLD}checkloop --dangerously-skip-permissions ...{RESET}{RED}")
+        print(f"{RESET}")
+        sys.exit(1)
 
-    print(f"\n{warning.colour}{BOLD}{'=' * RULE_WIDTH}")
-    print(f"  {warning.heading}")
+    print(f"\n{RED}{BOLD}{'=' * RULE_WIDTH}")
+    print(f"  WARNING: --dangerously-skip-permissions is ENABLED")
     print(f"{'=' * RULE_WIDTH}{RESET}")
-    for line in warning.body_lines:
-        print(f"{warning.colour}  {line}{RESET}")
-    print(f"\n{warning.colour}  {warning.countdown_message}{RESET}")
+    print(f"{RED}  Claude Code will execute ALL actions without asking for approval.")
+    print(f"  This includes writing files, running shell commands, and deleting code.")
+    print(f"  Make sure you have committed or backed up your work before proceeding.{RESET}")
+    print(f"\n{RED}  Starting in {_WARNING_COUNTDOWN_SECONDS} seconds (Ctrl+C to abort)...{RESET}")
 
     try:
         time.sleep(_WARNING_COUNTDOWN_SECONDS)

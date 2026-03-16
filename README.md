@@ -141,7 +141,7 @@ uv run checkloop --cycles 5 --convergence-threshold 0.5
 --dir, -d DIR          Project directory to check (required)
 --level, -l TIER       Check depth: basic, thorough, exhaustive (default: basic)
 --checks CHECK [...]   Manually select checks (overrides --level)
---all-checks           Run all 17 checks (same as --level exhaustive)
+--all-checks           Run all 18 checks (same as --level exhaustive)
 --cycles, -c N         Repeat the full suite N times (default: 1)
 --idle-timeout SECS    Kill after N seconds of silence (default: 300)
 --check-timeout SECS   Hard wall-clock limit per check (default: 0 = no limit).

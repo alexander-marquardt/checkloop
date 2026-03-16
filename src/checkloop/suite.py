@@ -116,14 +116,11 @@ def _commit_uncommitted_changes(workdir: str, skip_permissions: bool, model: str
         return
 
     diff = get_uncommitted_diff(workdir)
-    if not diff:
-        # Untracked files only — no diff content, but still worth committing.
-        message = _FALLBACK_COMMIT_MSG
-    else:
+    message = _FALLBACK_COMMIT_MSG
+    if diff:
         if len(diff) > _MAX_DIFF_LEN:
             diff = diff[:_MAX_DIFF_LEN] + f"\n\n... (truncated, {len(diff) - _MAX_DIFF_LEN} more characters)"
-        generated = generate_commit_message(diff, workdir, skip_permissions=skip_permissions, model=model)
-        message = generated if generated else _FALLBACK_COMMIT_MSG
+        message = generate_commit_message(diff, workdir, skip_permissions=skip_permissions, model=model) or _FALLBACK_COMMIT_MSG
 
     committed = git_commit_all(workdir, message)
     if committed:
@@ -236,9 +233,7 @@ def _run_single_cycle(
     """
     changed_this_cycle: set[str] = set(initial_changed or ())
     outcomes: list[CheckOutcome] = []
-    for i, check in enumerate(active_checks):
-        if i < start_index:
-            continue
+    for i, check in enumerate(active_checks[start_index:], start=start_index):
         # Only pause between checks, not before the first one we actually run.
         if i > start_index:
             time.sleep(args.pause)
@@ -375,6 +370,12 @@ def _print_cycle_summary(
 
 
 def _print_summary(outcomes: list[CheckOutcome], total_elapsed: str) -> None:
+    """Print the final summary after all cycles complete (or on interrupt/error).
+
+    Multi-cycle runs get the cross-cycle overview table (one row per cycle)
+    followed by aggregate totals.  Single-cycle runs get the per-check detail
+    table directly, since the per-cycle table would be redundant.
+    """
     if not outcomes:
         return
     summary_dicts = [outcome.to_summary_row() for outcome in outcomes]

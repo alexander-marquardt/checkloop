@@ -259,7 +259,7 @@ class TestMemoryKillFeedbackLoop:
         args = make_suite_args(dry_run=False, max_memory_mb=4096)
 
         with mock.patch.object(check_runner, "_invoke_claude", return_value=CheckResult(exit_code=0)), \
-             mock.patch.object(check_runner, "git_commit_all", return_value=True) as mock_commit:
+             mock.patch.object(check_runner, "_commit_with_generated_message") as mock_commit:
             check_runner._run_memory_fix("/tmp", args, is_git=True)
             mock_commit.assert_called_once()
         out = capsys.readouterr().out
