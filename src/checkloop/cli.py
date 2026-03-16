@@ -42,6 +42,7 @@ from checkloop.cli_args import (
     resolve_selected_checks,
     resolve_working_directory,
     validate_arguments,
+    warn_if_mypy_unavailable,
 )
 from checkloop.monitoring import cleanup_all_sessions
 from checkloop.suite import run_suite_with_error_handling
@@ -220,6 +221,7 @@ def main() -> None:
         convergence_threshold=convergence_threshold,
         max_memory_mb=args.max_memory_mb, check_timeout=args.check_timeout,
     )
+    warn_if_mypy_unavailable(workdir)
 
     check_names = ", ".join(check["id"] for check in selected_checks)
     logger.info(

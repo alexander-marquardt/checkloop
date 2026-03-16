@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -165,10 +166,10 @@ def build_argument_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--model", "-m", default=None, metavar="MODEL",
+        "--model", "-m", default="sonnet", metavar="MODEL",
         help=(
             "Claude model to use. Accepts aliases (e.g. 'sonnet', 'opus') or full model IDs "
-            "(e.g. 'claude-sonnet-4-6'). Defaults to Claude Code's own default if not set."
+            "(e.g. 'claude-sonnet-4-6'). Defaults to 'sonnet'."
         ),
     )
 
@@ -262,6 +263,30 @@ def resolve_selected_checks(args: argparse.Namespace) -> list[CheckDef]:
     selected = [check for check in CHECKS if check["id"] in selected_ids]
     logger.info("Selected %d checks: %s", len(selected), [check["id"] for check in selected])
     return selected
+
+
+# --- Mypy availability check --------------------------------------------------
+
+_PYTHON_PROJECT_MARKERS: list[str] = ["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt"]
+
+
+def _is_python_project(workdir: str) -> bool:
+    """Return True if the target directory looks like a Python project."""
+    root = Path(workdir)
+    if any((root / marker).exists() for marker in _PYTHON_PROJECT_MARKERS):
+        return True
+    return bool(list(root.glob("*.py")))
+
+
+def warn_if_mypy_unavailable(workdir: str) -> None:
+    """Print a warning if the target is a Python project but mypy is not on PATH."""
+    if not _is_python_project(workdir):
+        return
+    if shutil.which("mypy") is None:
+        print(f"\n{YELLOW}{BOLD}Note: mypy not found on PATH.{RESET}")
+        print(f"{YELLOW}  This looks like a Python project. The test-fix and test-validate checks")
+        print(f"  will skip mypy type checking until it is available.")
+        print(f"  To enable it, add mypy as a dev dependency in your project.{RESET}")
 
 
 # --- Pre-run warning ----------------------------------------------------------

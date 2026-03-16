@@ -168,7 +168,7 @@ uv run checkloop --cycles 5 --convergence-threshold 0.5
                        unnecessary logging, misleading error handling, etc.
 --model, -m MODEL      Claude model to use. Accepts aliases ('sonnet', 'opus')
                        or full model IDs ('claude-sonnet-4-6'). Defaults to
-                       Claude Code's own default if not set.
+                       'sonnet'.
 ```
 
 ## How It Works
