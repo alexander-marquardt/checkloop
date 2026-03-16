@@ -167,9 +167,10 @@ class TestRunClaude:
         mock_proc.wait.return_value = None
         mock_proc.returncode = 0
 
-        with mock.patch.object(process, "_spawn_claude_process", return_value=mock_proc):
-            with mock.patch.object(process, "_stream_process_output", return_value=(time.time(), None)):
-                result = process.run_claude("prompt", "/tmp", dry_run=False)
+        with mock.patch.object(process, "_spawn_claude_process", return_value=mock_proc), \
+             mock.patch.object(process, "_stream_process_output", return_value=(time.time(), None)), \
+             mock.patch.object(process, "_kill_process_group"):
+            result = process.run_claude("prompt", "/tmp", dry_run=False)
         assert result.exit_code == 0
         assert result.kill_reason is None
 
@@ -194,11 +195,12 @@ class TestRunClaude:
     def test_nonzero_exit(self, capsys: pytest.CaptureFixture[str]) -> None:
         mock_proc = mock.MagicMock()
         mock_proc.returncode = 1
+        mock_proc.wait.return_value = None
 
-        with mock.patch.object(process, "_spawn_claude_process", return_value=mock_proc):
-            with mock.patch.object(process, "_stream_process_output", return_value=(time.time(), None)):
-                mock_proc.wait.return_value = None
-                result = process.run_claude("prompt", "/tmp", dry_run=False)
+        with mock.patch.object(process, "_spawn_claude_process", return_value=mock_proc), \
+             mock.patch.object(process, "_stream_process_output", return_value=(time.time(), None)), \
+             mock.patch.object(process, "_kill_process_group"):
+            result = process.run_claude("prompt", "/tmp", dry_run=False)
         assert result.exit_code == 1
         out = capsys.readouterr().out
         assert "exited with code 1" in out
@@ -218,10 +220,11 @@ class TestRunClaude:
         mock_proc.returncode = -9
         mock_proc.wait.return_value = None
 
-        with mock.patch.object(process, "_spawn_claude_process", return_value=mock_proc):
-            with mock.patch.object(process, "_stream_process_output",
-                                   return_value=(time.time(), process.KILL_REASON_MEMORY)):
-                result = process.run_claude("prompt", "/tmp")
+        with mock.patch.object(process, "_spawn_claude_process", return_value=mock_proc), \
+             mock.patch.object(process, "_stream_process_output",
+                               return_value=(time.time(), process.KILL_REASON_MEMORY)), \
+             mock.patch.object(process, "_kill_process_group"):
+            result = process.run_claude("prompt", "/tmp")
         assert result.kill_reason == process.KILL_REASON_MEMORY
 
 
