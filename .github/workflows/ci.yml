@@ -22,7 +22,7 @@ jobs:
         run: uv sync
 
       - name: Type check
-        run: uv run python -m py_compile src/checkloop/cli.py
+        run: uv run python -m mypy src/checkloop
 
       - name: Verify CLI entry point
         run: uv run checkloop --help
