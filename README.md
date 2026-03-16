@@ -51,8 +51,8 @@ uv run checkloop --dir ~/my-project --changed-only develop
 # See what Claude is doing in detail
 uv run checkloop --dir ~/my-project -v
 
-# Clean up AI-generated code slop (on-demand, not part of any tier)
-uv run checkloop --dir ~/my-project --cleanup-ai-slop
+# Add a specific check on top of a tier
+uv run checkloop --dir ~/my-project --level thorough --checks cleanup-ai-slop
 ```
 
 To make `checkloop` available globally (without `uv run`):
@@ -69,7 +69,7 @@ Choose a check depth with `--level`:
 |------|--------|-------------|
 | **basic** (default) | 6 checks | Core code quality — readability, DRY, tests, docs (plus test-fix/test-validate bookends) |
 | **thorough** | 10 checks | Adds security, performance, error handling, type safety |
-| **exhaustive** | 17 checks | Everything — includes edge cases, complexity, deps, logging, concurrency, a11y, API design |
+| **exhaustive** | 18 checks | Everything — includes edge cases, complexity, deps, logging, concurrency, a11y, API design, and AI slop cleanup |
 
 Every tier automatically includes the `test-fix` (first) and `test-validate` (last) bookend checks to ensure the test suite is green before and after the review.
 
@@ -96,7 +96,7 @@ Use `--checks` to pick individual checks, or `--all-checks` as a shortcut for `-
 | `accessibility` | exhaustive | Semantic HTML, ARIA, keyboard nav, colour contrast (WCAG AA). |
 | `api-design` | exhaustive | Consistent naming, HTTP methods, error formats, pagination. |
 | `test-validate` | bookend | Re-runs the full test suite after all checks. Fixes any regressions. Always runs last. |
-| `cleanup-ai-slop` | on-demand | Removes AI-generated noise: redundant docstrings, unnecessary logging, misleading error handling, coverage-driven tests. Only runs when explicitly requested via `--cleanup-ai-slop`. Runs last (before test-validate) so it gets the final word on slop that earlier checks re-introduce. |
+| `cleanup-ai-slop` | exhaustive | Removes AI-generated noise: redundant docstrings, unnecessary logging, misleading error handling, coverage-driven tests. Runs last (before test-validate) so it gets the final word on slop that earlier checks re-introduce. |
 
 ## Why Multi-Check Works
 
@@ -163,9 +163,6 @@ uv run checkloop --cycles 5 --convergence-threshold 0.5
                        Stop cycling early when less than PCT% of total lines
                        changed in a cycle (default: 0.1). Requires a git repo.
                        Set to 0 to disable convergence detection.
---cleanup-ai-slop      Add the cleanup-ai-slop check to the selected tier.
-                       Removes AI-generated noise: redundant docstrings,
-                       unnecessary logging, misleading error handling, etc.
 --model, -m MODEL      Claude model to use. Accepts aliases ('sonnet', 'opus')
                        or full model IDs ('claude-sonnet-4-6'). Defaults to
                        'sonnet'.

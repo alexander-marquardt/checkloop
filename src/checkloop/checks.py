@@ -402,7 +402,7 @@ _CORE_THOROUGH: list[str] = ["security", "perf", "errors", "types"]
 _CORE_EXHAUSTIVE: list[str] = ["edge-cases", "complexity", "deps", "logging", "concurrency", "accessibility", "api-design"]
 
 # Checks that are only run when explicitly requested via --checks, never included in tiers.
-_ON_DEMAND_ONLY: set[str] = {"cleanup-ai-slop"}
+_ON_DEMAND_ONLY: set[str] = set()
 
 # Public tier lists — used by --level and exposed for programmatic access.
 TIER_BASIC: list[str] = _BOOKEND_FIRST_CHECKS + _CORE_BASIC + _BOOKEND_LAST_CHECKS

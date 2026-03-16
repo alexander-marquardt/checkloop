@@ -70,7 +70,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
             "  checkloop --dir ~/proj --level exhaustive --cycles 2",
             "  checkloop --dir ~/proj --checks readability security",
             "  checkloop --dir ~/proj --all-checks                # same as --level exhaustive",
-            "  checkloop --dir ~/proj --cleanup-ai-slop           # add slop removal to selected tier",
+            "  checkloop --dir ~/proj --level thorough --checks cleanup-ai-slop  # tier + extra check",
             "  checkloop --dir ~/proj --dry-run",
         ]),
     )
@@ -155,14 +155,6 @@ def build_argument_parser() -> argparse.ArgumentParser:
             f"Hard wall-clock timeout per check in seconds "
             f"(default: {DEFAULT_CHECK_TIMEOUT}, 0 = no limit). "
             "Unlike --idle-timeout, this kills even actively-running checks."
-        ),
-    )
-    parser.add_argument(
-        "--cleanup-ai-slop", action="store_true",
-        help=(
-            "Add the cleanup-ai-slop check to the selected checks. "
-            "This check actively removes AI-generated code noise "
-            "(redundant docstrings, unnecessary logging, misleading error handling, etc.)."
         ),
     )
     parser.add_argument(
@@ -254,12 +246,13 @@ def resolve_changed_files_prefix(args: argparse.Namespace, workdir: str) -> str:
 def resolve_selected_checks(args: argparse.Namespace) -> list[CheckDef]:
     if args.all_checks:
         selected_ids = set(TIERS["exhaustive"])
+    elif args.checks and args.level:
+        # Both specified: --checks adds to the tier rather than replacing it.
+        selected_ids = set(TIERS[args.level]) | set(args.checks)
     elif args.checks:
         selected_ids = set(args.checks)
     else:
         selected_ids = set(TIERS[args.level or DEFAULT_TIER])
-    if args.cleanup_ai_slop:
-        selected_ids.add("cleanup-ai-slop")
     selected = [check for check in CHECKS if check["id"] in selected_ids]
     logger.info("Selected %d checks: %s", len(selected), [check["id"] for check in selected])
     return selected

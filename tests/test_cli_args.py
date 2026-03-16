@@ -43,7 +43,6 @@ class TestBuildArgumentParser:
         assert ns.dry_run is False
         assert ns.verbose is False
         assert ns.pause == cli_args.DEFAULT_PAUSE_SECONDS
-        assert ns.cleanup_ai_slop is False
 
     def test_dir_is_required(self) -> None:
         with pytest.raises(SystemExit):
@@ -245,14 +244,14 @@ class TestResolveSelectedChecks:
         result = cli_args.resolve_selected_checks(args)
         assert len(result) == len(checks.TIER_EXHAUSTIVE)
 
-    def test_checks_override_level(self) -> None:
-        args = argparse.Namespace(all_checks=False, checks=["security"], level="exhaustive", cleanup_ai_slop=False)
+    def test_checks_alone_ignores_default_level(self) -> None:
+        args = argparse.Namespace(all_checks=False, checks=["security"], level=None)
         result = cli_args.resolve_selected_checks(args)
         assert len(result) == 1
         assert result[0]["id"] == "security"
 
-    def test_cleanup_ai_slop_flag_adds_check(self) -> None:
-        args = argparse.Namespace(all_checks=False, checks=None, level="basic", cleanup_ai_slop=True)
+    def test_checks_and_level_are_additive(self) -> None:
+        args = argparse.Namespace(all_checks=False, checks=["cleanup-ai-slop"], level="basic")
         result = cli_args.resolve_selected_checks(args)
         ids = [p["id"] for p in result]
         assert "cleanup-ai-slop" in ids
@@ -264,11 +263,12 @@ class TestResolveSelectedChecks:
         result = cli_args.resolve_selected_checks(args)
         assert len(result) == len(checks.TIER_EXHAUSTIVE)
 
-    def test_explicit_checks_override_level(self) -> None:
-        args = make_mock_cli_args(all_checks=False, checks=["security"], level="basic")
+    def test_checks_and_level_additive_preserves_order(self) -> None:
+        args = make_mock_cli_args(all_checks=False, checks=["cleanup-ai-slop"], level="basic")
         result = cli_args.resolve_selected_checks(args)
-        assert len(result) == 1
-        assert result[0]["id"] == "security"
+        ids = [p["id"] for p in result]
+        assert "cleanup-ai-slop" in ids
+        assert ids.index("cleanup-ai-slop") > ids.index("readability")
 
     def test_default_tier_when_nothing_specified(self) -> None:
         args = make_mock_cli_args(all_checks=False, checks=None, level=None)
@@ -493,17 +493,3 @@ class TestResolveSelectedChecksOrdering:
         assert ids.index("readability") < ids.index("tests")
         assert ids.index("tests") < ids.index("security")
 
-    def test_cleanup_ai_slop_with_explicit_checks(self) -> None:
-        """--cleanup-ai-slop combined with --checks adds the check while preserving order."""
-        args = make_mock_cli_args(
-            all_checks=False, checks=["readability", "dry"], level=None,
-            cleanup_ai_slop=True,
-        )
-        result = cli_args.resolve_selected_checks(args)
-        ids = [c["id"] for c in result]
-        assert "cleanup-ai-slop" in ids
-        assert "readability" in ids
-        assert "dry" in ids
-        # cleanup-ai-slop is after readability/dry in CHECKS ordering (runs last before test-validate)
-        assert ids.index("cleanup-ai-slop") > ids.index("readability")
-        assert ids.index("cleanup-ai-slop") > ids.index("dry")
