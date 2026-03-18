@@ -449,6 +449,12 @@ def _execute_claude_process(
     check_timeout: int = 0,
     max_memory_mb: int = 0,
 ) -> CheckResult:
+    """Spawn the Claude subprocess, stream its output, and clean up on exit.
+
+    This is the private implementation of ``run_claude`` after the dry-run and
+    logging setup are handled.  It is split out so that ``run_claude`` can
+    return early for dry runs without duplicating the cleanup logic.
+    """
     process = _spawn_claude_process(cmd, workdir)
     logger.info("Subprocess started: pid=%d, session_id=%d", process.pid, process.pid)
     kill_reason: str | None = None

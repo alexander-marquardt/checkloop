@@ -177,6 +177,12 @@ def git_commit_all(workdir: str, message: str) -> bool:
 # --- Diff statistics ----------------------------------------------------------
 
 def _parse_shortstat(text: str) -> int:
+    """Parse ``git diff --shortstat`` output and return total lines changed.
+
+    Returns ``insertions + deletions`` rather than just one or the other because
+    convergence detection cares about total *churn* — a rename that preserves
+    line count but rewrites every line still represents significant change.
+    """
     insertions = deletions = 0
     match = _RE_INSERTIONS.search(text)
     if match:
@@ -272,11 +278,21 @@ def _count_tracked_lines(workdir: str) -> int:
     return total_clamped
 
 
-# Cache: resolved workdir path → total tracked line count. Avoids re-scanning per check.
+# Cache: resolved workdir path → total tracked line count.
+# Populated once per process invocation and never updated, so all convergence
+# percentage calculations use the same denominator throughout a run.  This is
+# intentional: we want to measure "what fraction of the original codebase was
+# touched this cycle", not a moving target that shrinks as files are deleted.
 _total_lines_cache: dict[str, int] = {}
 
 
 def _cached_total_tracked_lines(workdir: str) -> int:
+    """Return the total tracked line count, computing it once and caching for the run.
+
+    The cache is keyed by resolved workdir path and is never invalidated during
+    a run.  Using a fixed baseline means convergence percentages stay comparable
+    across cycles even if files are added or removed.
+    """
     try:
         cache_key = str(Path(workdir).resolve())
     except OSError as exc:

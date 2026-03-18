@@ -109,6 +109,7 @@ def find_session_pids(session_id: int) -> list[int]:
 # --- Orphan and straggler cleanup --------------------------------------------
 
 def kill_pids(pids: list[int], sig: signal.Signals = signal.SIGKILL) -> int:
+    """Send *sig* to each PID in *pids*. Returns the count successfully signalled."""
     killed = 0
     for pid in pids:
         try:
@@ -186,6 +187,12 @@ def _warn_and_kill_orphan_processes(child_pids: list[int]) -> None:
 
 
 def _sweep_previous_sessions() -> None:
+    """Kill stragglers from all previously tracked sessions and prune the watch list.
+
+    Sessions where stragglers were found (and killed) are kept in ``previous_session_ids``
+    so they are re-checked on the next sweep.  Sessions with no remaining processes are
+    dropped from the list — once a session is fully clean it no longer needs monitoring.
+    """
     still_active: list[int] = []
     for sid in previous_session_ids:
         try:

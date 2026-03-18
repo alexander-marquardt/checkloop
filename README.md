@@ -33,7 +33,7 @@ uv run checkloop --dir ~/my-project
 # Use the thorough tier for deeper checks
 uv run checkloop --dir ~/my-project --level thorough
 
-# Exhaustive — all 17 checks, repeat twice
+# Exhaustive — all 18 checks, repeat twice
 uv run checkloop --dir ~/my-project --level exhaustive --cycles 2
 
 # Pick specific checks manually (overrides tier)
