@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import subprocess
 import sys
 import time
 from collections.abc import Callable
@@ -417,9 +418,7 @@ def _print_push_reminder(workdir: str, dry_run: bool) -> None:
     if dry_run or not is_git_repo(workdir):
         return
 
-    import subprocess as _sp  # local import to avoid top-level side-effect risk
-
-    result = _sp.run(
+    result = subprocess.run(
         ["git", "log", "--oneline", "@{u}..HEAD"],
         cwd=workdir, capture_output=True, text=True,
     )

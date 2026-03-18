@@ -292,7 +292,6 @@ def warn_if_mypy_unavailable(workdir: str) -> None:
 _WARNING_COUNTDOWN_SECONDS = 5  # countdown seconds before starting review
 
 
-
 def display_pre_run_warning(skip_permissions: bool) -> None:
     """Enforce --dangerously-skip-permissions and show a countdown warning.
 
