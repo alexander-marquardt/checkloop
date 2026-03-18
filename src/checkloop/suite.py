@@ -407,6 +407,43 @@ def _print_summary(outcomes: list[CheckOutcome], total_elapsed: str) -> None:
 
 # --- Error-handling wrapper ---------------------------------------------------
 
+def _print_push_reminder(workdir: str, dry_run: bool) -> None:
+    """Print post-run instructions for reviewing and pushing local commits.
+
+    Only shown when the target directory is a git repo and not a dry run.
+    Detects unpushed commits so the user knows exactly what needs reviewing.
+    """
+    if dry_run or not is_git_repo(workdir):
+        return
+
+    import subprocess as _sp  # local import to avoid top-level side-effect risk
+
+    result = _sp.run(
+        ["git", "log", "--oneline", "@{u}..HEAD"],
+        cwd=workdir, capture_output=True, text=True,
+    )
+    unpushed = [line for line in result.stdout.strip().splitlines() if line]
+
+    print(f"\n{BOLD}{CYAN}{'─' * 72}{RESET}")
+    print(f"{BOLD}{CYAN}  Review & Push{RESET}")
+    print(f"{BOLD}{CYAN}{'─' * 72}{RESET}\n")
+
+    if not unpushed:
+        print(f"  {YELLOW}No unpushed local commits found.{RESET}")
+        print(f"  {YELLOW}(The branch may already be up to date with the remote.){RESET}\n")
+    else:
+        print(f"  {GREEN}{len(unpushed)} local commit(s) are ready to review:{RESET}\n")
+        for line in unpushed:
+            print(f"    {DIM}{line}{RESET}")
+
+    print(f"\n  {BOLD}To review what changed:{RESET}")
+    print(f"    git log --oneline @{{u}}..HEAD   # list unpushed commits")
+    print(f"    git diff @{{u}}..HEAD            # full diff vs remote")
+    print(f"    git show <sha>                  # inspect a single commit")
+    print(f"\n  {BOLD}When you're ready to push:{RESET}")
+    print(f"    git push\n")
+
+
 def run_suite_with_error_handling(
     selected_checks: list[CheckDef],
     num_cycles: int,
@@ -438,6 +475,7 @@ def run_suite_with_error_handling(
         logger.warning("Suite interrupted by user after %s", elapsed)
         print_status(f"\nInterrupted after {elapsed}. Partial results may have been applied.", YELLOW)
         _print_summary(all_outcomes, elapsed)
+        _print_push_reminder(workdir, args.dry_run)
         sys.exit(130)
     except FileNotFoundError as exc:
         logger.error("Required external tool not found: %s", exc, exc_info=True)
@@ -447,9 +485,11 @@ def run_suite_with_error_handling(
         elapsed = format_duration(time.time() - suite_start_time)
         print_status(f"\nUnexpected error after {elapsed}. Partial results may have been applied.", RED)
         _print_summary(all_outcomes, elapsed)
+        _print_push_reminder(workdir, args.dry_run)
         raise
     suite_elapsed = format_duration(time.time() - suite_start_time)
     logger.info("Suite completed: elapsed=%s, checks=%d, cycles=%d",
                 suite_elapsed, len(selected_checks), num_cycles)
     _print_summary(all_outcomes, suite_elapsed)
     print_banner(f"All done! ({suite_elapsed} total)", GREEN)
+    _print_push_reminder(workdir, args.dry_run)
