@@ -441,6 +441,8 @@ FULL_CODEBASE_SCOPE: str = (
     "serialization formats — changing a field from str to int or adding/removing fields breaks "
     "existing indexed data and causes bulk index errors in tests. "
     "Every change should be clearly justified — if in doubt, leave the existing code alone. "
+    "IMPORTANT: Do NOT run 'git push' or push commits to any remote. "
+    "All commits must remain local — the human will push when ready. "
 )
 """Default scope prefix prepended to every check when --changed-only is not used."""
 
@@ -450,7 +452,8 @@ COMMIT_MESSAGE_INSTRUCTIONS: str = (
     "- Do NOT mention Claude, AI, checkloop, or any AI tools anywhere in the message\n"
     "- Do NOT add Co-Authored-By or Signed-off-by trailers\n"
     "- Do NOT use generic messages like 'test-fix', 'cleanup', or single-word summaries\n"
-    "- Use clear, professional commit message style"
+    "- Use clear, professional commit message style\n"
+    "- Do NOT run 'git push' — commits must stay local for the human to review and push"
 )
 """Instructions appended to every check prompt to enforce clean commit messages."""
 
