@@ -358,6 +358,39 @@ class TestDetectDefaultBranchEdgeCases:
 # =============================================================================
 
 
+class TestGetUnpushedCommits:
+    """Tests for get_unpushed_commits()."""
+
+    def test_returns_commit_lines(self) -> None:
+        output = "abc123 Fix a bug\ndef456 Add feature\n"
+        with mock.patch.object(git, "_git_stdout", return_value=output):
+            result = git.get_unpushed_commits("/tmp")
+        assert result == ["abc123 Fix a bug", "def456 Add feature"]
+
+    def test_returns_empty_when_no_upstream(self) -> None:
+        """_git_stdout returns None when git log @{u}..HEAD fails (no upstream branch)."""
+        with mock.patch.object(git, "_git_stdout", return_value=None):
+            result = git.get_unpushed_commits("/tmp")
+        assert result == []
+
+    def test_returns_empty_when_all_pushed(self) -> None:
+        """Empty output means all commits have been pushed."""
+        with mock.patch.object(git, "_git_stdout", return_value=""):
+            result = git.get_unpushed_commits("/tmp")
+        assert result == []
+
+    def test_filters_blank_lines(self) -> None:
+        output = "abc123 Fix a bug\n\ndef456 Add feature\n\n"
+        with mock.patch.object(git, "_git_stdout", return_value=output):
+            result = git.get_unpushed_commits("/tmp")
+        assert result == ["abc123 Fix a bug", "def456 Add feature"]
+
+    def test_single_commit(self) -> None:
+        with mock.patch.object(git, "_git_stdout", return_value="abc1234 Initial commit"):
+            result = git.get_unpushed_commits("/tmp")
+        assert result == ["abc1234 Initial commit"]
+
+
 class TestCountTrackedLinesEdgeCases:
     """Additional edge cases for _count_tracked_lines."""
 

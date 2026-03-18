@@ -394,6 +394,49 @@ class TestRunSuiteWithErrorHandlingPartialResults:
 # Multi-cycle convergence early stop integration
 # =============================================================================
 
+# =============================================================================
+# _print_push_reminder
+# =============================================================================
+
+class TestPrintPushReminder:
+    """Tests for _print_push_reminder() post-run review instructions."""
+
+    def test_dry_run_prints_nothing(self, capsys: pytest.CaptureFixture[str]) -> None:
+        suite._print_push_reminder("/tmp", dry_run=True)
+        assert capsys.readouterr().out == ""
+
+    def test_non_git_repo_prints_nothing(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with mock.patch.object(suite, "is_git_repo", return_value=False):
+            suite._print_push_reminder("/tmp", dry_run=False)
+        assert capsys.readouterr().out == ""
+
+    def test_with_unpushed_commits_lists_them(self, capsys: pytest.CaptureFixture[str]) -> None:
+        commits = ["abc123 Fix a bug", "def456 Add a feature"]
+        with mock.patch.object(suite, "is_git_repo", return_value=True), \
+             mock.patch.object(suite, "get_unpushed_commits", return_value=commits):
+            suite._print_push_reminder("/tmp", dry_run=False)
+        out = capsys.readouterr().out
+        assert "2 local commit(s)" in out
+        assert "abc123 Fix a bug" in out
+        assert "def456 Add a feature" in out
+
+    def test_with_no_unpushed_commits_says_up_to_date(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with mock.patch.object(suite, "is_git_repo", return_value=True), \
+             mock.patch.object(suite, "get_unpushed_commits", return_value=[]):
+            suite._print_push_reminder("/tmp", dry_run=False)
+        out = capsys.readouterr().out
+        assert "No unpushed local commits" in out
+
+    def test_shows_review_and_push_instructions(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with mock.patch.object(suite, "is_git_repo", return_value=True), \
+             mock.patch.object(suite, "get_unpushed_commits", return_value=[]):
+            suite._print_push_reminder("/tmp", dry_run=False)
+        out = capsys.readouterr().out
+        assert "Review & Push" in out
+        assert "git log" in out
+        assert "git push" in out
+
+
 class TestMultiCycleConvergenceEarlyStop:
     """Integration test for convergence causing early cycle termination."""
 
