@@ -327,6 +327,18 @@ def get_changed_files(workdir: str, base_ref: str) -> list[str]:
     return files
 
 
+def get_unpushed_commits(workdir: str) -> list[str]:
+    """Return one-line descriptions of local commits not yet pushed to the remote.
+
+    Returns an empty list when there is no upstream branch or on any error,
+    which lets callers treat "no upstream" the same as "nothing to push".
+    """
+    output = _git_stdout(workdir, "log", "--oneline", "@{u}..HEAD")
+    if output is None:
+        return []
+    return [line for line in output.splitlines() if line]
+
+
 def build_changed_files_prefix(changed_files: list[str]) -> str:
     """Build a prompt prefix that restricts review to the given files.
 

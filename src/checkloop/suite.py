@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import subprocess
 import sys
 import time
 from collections.abc import Callable
@@ -29,6 +28,7 @@ from checkloop.checks import CheckDef
 from checkloop.git import (
     compute_change_stats,
     get_uncommitted_diff,
+    get_unpushed_commits,
     git_commit_all,
     git_head_sha,
     has_uncommitted_changes,
@@ -418,11 +418,7 @@ def _print_push_reminder(workdir: str, dry_run: bool) -> None:
     if dry_run or not is_git_repo(workdir):
         return
 
-    result = subprocess.run(
-        ["git", "log", "--oneline", "@{u}..HEAD"],
-        cwd=workdir, capture_output=True, text=True,
-    )
-    unpushed = [line for line in result.stdout.strip().splitlines() if line]
+    unpushed = get_unpushed_commits(workdir)
 
     print(f"\n{BOLD}{CYAN}{'─' * 72}{RESET}")
     print(f"{BOLD}{CYAN}  Review & Push{RESET}")
