@@ -37,6 +37,7 @@ from checkloop.commit_message import generate_commit_message
 from checkloop.terminal import (
     BOLD,
     CYAN,
+    DIM,
     GREEN,
     RED,
     RESET,
