@@ -9,7 +9,7 @@ Asking an AI to "review everything" spreads it thin. `checkloop` runs focused, s
 
 ## Token Usage
 
-Each check is a full Claude Code session — reading files, making edits, running tests. A basic-tier run (6 checks) on a medium-sized project typically uses 200K–500K tokens. Thorough or exhaustive runs with multiple cycles can reach several million tokens. Be careful!
+Each check is a full Claude Code session — reading files, making edits, running tests. A basic-tier run (5 checks) on a medium-sized project typically uses 200K–500K tokens. Thorough or exhaustive runs with multiple cycles can reach several million tokens. Be careful!
 
 
 ## Install
@@ -67,8 +67,8 @@ Choose a check depth with `--level`:
 
 | Tier | Checks | Description |
 |------|--------|-------------|
-| **basic** (default) | 6 checks | Core code quality — readability, DRY, tests, docs (plus test-fix/test-validate bookends) |
-| **thorough** | 10 checks | Adds security, performance, error handling, type safety |
+| **basic** (default) | 5 checks | Core code quality — readability, DRY, tests (plus test-fix/test-validate bookends) |
+| **thorough** | 11 checks | Adds docs, security, performance, error handling, type safety |
 | **exhaustive** | 18 checks | Everything — includes edge cases, complexity, deps, logging, concurrency, a11y, API design, and AI slop cleanup |
 
 Every tier automatically includes the `test-fix` (first) and `test-validate` (last) bookend checks to ensure the test suite is green before and after the review.
