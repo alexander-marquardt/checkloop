@@ -66,13 +66,12 @@ CHECKS: list[CheckDef] = [
             "related functions together and use imports to reconnect them. "
             "Apply the same standard to test files: split large test files "
             "so each module has a corresponding focused test file. "
-            "Add module-level docstrings that explain the module's purpose and design strategy. "
-            "Add class docstrings that explain intent, relationships, or non-obvious behaviour. "
-            "Do NOT add docstrings to functions whose purpose is already clear from their "
-            "name and signature — a function called get_user_by_id(user_id: int) -> User "
-            "does not need a docstring saying 'Get a user by their ID'. "
-            "Add inline comments where logic is non-obvious, but not to restate what "
-            "the code already says. "
+            "Do NOT add docstrings, comments, or type annotations to code you didn't change. "
+            "Do NOT add module-level, class, or function docstrings unless the code is "
+            "genuinely confusing without one. If the name and signature tell the story, "
+            "a docstring adds nothing — leave it out. "
+            "Do NOT add inline comments that restate what the code does. Only comment "
+            "on non-obvious design decisions or surprising behaviour. "
             "Ensure consistent formatting. "
             "Do NOT change any behaviour — only improve clarity."
         ),
@@ -137,18 +136,20 @@ CHECKS: list[CheckDef] = [
         "id": "docs",
         "label": "Documentation",
         "prompt": (
-            "Add or improve documentation: "
-            "update (or create) a README section describing what was built, "
+            "Improve documentation where it is genuinely missing and needed. "
+            "Update (or create) a README section describing what was built, "
             "and document any non-obvious environment variables or config. "
-            "Add module-level docstrings that explain the module's role, design strategy, "
-            "and how it fits into the larger system. "
-            "Add class docstrings that explain intent, usage patterns, or non-obvious behaviour. "
-            "Add function/method docstrings only where the name and signature don't tell the full "
-            "story — e.g. complex return values, side effects, important preconditions, or "
-            "non-obvious parameter semantics. "
-            "Do NOT add docstrings that merely restate the function name "
+            "The bar for adding docstrings is HIGH — most well-named code does not need them. "
+            "Only add a docstring when the name and signature leave genuine ambiguity: "
+            "complex return values, non-obvious side effects, important preconditions, "
+            "surprising parameter semantics, or design rationale that isn't evident from the code. "
+            "Do NOT add module-level, class, or function docstrings as a blanket pass — "
+            "if the code is clear without one, adding a docstring is noise, not documentation. "
+            "Do NOT add docstrings that restate the function name or signature "
             "(e.g. 'Get a user by their ID' on get_user_by_id). "
-            "Prefer comments that explain WHY and design rationale, not WHAT the code does."
+            "Do NOT add inline comments that describe what the code obviously does. "
+            "Prefer comments that explain WHY and design rationale, not WHAT the code does. "
+            "When in doubt, leave the code undocumented — clean code is its own documentation."
         ),
     },
     # --- Thorough tier ---
@@ -182,7 +183,8 @@ CHECKS: list[CheckDef] = [
             "that are called repeatedly with the same inputs — especially compiled regexes, "
             "schema introspection, and config loading. Only cache where the inputs are "
             "stable and the cache won't grow unbounded. "
-            "Fix anything significant and add a comment explaining the optimisation."
+            "Fix anything significant. Add a brief comment only if the optimisation "
+            "would be surprising to a reader — do not comment obvious improvements."
         ),
     },
     {
@@ -201,7 +203,8 @@ CHECKS: list[CheckDef] = [
             "actually performs I/O or can raise the exception you're catching. A function "
             "named create_connection() might just register a config in a dict without doing "
             "any I/O — don't assume from the name. Misleading error handling is worse than none. "
-            "Add logging only where it would help diagnose production issues."
+            "Add logging only where it would help diagnose production issues. "
+            "Do NOT add docstrings or comments to code you didn't change."
         ),
     },
     {
@@ -401,8 +404,8 @@ CHECK_IDS: list[str] = [check["id"] for check in CHECKS]
 
 _BOOKEND_FIRST_CHECKS: list[str] = ["test-fix"]
 _BOOKEND_LAST_CHECKS: list[str] = ["test-validate"]
-_CORE_BASIC: list[str] = ["readability", "dry", "tests", "docs"]
-_CORE_THOROUGH: list[str] = ["security", "perf", "errors", "types"]
+_CORE_BASIC: list[str] = ["readability", "dry", "tests"]
+_CORE_THOROUGH: list[str] = ["docs", "security", "perf", "errors", "types"]
 _CORE_EXHAUSTIVE: list[str] = ["edge-cases", "complexity", "deps", "logging", "concurrency", "accessibility", "api-design"]
 
 # Checks that are only run when explicitly requested via --checks, never included in tiers.
@@ -429,11 +432,12 @@ DEFAULT_TIER: str = "basic"
 FULL_CODEBASE_SCOPE: str = (
     "Review ALL code in this project (not just recently written code). "
     "IMPORTANT: Respect the existing codebase style. Do NOT make changes that create "
-    "large diffs for marginal improvement. Avoid blanket additions (docstrings on every "
-    "function, logger.debug in every method, try/except around code that can't fail). "
-    "Comments and docstrings that explain non-obvious design decisions, module-level "
-    "strategies, or complex interactions ARE valuable — the goal is to avoid restating "
-    "what is already obvious from the code, not to avoid all documentation. "
+    "large diffs for marginal improvement. Do NOT add docstrings, comments, or type "
+    "annotations to code you didn't otherwise change — only document code you are "
+    "actively modifying, and only when the change makes the code harder to understand "
+    "without explanation. Avoid blanket additions (docstrings on every function, "
+    "logger.debug in every method, try/except around code that can't fail). "
+    "Well-named code does not need a docstring restating its name. "
     "Do NOT remove blank lines that follow a consistent pattern in the codebase — for example, "
     "blank lines before section separator comments (# ---), or between logical groups. "
     "These are intentional style conventions and removing them may break the project's linter. "
