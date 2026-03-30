@@ -294,7 +294,7 @@ def resolve_selected_checks(args: argparse.Namespace) -> list[CheckDef]:
         # Tier + --checks: add manual checks on top of the tier.
         selected_ids = set(tier_config.check_ids()) | set(args.checks)
     elif tier_config:
-        # Pure tier selection (--level, --tier-file, --all-checks, or default).
+        # Pure tier selection (--tier, --all-checks, or default).
         selected_ids = set(tier_config.check_ids())
     elif args.checks:
         # Ad-hoc check selection with no tier context.

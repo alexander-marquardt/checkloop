@@ -27,17 +27,20 @@ uv sync
 Run with `uv run checkloop` from the project directory. `--dir` is required:
 
 ```bash
-# Check a project (basic tier: readability, dry, tests, docs)
+# Check a project (basic tier — the default)
 uv run checkloop --dir ~/my-project
 
 # Use the thorough tier for deeper checks
-uv run checkloop --dir ~/my-project --level thorough
+uv run checkloop --dir ~/my-project --tier thorough
 
 # Exhaustive — all 18 checks, repeat twice
-uv run checkloop --dir ~/my-project --level exhaustive --cycles 2
+uv run checkloop --dir ~/my-project --tier exhaustive --cycles 2
 
 # Pick specific checks manually (overrides tier)
 uv run checkloop --dir ~/my-project --checks readability security tests
+
+# Use a custom tier file
+uv run checkloop --dir ~/my-project --tier ./my-tier.toml
 
 # Preview without running
 uv run checkloop --dir ~/my-project --dry-run
@@ -52,7 +55,7 @@ uv run checkloop --dir ~/my-project --changed-only develop
 uv run checkloop --dir ~/my-project -v
 
 # Add a specific check on top of a tier
-uv run checkloop --dir ~/my-project --level thorough --checks cleanup-ai-slop
+uv run checkloop --dir ~/my-project --tier thorough --checks cleanup-ai-slop
 ```
 
 To make `checkloop` available globally (without `uv run`):
@@ -61,9 +64,9 @@ To make `checkloop` available globally (without `uv run`):
 uv tool install git+https://github.com/alexander-marquardt/checkloop.git
 ```
 
-## Check Tiers
+## Tier Files
 
-Choose a check depth with `--level`:
+Tiers are TOML files that define which checks to run and which model to use for each check. Three tier files ship pre-populated — choose one with `--tier`:
 
 | Tier | Checks | Description |
 |------|--------|-------------|
@@ -71,13 +74,13 @@ Choose a check depth with `--level`:
 | **thorough** | 10 checks | Adds docs, security, performance, error handling, type safety |
 | **exhaustive** | 18 checks | Everything — includes edge cases, complexity, deps, logging, concurrency, a11y, API design, and AI slop cleanup |
 
-Every tier automatically includes the `test-fix` (first) and `test-validate` (last) bookend checks to ensure the test suite is green before and after the review.
+Every tier includes the `test-fix` (first) and `test-validate` (last) bookend checks to ensure the test suite is green before and after the review.
 
-Use `--checks` to pick individual checks, or `--all-checks` as a shortcut for `--level exhaustive`.
+Use `--checks` to pick individual checks, or `--all-checks` as a shortcut for `--tier exhaustive`.
 
 ## Per-Check Model Selection
 
-Each tier configuration file specifies which Claude model to use for each check. The default model assignments are optimized for the cognitive demands of each task:
+Each tier file specifies which Claude model to use for each check. The pre-populated tier files assign models based on the cognitive demands of each task:
 
 - **Sonnet** (faster, used for most checks) — pattern-matching tasks like readability, DRY, tests, docs, error handling, types, complexity, deps, logging, accessibility, API design, and AI slop cleanup.
 - **Opus** (deeper reasoning, used selectively) — multi-layer analysis tasks like security, concurrency, performance, and edge cases, where subtle issues span multiple code layers.
@@ -86,13 +89,13 @@ The `--model` flag overrides the per-check model for all checks:
 
 ```bash
 # Use tier defaults (sonnet for most, opus for security/concurrency/perf/edge-cases)
-uv run checkloop --dir ~/my-project --level thorough
+uv run checkloop --dir ~/my-project --tier thorough
 
 # Force all checks to opus (slower but deeper analysis everywhere)
-uv run checkloop --dir ~/my-project --level thorough --model opus
+uv run checkloop --dir ~/my-project --tier thorough --model opus
 
 # Force all checks to sonnet (fastest, good for quick passes)
-uv run checkloop --dir ~/my-project --level thorough --model sonnet
+uv run checkloop --dir ~/my-project --tier thorough --model sonnet
 ```
 
 ## Available Checks
@@ -118,13 +121,13 @@ uv run checkloop --dir ~/my-project --level thorough --model sonnet
 | `test-validate` | bookend | sonnet | Re-runs the full test suite after all checks. Fixes any regressions. Always runs last. |
 | `cleanup-ai-slop` | exhaustive | sonnet | Removes AI-generated noise: redundant docstrings, unnecessary logging, misleading error handling, coverage-driven tests. Runs last (before test-validate) so it gets the final word on slop that earlier checks re-introduce. |
 
-## Custom Tier Files
+## Writing Your Own Tier Files
 
-You can create custom tier files to define your own check selection and model assignments. Tier files are TOML files with the following format:
+You can create your own tier files to define any combination of checks and model assignments. A tier file is a TOML file:
 
 ```toml
 [tier]
-name = "my-custom-tier"
+name = "security-audit"
 description = "Security-focused review with deep analysis"
 
 [[checks]]
@@ -148,13 +151,13 @@ id = "test-validate"
 model = "sonnet"
 ```
 
-Use with `--tier-file`:
+Point `--tier` at it:
 
 ```bash
-uv run checkloop --dir ~/my-project --tier-file my-tier.toml
+uv run checkloop --dir ~/my-project --tier ./security-audit.toml
 ```
 
-See the built-in tier files in `src/checkloop/tiers/` for examples.
+The pre-populated tier files in `src/checkloop/tiers/` use the same format — you can copy and modify them as a starting point.
 
 ## Why Multi-Check Works
 
@@ -197,9 +200,10 @@ uv run checkloop --cycles 5 --convergence-threshold 0.5
 
 ```
 --dir, -d DIR          Project directory to check (required)
---level, -l TIER       Check depth: basic, thorough, exhaustive (default: basic)
---checks CHECK [...]   Manually select checks (overrides --level)
---all-checks           Run all 18 checks (same as --level exhaustive)
+--tier, -t TIER        Tier name or path to a TOML tier file.
+                       Pre-populated: basic, thorough, exhaustive (default: basic).
+--checks CHECK [...]   Manually select checks (overrides --tier)
+--all-checks           Run all 18 checks (same as --tier exhaustive)
 --cycles, -c N         Repeat the full suite N times (default: 1)
 --idle-timeout SECS    Kill after N seconds of silence (default: 300)
 --check-timeout SECS   Hard wall-clock limit per check (default: 0 = no limit).
@@ -223,16 +227,14 @@ uv run checkloop --cycles 5 --convergence-threshold 0.5
                        Set to 0 to disable convergence detection.
 --model, -m MODEL      Override the model for ALL checks. Accepts aliases
                        ('sonnet', 'opus') or full model IDs ('claude-sonnet-4-6').
-                       When omitted, each check uses the model from the tier config.
---tier-file PATH       Path to a custom tier TOML file. Overrides --level with
-                       a user-defined set of checks and per-check model assignments.
+                       When omitted, each check uses the model from the tier file.
 ```
 
 ## How It Works
 
 `checkloop` is a modular Python CLI that orchestrates Claude Code as a subprocess. Here is the high-level flow:
 
-1. **Argument resolution** — Parses CLI flags, resolves the check tier (or manual check selection), and validates the target directory.
+1. **Argument resolution** — Parses CLI flags, loads the tier file (or resolves manual check selection), and validates the target directory.
 2. **Pre-run warning** — Displays a 5-second countdown so the user can abort. Warns if `--dangerously-skip-permissions` is (or isn't) set.
 3. **Check execution** — For each check, builds a focused prompt (with commit-message rules appended) and invokes `claude -p <prompt> --output-format stream-json --verbose` as a subprocess.
 4. **Real-time streaming** — Streams JSONL output from the subprocess, displaying tool-use events (file reads, edits, shell commands) and assistant messages with elapsed-time prefixes.
@@ -293,7 +295,7 @@ src/checkloop/
 ├── suite.py          # Multi-cycle suite orchestration and convergence detection
 ├── terminal.py       # ANSI colours, banners, status messages, duration formatting
 ├── tier_config.py    # TOML-based tier configuration loading
-└── tiers/            # Built-in tier definitions (TOML)
+└── tiers/            # Pre-populated tier files (TOML)
     ├── basic.toml    # 5 checks — core code quality (all sonnet)
     ├── thorough.toml # 10 checks — adds security (opus), perf (opus), etc.
     └── exhaustive.toml # 18 checks — all checks with optimized model assignments
