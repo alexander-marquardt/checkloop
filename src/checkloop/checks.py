@@ -95,15 +95,34 @@ def _parse_check_file(path: Path) -> CheckDef:
 def _load_all_checks() -> list[CheckDef]:
     """Load all check definitions from the checks/ directory.
 
-    Returns checks ordered by filename so the ordering is predictable
-    and matches the order defined in the plan TOML files.
+    Returns checks ordered to match the exhaustive plan (which defines the
+    canonical ordering for all checks).  Any checks not in the exhaustive
+    plan are appended at the end in alphabetical order.
     """
     checks_dir = _find_checks_dir()
-    checks: dict[str, CheckDef] = {}
+    checks_by_id: dict[str, CheckDef] = {}
     for md_file in sorted(checks_dir.glob("*.md")):
         check = _parse_check_file(md_file)
-        checks[check["id"]] = check
-    return list(checks.values())
+        checks_by_id[check["id"]] = check
+
+    # Order by the exhaustive plan to maintain canonical check ordering.
+    exhaustive = load_all_builtin_plans().get("exhaustive")
+    if exhaustive:
+        ordered_ids = exhaustive.check_ids()
+    else:
+        ordered_ids = sorted(checks_by_id.keys())
+
+    result: list[CheckDef] = []
+    seen: set[str] = set()
+    for cid in ordered_ids:
+        if cid in checks_by_id:
+            result.append(checks_by_id[cid])
+            seen.add(cid)
+    # Append any checks not in the exhaustive plan.
+    for cid in sorted(checks_by_id.keys()):
+        if cid not in seen:
+            result.append(checks_by_id[cid])
+    return result
 
 
 # The canonical ordered list of all available checks, loaded at import time.
