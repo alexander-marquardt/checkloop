@@ -48,3 +48,4 @@ mypy_path = "src"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/checkloop"]
+artifacts = ["*.toml"]

@@ -68,35 +68,93 @@ Choose a check depth with `--level`:
 | Tier | Checks | Description |
 |------|--------|-------------|
 | **basic** (default) | 5 checks | Core code quality — readability, DRY, tests (plus test-fix/test-validate bookends) |
-| **thorough** | 11 checks | Adds docs, security, performance, error handling, type safety |
+| **thorough** | 10 checks | Adds docs, security, performance, error handling, type safety |
 | **exhaustive** | 18 checks | Everything — includes edge cases, complexity, deps, logging, concurrency, a11y, API design, and AI slop cleanup |
 
 Every tier automatically includes the `test-fix` (first) and `test-validate` (last) bookend checks to ensure the test suite is green before and after the review.
 
 Use `--checks` to pick individual checks, or `--all-checks` as a shortcut for `--level exhaustive`.
 
+## Per-Check Model Selection
+
+Each tier configuration file specifies which Claude model to use for each check. The default model assignments are optimized for the cognitive demands of each task:
+
+- **Sonnet** (faster, used for most checks) — pattern-matching tasks like readability, DRY, tests, docs, error handling, types, complexity, deps, logging, accessibility, API design, and AI slop cleanup.
+- **Opus** (deeper reasoning, used selectively) — multi-layer analysis tasks like security, concurrency, performance, and edge cases, where subtle issues span multiple code layers.
+
+The `--model` flag overrides the per-check model for all checks:
+
+```bash
+# Use tier defaults (sonnet for most, opus for security/concurrency/perf/edge-cases)
+uv run checkloop --dir ~/my-project --level thorough
+
+# Force all checks to opus (slower but deeper analysis everywhere)
+uv run checkloop --dir ~/my-project --level thorough --model opus
+
+# Force all checks to sonnet (fastest, good for quick passes)
+uv run checkloop --dir ~/my-project --level thorough --model sonnet
+```
+
 ## Available Checks
 
-| Check | Tier | What it does |
-|-------|------|-------------|
-| `test-fix` | bookend | Runs the existing test suite and fixes any failures in source code. Always runs first. |
-| `readability` | basic | Naming, function size, module/class docstrings for design strategy. Avoids rename churn. No behaviour changes. |
-| `dry` | basic | Finds repeated logic, extracts helpers, separates mixed concerns into focused modules. |
-| `tests` | basic | Behaviour-driven tests for happy paths, edge cases, complex logic correctness. Unit tests with mocks, integration tests separately. |
-| `docs` | basic | README, config docs. Module-level docstrings for design strategy, class docstrings for intent. Function docstrings only where name+signature don't tell the full story. |
-| `security` | thorough | Injection, hardcoded secrets, input validation. Won't change CORS/retry/auth config without a clear vuln. |
-| `perf` | thorough | N+1 queries, O(N²) algorithms, blocking I/O, unnecessary allocations. Selective caching for expensive repeated computations. |
-| `errors` | thorough | Centralized error handling for external services. Only where code can meaningfully respond. No wrapping code that can't fail. |
-| `types` | thorough | Type annotations, replace `Any`/untyped code, runtime validation at API boundaries (Annotated/Pydantic/Zod). |
-| `edge-cases` | exhaustive | Off-by-one, null/empty inputs, overflow, Unicode edge cases. |
-| `complexity` | exhaustive | Flatten nested conditionals, reduce cyclomatic complexity. |
-| `deps` | exhaustive | Remove verified-unused deps, flag vulnerable/outdated packages. |
-| `logging` | exhaustive | Structured logging at entry points. No debug logging on hot paths. |
-| `concurrency` | exhaustive | Race conditions, missing locks, async/await correctness. |
-| `accessibility` | exhaustive | Semantic HTML, ARIA, keyboard nav, colour contrast (WCAG AA). |
-| `api-design` | exhaustive | Consistent naming, HTTP methods, error formats, pagination. |
-| `test-validate` | bookend | Re-runs the full test suite after all checks. Fixes any regressions. Always runs last. |
-| `cleanup-ai-slop` | exhaustive | Removes AI-generated noise: redundant docstrings, unnecessary logging, misleading error handling, coverage-driven tests. Runs last (before test-validate) so it gets the final word on slop that earlier checks re-introduce. |
+| Check | Tier | Model | What it does |
+|-------|------|-------|-------------|
+| `test-fix` | bookend | sonnet | Runs the existing test suite and fixes any failures in source code. Always runs first. |
+| `readability` | basic | sonnet | Naming, function size, module/class docstrings for design strategy. Avoids rename churn. No behaviour changes. |
+| `dry` | basic | sonnet | Finds repeated logic, extracts helpers, separates mixed concerns into focused modules. |
+| `tests` | basic | sonnet | Behaviour-driven tests for happy paths, edge cases, complex logic correctness. Unit tests with mocks, integration tests separately. |
+| `docs` | thorough | sonnet | README, config docs. Module-level docstrings for design strategy, class docstrings for intent. Function docstrings only where name+signature don't tell the full story. |
+| `security` | thorough | opus | Injection, hardcoded secrets, input validation. Won't change CORS/retry/auth config without a clear vuln. |
+| `perf` | thorough | opus | N+1 queries, O(N²) algorithms, blocking I/O, unnecessary allocations. Selective caching for expensive repeated computations. |
+| `errors` | thorough | sonnet | Centralized error handling for external services. Only where code can meaningfully respond. No wrapping code that can't fail. |
+| `types` | thorough | sonnet | Type annotations, replace `Any`/untyped code, runtime validation at API boundaries (Annotated/Pydantic/Zod). |
+| `edge-cases` | exhaustive | opus | Off-by-one, null/empty inputs, overflow, Unicode edge cases. |
+| `complexity` | exhaustive | sonnet | Flatten nested conditionals, reduce cyclomatic complexity. |
+| `deps` | exhaustive | sonnet | Remove verified-unused deps, flag vulnerable/outdated packages. |
+| `logging` | exhaustive | sonnet | Structured logging at entry points. No debug logging on hot paths. |
+| `concurrency` | exhaustive | opus | Race conditions, missing locks, async/await correctness. |
+| `accessibility` | exhaustive | sonnet | Semantic HTML, ARIA, keyboard nav, colour contrast (WCAG AA). |
+| `api-design` | exhaustive | sonnet | Consistent naming, HTTP methods, error formats, pagination. |
+| `test-validate` | bookend | sonnet | Re-runs the full test suite after all checks. Fixes any regressions. Always runs last. |
+| `cleanup-ai-slop` | exhaustive | sonnet | Removes AI-generated noise: redundant docstrings, unnecessary logging, misleading error handling, coverage-driven tests. Runs last (before test-validate) so it gets the final word on slop that earlier checks re-introduce. |
+
+## Custom Tier Files
+
+You can create custom tier files to define your own check selection and model assignments. Tier files are TOML files with the following format:
+
+```toml
+[tier]
+name = "my-custom-tier"
+description = "Security-focused review with deep analysis"
+
+[[checks]]
+id = "test-fix"
+model = "sonnet"
+
+[[checks]]
+id = "security"
+model = "opus"
+
+[[checks]]
+id = "concurrency"
+model = "opus"
+
+[[checks]]
+id = "edge-cases"
+model = "opus"
+
+[[checks]]
+id = "test-validate"
+model = "sonnet"
+```
+
+Use with `--tier-file`:
+
+```bash
+uv run checkloop --dir ~/my-project --tier-file my-tier.toml
+```
+
+See the built-in tier files in `src/checkloop/tiers/` for examples.
 
 ## Why Multi-Check Works
 
@@ -163,9 +221,11 @@ uv run checkloop --cycles 5 --convergence-threshold 0.5
                        Stop cycling early when less than PCT% of total lines
                        changed in a cycle (default: 0.1). Requires a git repo.
                        Set to 0 to disable convergence detection.
---model, -m MODEL      Claude model to use. Accepts aliases ('sonnet', 'opus')
-                       or full model IDs ('claude-sonnet-4-6'). Defaults to
-                       'sonnet'.
+--model, -m MODEL      Override the model for ALL checks. Accepts aliases
+                       ('sonnet', 'opus') or full model IDs ('claude-sonnet-4-6').
+                       When omitted, each check uses the model from the tier config.
+--tier-file PATH       Path to a custom tier TOML file. Overrides --level with
+                       a user-defined set of checks and per-check model assignments.
 ```
 
 ## How It Works
@@ -219,7 +279,7 @@ Every run writes a DEBUG-level log to `.checkloop-run.log` in the target project
 
 ```
 src/checkloop/
-├── __init__.py      # Public API exports (main, run_claude, CHECKS, TIERS, etc.)
+├── __init__.py       # Public API exports (main, run_claude, CHECKS, TIERS, etc.)
 ├── check_runner.py   # Single-check execution: prompt assembly, invocation, change reporting
 ├── checkpoint.py     # Checkpoint save/load/clear for resume-after-interrupt
 ├── checks.py         # Check definitions, tier configuration, dangerous-prompt guard
@@ -231,7 +291,12 @@ src/checkloop/
 ├── process.py        # Claude Code subprocess spawning, streaming, and cleanup
 ├── streaming.py      # JSONL stream parsing and real-time event display
 ├── suite.py          # Multi-cycle suite orchestration and convergence detection
-└── terminal.py       # ANSI colours, banners, status messages, duration formatting
+├── terminal.py       # ANSI colours, banners, status messages, duration formatting
+├── tier_config.py    # TOML-based tier configuration loading
+└── tiers/            # Built-in tier definitions (TOML)
+    ├── basic.toml    # 5 checks — core code quality (all sonnet)
+    ├── thorough.toml # 10 checks — adds security (opus), perf (opus), etc.
+    └── exhaustive.toml # 18 checks — all checks with optimized model assignments
 ```
 
 ## Development

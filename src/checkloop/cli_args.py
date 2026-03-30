@@ -57,10 +57,13 @@ def build_argument_parser() -> argparse.ArgumentParser:
         description="Autonomous multi-check code review using Claude Code.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="\n".join([
-            "Check tiers:",
+            "Check tiers (loaded from TOML files in src/checkloop/tiers/):",
             f"  basic       {', '.join(TIER_BASIC)}",
             f"  thorough    basic + {', '.join(cid for cid in TIER_THOROUGH if cid not in TIER_BASIC)}",
             f"  exhaustive  thorough + {', '.join(cid for cid in TIER_EXHAUSTIVE if cid not in TIER_THOROUGH)}",
+            "",
+            "Each tier file specifies a per-check model (sonnet or opus).",
+            "Use --model to override all checks to a single model.",
             "",
             "All available checks (use with --checks to override tier):",
             *(f"  {check['id']:14s}  {check['label']}" for check in CHECKS),
@@ -72,6 +75,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
             "  checkloop --dir ~/proj --checks readability security",
             "  checkloop --dir ~/proj --all-checks                # same as --level exhaustive",
             "  checkloop --dir ~/proj --level thorough --checks cleanup-ai-slop  # tier + extra check",
+            "  checkloop --dir ~/proj --tier-file my-tier.toml    # custom tier file",
+            "  checkloop --dir ~/proj --model opus                # force all checks to opus",
             "  checkloop --dir ~/proj --dry-run",
         ]),
     )
