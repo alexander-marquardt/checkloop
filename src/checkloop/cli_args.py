@@ -267,10 +267,15 @@ def _resolve_tier_config(args: argparse.Namespace) -> TierConfig | None:
     tier_file = getattr(args, "tier_file", None)
     if tier_file:
         return load_tier_file(tier_file)
-    tier_name = args.level if args.level else DEFAULT_TIER
     if args.all_checks:
-        tier_name = "exhaustive"
-    return TIER_CONFIGS.get(tier_name)
+        return TIER_CONFIGS.get("exhaustive")
+    if args.level:
+        return TIER_CONFIGS.get(args.level)
+    # --checks alone: no tier context.
+    if args.checks:
+        return None
+    # Nothing specified: use the default tier.
+    return TIER_CONFIGS.get(DEFAULT_TIER)
 
 
 def resolve_selected_checks(args: argparse.Namespace) -> list[CheckDef]:
