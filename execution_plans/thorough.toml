@@ -1,6 +1,6 @@
 [tier]
 name = "thorough"
-description = "Basic plus docs, security, performance, error handling, type safety"
+description = "Basic plus docs, docs-accuracy, security, performance, error handling, type safety"
 
 [[checks]]
 id = "test-fix"
@@ -20,6 +20,10 @@ model = "sonnet"
 
 [[checks]]
 id = "docs"
+model = "sonnet"
+
+[[checks]]
+id = "docs-accuracy"
 model = "sonnet"
 
 [[checks]]
