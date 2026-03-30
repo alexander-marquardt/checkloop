@@ -6,9 +6,9 @@ import re
 from typing import TypedDict
 
 from checkloop.tier_config import (
-    DEFAULT_TIER_NAME,
-    TierConfig,
-    load_all_builtin_tiers,
+    DEFAULT_PLAN_NAME,
+    PlanConfig,
+    load_all_builtin_plans,
 )
 
 
@@ -403,29 +403,29 @@ CHECKS: list[CheckDef] = [
 CHECK_IDS: list[str] = [check["id"] for check in CHECKS]
 
 
-# --- Check tiers --------------------------------------------------------------
-# Tiers are loaded from TOML files in the ``tiers/`` package directory.
-# Each TOML file defines the check IDs and per-check model for that tier.
-# The constants below are derived from those files for backward compatibility.
+# --- Execution plans ----------------------------------------------------------
+# Plans are loaded from TOML files in the ``execution_plans/`` directory at
+# the project root.  Each file defines the check IDs and per-check model.
+# The constants below are derived from the pre-populated plans.
 
-_BUILTIN_TIER_CONFIGS: dict[str, TierConfig] = load_all_builtin_tiers()
+_BUILTIN_PLAN_CONFIGS: dict[str, PlanConfig] = load_all_builtin_plans()
 
-# Checks that are only run when explicitly requested via --checks, never included in tiers.
+# Checks that are only run when explicitly requested via --checks, never included in plans.
 _ON_DEMAND_ONLY: set[str] = set()
 
-# Public tier lists — derived from tier TOML files for programmatic access.
-TIER_BASIC: list[str] = _BUILTIN_TIER_CONFIGS["basic"].check_ids()
-TIER_THOROUGH: list[str] = _BUILTIN_TIER_CONFIGS["thorough"].check_ids()
-TIER_EXHAUSTIVE: list[str] = _BUILTIN_TIER_CONFIGS["exhaustive"].check_ids()
+# Public plan lists — derived from plan TOML files for programmatic access.
+TIER_BASIC: list[str] = _BUILTIN_PLAN_CONFIGS["basic"].check_ids()
+TIER_THOROUGH: list[str] = _BUILTIN_PLAN_CONFIGS["thorough"].check_ids()
+TIER_EXHAUSTIVE: list[str] = _BUILTIN_PLAN_CONFIGS["exhaustive"].check_ids()
 
-# Maps tier name to the list of check IDs for that tier.
+# Maps plan name to the list of check IDs.
 TIERS: dict[str, list[str]] = {
-    name: config.check_ids() for name, config in _BUILTIN_TIER_CONFIGS.items()
+    name: config.check_ids() for name, config in _BUILTIN_PLAN_CONFIGS.items()
 }
-DEFAULT_TIER: str = DEFAULT_TIER_NAME
+DEFAULT_TIER: str = DEFAULT_PLAN_NAME
 
-# Maps tier name to its full TierConfig (including per-check models).
-TIER_CONFIGS: dict[str, TierConfig] = _BUILTIN_TIER_CONFIGS
+# Maps plan name to its full PlanConfig (including per-check models).
+PLAN_CONFIGS: dict[str, PlanConfig] = _BUILTIN_PLAN_CONFIGS
 
 
 # --- Prompt constants ---------------------------------------------------------

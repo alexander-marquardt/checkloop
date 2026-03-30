@@ -20,13 +20,13 @@ from checkloop.checks import (
     CHECKS,
     CheckDef,
     DEFAULT_TIER,
+    PLAN_CONFIGS,
     TIER_BASIC,
-    TIER_CONFIGS,
     TIER_EXHAUSTIVE,
     TIER_THOROUGH,
     TIERS,
 )
-from checkloop.tier_config import BUILTIN_TIER_NAMES, TierConfig, load_builtin_tier, load_tier_file
+from checkloop.tier_config import BUILTIN_PLAN_NAMES, PlanConfig, load_builtin_plan, load_plan_file
 from checkloop.git import (
     build_changed_files_prefix,
     detect_default_branch,
@@ -52,30 +52,30 @@ DEFAULT_CONVERGENCE_THRESHOLD = 0.1
 # --- Argument parsing ---------------------------------------------------------
 
 def build_argument_parser() -> argparse.ArgumentParser:
-    tier_names = ", ".join(BUILTIN_TIER_NAMES)
+    plan_names = ", ".join(BUILTIN_PLAN_NAMES)
     parser = argparse.ArgumentParser(
         description="Autonomous multi-check code review using Claude Code.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="\n".join([
-            "Built-in tiers (loaded from TOML files in src/checkloop/tiers/):",
+            "Execution plans (TOML files in execution_plans/):",
             f"  basic       {', '.join(TIER_BASIC)}",
             f"  thorough    basic + {', '.join(cid for cid in TIER_THOROUGH if cid not in TIER_BASIC)}",
             f"  exhaustive  thorough + {', '.join(cid for cid in TIER_EXHAUSTIVE if cid not in TIER_THOROUGH)}",
             "",
-            "Each tier file specifies a per-check model (sonnet or opus).",
+            "Each plan file specifies a per-check model (sonnet or opus).",
             "Use --model to override all checks to a single model.",
             "",
-            "All available checks (use with --checks to override tier):",
+            "All available checks (use with --checks to override plan):",
             *(f"  {check['id']:14s}  {check['label']}" for check in CHECKS),
             "",
             "Examples:",
-            "  checkloop --dir .                                  # basic tier (default)",
-            "  checkloop --dir ~/proj --tier thorough             # thorough tier",
-            "  checkloop --dir ~/proj --tier exhaustive --cycles 2",
+            "  checkloop --dir .                                  # basic plan (default)",
+            "  checkloop --dir ~/proj --plan thorough             # thorough plan",
+            "  checkloop --dir ~/proj --plan exhaustive --cycles 2",
             "  checkloop --dir ~/proj --checks readability security",
-            "  checkloop --dir ~/proj --all-checks                # same as --tier exhaustive",
-            "  checkloop --dir ~/proj --tier thorough --checks cleanup-ai-slop",
-            "  checkloop --dir ~/proj --tier ./my-tier.toml       # custom tier file",
+            "  checkloop --dir ~/proj --all-checks                # same as --plan exhaustive",
+            "  checkloop --dir ~/proj --plan thorough --checks cleanup-ai-slop",
+            "  checkloop --dir ~/proj --plan ./my-plan.toml       # your own plan file",
             "  checkloop --dir ~/proj --model opus                # force all checks to opus",
             "  checkloop --dir ~/proj --dry-run",
         ]),
@@ -86,21 +86,20 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="Project directory to check",
     )
     parser.add_argument(
-        "--tier", "-t", default=None, metavar="TIER",
+        "--plan", "-p", default=None, metavar="PLAN",
         help=(
-            f"Tier name or path to a custom TOML tier file. "
-            f"Built-in tiers: {tier_names} (default: basic). "
-            "If the value is a path to a .toml file, it is loaded as a custom tier."
+            f"Plan name or path to a TOML plan file. "
+            f"Pre-populated: {plan_names} (default: basic)."
         ),
     )
     parser.add_argument(
         "--checks", nargs="+", choices=CHECK_IDS, default=None,
         metavar="CHECK",
-        help="Manually select checks. Alone: runs only these checks. Combined with --tier: adds these checks to the tier.",
+        help="Manually select checks. Alone: runs only these checks. Combined with --plan: adds these checks to the plan.",
     )
     parser.add_argument(
         "--all-checks", action="store_true",
-        help="Run every available check (same as --tier exhaustive)",
+        help="Run every available check (same as --plan exhaustive)",
     )
     parser.add_argument(
         "--cycles", "-c", type=int, default=1, metavar="N",
@@ -171,7 +170,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help=(
             "Claude model override for ALL checks. Accepts aliases (e.g. 'sonnet', 'opus') "
             "or full model IDs (e.g. 'claude-sonnet-4-6'). When omitted, each check uses "
-            "the model specified in the tier file."
+            "the model specified in the plan file."
         ),
     )
 
@@ -253,61 +252,61 @@ def resolve_changed_files_prefix(args: argparse.Namespace, workdir: str) -> str:
     return build_changed_files_prefix(changed_files)
 
 
-def _resolve_tier_config(args: argparse.Namespace) -> TierConfig | None:
-    """Resolve a TierConfig from --tier, --all-checks, or the default.
+def _resolve_plan_config(args: argparse.Namespace) -> PlanConfig | None:
+    """Resolve a PlanConfig from --plan, --all-checks, or the default.
 
-    The ``--tier`` flag accepts either a pre-populated tier name (basic,
-    thorough, exhaustive) or a path to any TOML tier file.
+    The ``--plan`` flag accepts either a pre-populated plan name (basic,
+    thorough, exhaustive) or a path to any TOML plan file.
 
-    Returns ``None`` when the user specified ``--checks`` without ``--tier``
-    (ad-hoc check selection with no tier context).
+    Returns ``None`` when the user specified ``--checks`` without ``--plan``
+    (ad-hoc check selection with no plan context).
     """
     if args.all_checks:
-        return load_builtin_tier("exhaustive")
-    tier = getattr(args, "tier", None)
-    if tier:
-        if tier in BUILTIN_TIER_NAMES:
-            return load_builtin_tier(tier)
-        return load_tier_file(tier)
-    # --checks alone: no tier context.
+        return load_builtin_plan("exhaustive")
+    plan = getattr(args, "plan", None)
+    if plan:
+        if plan in BUILTIN_PLAN_NAMES:
+            return load_builtin_plan(plan)
+        return load_plan_file(plan)
+    # --checks alone: no plan context.
     if args.checks:
         return None
-    # Nothing specified: use the default tier.
-    return load_builtin_tier(DEFAULT_TIER)
+    # Nothing specified: use the default plan.
+    return load_builtin_plan(DEFAULT_TIER)
 
 
 def resolve_selected_checks(args: argparse.Namespace) -> list[CheckDef]:
     """Resolve CLI flags to an ordered list of CheckDef objects.
 
-    When both ``--tier`` and ``--checks`` are specified, the manual check
-    list is *added* to the tier rather than replacing it.  This lets the user
-    append a single out-of-tier check (e.g. ``--checks cleanup-ai-slop``) to
-    a tier without rewriting the full check list.
+    When both ``--plan`` and ``--checks`` are specified, the manual check
+    list is *added* to the plan rather than replacing it.  This lets the user
+    append a single out-of-plan check (e.g. ``--checks cleanup-ai-slop``) to
+    a plan without rewriting the full check list.
 
     Also sets ``args.check_models`` — a dict mapping check ID to model name
-    from the tier file.  The ``--model`` CLI flag overrides this per-check
+    from the plan file.  The ``--model`` CLI flag overrides this per-check
     mapping when specified.
     """
-    tier_config = _resolve_tier_config(args)
+    plan_config = _resolve_plan_config(args)
 
-    if tier_config and args.checks:
-        # Tier + --checks: add manual checks on top of the tier.
-        selected_ids = set(tier_config.check_ids()) | set(args.checks)
-    elif tier_config:
-        # Pure tier selection (--tier, --all-checks, or default).
-        selected_ids = set(tier_config.check_ids())
+    if plan_config and args.checks:
+        # Plan + --checks: add manual checks on top of the plan.
+        selected_ids = set(plan_config.check_ids()) | set(args.checks)
+    elif plan_config:
+        # Pure plan selection (--plan, --all-checks, or default).
+        selected_ids = set(plan_config.check_ids())
     elif args.checks:
-        # Ad-hoc check selection with no tier context.
+        # Ad-hoc check selection with no plan context.
         selected_ids = set(args.checks)
     else:
         selected_ids = set(TIERS[DEFAULT_TIER])
 
     selected = [check for check in CHECKS if check["id"] in selected_ids]
 
-    # Build per-check model map from the tier config.
+    # Build per-check model map from the plan config.
     check_models: dict[str, str] = {}
-    if tier_config:
-        check_models = tier_config.model_map()
+    if plan_config:
+        check_models = plan_config.model_map()
     args.check_models = check_models
 
     logger.info("Selected %d checks: %s", len(selected), [check["id"] for check in selected])

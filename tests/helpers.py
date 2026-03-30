@@ -45,7 +45,7 @@ def make_mock_cli_args(*, dry_run: bool = False, **overrides: Any) -> mock.Magic
         "dir": "/tmp",
         "all_checks": False,
         "checks": ["readability"],
-        "tier": None,
+        "plan": None,
         "dry_run": dry_run,
         "changed_only": None,
         "no_resume": False,

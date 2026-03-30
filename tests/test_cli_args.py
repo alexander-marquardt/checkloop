@@ -36,7 +36,7 @@ class TestBuildArgumentParser:
         ns = _parse_cli([])
         assert ns.dir == "/tmp"
         assert ns.checks is None
-        assert ns.tier is None
+        assert ns.plan is None
         assert ns.all_checks is False
         assert ns.cycles == 1
         assert ns.idle_timeout == process.DEFAULT_IDLE_TIMEOUT
@@ -234,24 +234,24 @@ class TestResolveSelectedChecks:
     """Tests for resolve_selected_checks()."""
 
     def test_tier_basic(self) -> None:
-        args = argparse.Namespace(all_checks=False, checks=None, tier="basic")
+        args = argparse.Namespace(all_checks=False, checks=None, plan="basic")
         result = cli_args.resolve_selected_checks(args)
         ids = [p["id"] for p in result]
         assert ids == checks.TIER_BASIC
 
     def test_all_checks(self) -> None:
-        args = argparse.Namespace(all_checks=True, checks=None, tier=None)
+        args = argparse.Namespace(all_checks=True, checks=None, plan=None)
         result = cli_args.resolve_selected_checks(args)
         assert len(result) == len(checks.TIER_EXHAUSTIVE)
 
     def test_checks_alone_ignores_default_tier(self) -> None:
-        args = argparse.Namespace(all_checks=False, checks=["security"], tier=None)
+        args = argparse.Namespace(all_checks=False, checks=["security"], plan=None)
         result = cli_args.resolve_selected_checks(args)
         assert len(result) == 1
         assert result[0]["id"] == "security"
 
     def test_checks_and_tier_are_additive(self) -> None:
-        args = argparse.Namespace(all_checks=False, checks=["cleanup-ai-slop"], tier="basic")
+        args = argparse.Namespace(all_checks=False, checks=["cleanup-ai-slop"], plan="basic")
         result = cli_args.resolve_selected_checks(args)
         ids = [p["id"] for p in result]
         assert "cleanup-ai-slop" in ids
@@ -259,19 +259,19 @@ class TestResolveSelectedChecks:
             assert basic_id in ids
 
     def test_all_checks_flag(self) -> None:
-        args = make_mock_cli_args(all_checks=True, checks=None, tier=None)
+        args = make_mock_cli_args(all_checks=True, checks=None, plan=None)
         result = cli_args.resolve_selected_checks(args)
         assert len(result) == len(checks.TIER_EXHAUSTIVE)
 
     def test_checks_and_tier_additive_preserves_order(self) -> None:
-        args = make_mock_cli_args(all_checks=False, checks=["cleanup-ai-slop"], tier="basic")
+        args = make_mock_cli_args(all_checks=False, checks=["cleanup-ai-slop"], plan="basic")
         result = cli_args.resolve_selected_checks(args)
         ids = [p["id"] for p in result]
         assert "cleanup-ai-slop" in ids
         assert ids.index("cleanup-ai-slop") > ids.index("readability")
 
     def test_default_tier_when_nothing_specified(self) -> None:
-        args = make_mock_cli_args(all_checks=False, checks=None, tier=None)
+        args = make_mock_cli_args(all_checks=False, checks=None, plan=None)
         result = cli_args.resolve_selected_checks(args)
         expected_ids = set(checks.TIERS[checks.DEFAULT_TIER])
         assert {p["id"] for p in result} == expected_ids
@@ -459,7 +459,7 @@ class TestResolveSelectedChecksOrdering:
 
     def test_checks_follow_canonical_order(self) -> None:
         """Selected checks should appear in the same order as CHECKS, not insertion order."""
-        args = make_mock_cli_args(all_checks=False, checks=["tests", "readability", "security"], tier=None)
+        args = make_mock_cli_args(all_checks=False, checks=["tests", "readability", "security"], plan=None)
         result = cli_args.resolve_selected_checks(args)
         ids = [c["id"] for c in result]
         # Canonical order: readability comes before tests, tests before security
