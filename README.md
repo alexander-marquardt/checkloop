@@ -9,7 +9,7 @@ Asking an AI to "review everything" spreads it thin. `checkloop` runs focused, s
 
 ## Token Usage
 
-Each check is a full Claude Code session — reading files, making edits, running tests. A basic-tier run (5 checks) on a medium-sized project typically uses 200K–500K tokens. Thorough or exhaustive runs with multiple cycles can reach several million tokens. Be careful!
+Each check is a full Claude Code session — reading files, making edits, running tests. A basic plan (5 checks) on a medium-sized project typically uses 200K–500K tokens. Thorough or exhaustive runs with multiple cycles can reach several million tokens. Be careful!
 
 
 ## Install
@@ -27,20 +27,20 @@ uv sync
 Run with `uv run checkloop` from the project directory. `--dir` is required:
 
 ```bash
-# Check a project (basic tier — the default)
+# Check a project (basic plan — the default)
 uv run checkloop --dir ~/my-project
 
-# Use the thorough tier for deeper checks
-uv run checkloop --dir ~/my-project --tier thorough
+# Use the thorough plan for deeper checks
+uv run checkloop --dir ~/my-project --plan thorough
 
 # Exhaustive — all 18 checks, repeat twice
-uv run checkloop --dir ~/my-project --tier exhaustive --cycles 2
+uv run checkloop --dir ~/my-project --plan exhaustive --cycles 2
 
-# Pick specific checks manually (overrides tier)
+# Pick specific checks manually (overrides plan)
 uv run checkloop --dir ~/my-project --checks readability security tests
 
-# Use a custom tier file
-uv run checkloop --dir ~/my-project --tier ./my-tier.toml
+# Use your own plan file
+uv run checkloop --dir ~/my-project --plan ./my-plan.toml
 
 # Preview without running
 uv run checkloop --dir ~/my-project --dry-run
@@ -54,8 +54,8 @@ uv run checkloop --dir ~/my-project --changed-only develop
 # See what Claude is doing in detail
 uv run checkloop --dir ~/my-project -v
 
-# Add a specific check on top of a tier
-uv run checkloop --dir ~/my-project --tier thorough --checks cleanup-ai-slop
+# Add a specific check on top of a plan
+uv run checkloop --dir ~/my-project --plan thorough --checks cleanup-ai-slop
 ```
 
 To make `checkloop` available globally (without `uv run`):
@@ -64,23 +64,23 @@ To make `checkloop` available globally (without `uv run`):
 uv tool install git+https://github.com/alexander-marquardt/checkloop.git
 ```
 
-## Tier Files
+## Execution Plans
 
-Tiers are TOML files that define which checks to run and which model to use for each check. Three tier files ship pre-populated — choose one with `--tier`:
+Execution plans are TOML files that define which checks to run and which model to use for each check. They live in the `execution_plans/` directory at the project root. Three ship pre-populated — choose one with `--plan`:
 
-| Tier | Checks | Description |
+| Plan | Checks | Description |
 |------|--------|-------------|
 | **basic** (default) | 5 checks | Core code quality — readability, DRY, tests (plus test-fix/test-validate bookends) |
 | **thorough** | 10 checks | Adds docs, security, performance, error handling, type safety |
 | **exhaustive** | 18 checks | Everything — includes edge cases, complexity, deps, logging, concurrency, a11y, API design, and AI slop cleanup |
 
-Every tier includes the `test-fix` (first) and `test-validate` (last) bookend checks to ensure the test suite is green before and after the review.
+Every plan includes the `test-fix` (first) and `test-validate` (last) bookend checks to ensure the test suite is green before and after the review.
 
-Use `--checks` to pick individual checks, or `--all-checks` as a shortcut for `--tier exhaustive`.
+Use `--checks` to pick individual checks, or `--all-checks` as a shortcut for `--plan exhaustive`.
 
 ## Per-Check Model Selection
 
-Each tier file specifies which Claude model to use for each check. The pre-populated tier files assign models based on the cognitive demands of each task:
+Each plan file specifies which Claude model to use for each check. The pre-populated plans assign models based on the cognitive demands of each task:
 
 - **Sonnet** (faster, used for most checks) — pattern-matching tasks like readability, DRY, tests, docs, error handling, types, complexity, deps, logging, accessibility, API design, and AI slop cleanup.
 - **Opus** (deeper reasoning, used selectively) — multi-layer analysis tasks like security, concurrency, performance, and edge cases, where subtle issues span multiple code layers.
@@ -88,19 +88,19 @@ Each tier file specifies which Claude model to use for each check. The pre-popul
 The `--model` flag overrides the per-check model for all checks:
 
 ```bash
-# Use tier defaults (sonnet for most, opus for security/concurrency/perf/edge-cases)
-uv run checkloop --dir ~/my-project --tier thorough
+# Use plan defaults (sonnet for most, opus for security/concurrency/perf/edge-cases)
+uv run checkloop --dir ~/my-project --plan thorough
 
 # Force all checks to opus (slower but deeper analysis everywhere)
-uv run checkloop --dir ~/my-project --tier thorough --model opus
+uv run checkloop --dir ~/my-project --plan thorough --model opus
 
 # Force all checks to sonnet (fastest, good for quick passes)
-uv run checkloop --dir ~/my-project --tier thorough --model sonnet
+uv run checkloop --dir ~/my-project --plan thorough --model sonnet
 ```
 
 ## Available Checks
 
-| Check | Tier | Model | What it does |
+| Check | Plan | Model | What it does |
 |-------|------|-------|-------------|
 | `test-fix` | bookend | sonnet | Runs the existing test suite and fixes any failures in source code. Always runs first. |
 | `readability` | basic | sonnet | Naming, function size, module/class docstrings for design strategy. Avoids rename churn. No behaviour changes. |
@@ -121,9 +121,9 @@ uv run checkloop --dir ~/my-project --tier thorough --model sonnet
 | `test-validate` | bookend | sonnet | Re-runs the full test suite after all checks. Fixes any regressions. Always runs last. |
 | `cleanup-ai-slop` | exhaustive | sonnet | Removes AI-generated noise: redundant docstrings, unnecessary logging, misleading error handling, coverage-driven tests. Runs last (before test-validate) so it gets the final word on slop that earlier checks re-introduce. |
 
-## Writing Your Own Tier Files
+## Writing Your Own Plan Files
 
-You can create your own tier files to define any combination of checks and model assignments. A tier file is a TOML file:
+You can write your own plan files to define any combination of checks and model assignments. A plan file is a TOML file:
 
 ```toml
 [tier]
@@ -151,13 +151,13 @@ id = "test-validate"
 model = "sonnet"
 ```
 
-Point `--tier` at it:
+Point `--plan` at it:
 
 ```bash
-uv run checkloop --dir ~/my-project --tier ./security-audit.toml
+uv run checkloop --dir ~/my-project --plan ./security-audit.toml
 ```
 
-The pre-populated tier files in `src/checkloop/tiers/` use the same format — you can copy and modify them as a starting point.
+The pre-populated plans in `execution_plans/` use the same format — copy and modify them as a starting point.
 
 ## Why Multi-Check Works
 
@@ -200,10 +200,10 @@ uv run checkloop --cycles 5 --convergence-threshold 0.5
 
 ```
 --dir, -d DIR          Project directory to check (required)
---tier, -t TIER        Tier name or path to a TOML tier file.
+--plan, -p PLAN        Plan name or path to a TOML plan file.
                        Pre-populated: basic, thorough, exhaustive (default: basic).
---checks CHECK [...]   Manually select checks (overrides --tier)
---all-checks           Run all 18 checks (same as --tier exhaustive)
+--checks CHECK [...]   Manually select checks (overrides --plan)
+--all-checks           Run all 18 checks (same as --plan exhaustive)
 --cycles, -c N         Repeat the full suite N times (default: 1)
 --idle-timeout SECS    Kill after N seconds of silence (default: 300)
 --check-timeout SECS   Hard wall-clock limit per check (default: 0 = no limit).
@@ -227,14 +227,14 @@ uv run checkloop --cycles 5 --convergence-threshold 0.5
                        Set to 0 to disable convergence detection.
 --model, -m MODEL      Override the model for ALL checks. Accepts aliases
                        ('sonnet', 'opus') or full model IDs ('claude-sonnet-4-6').
-                       When omitted, each check uses the model from the tier file.
+                       When omitted, each check uses the model from the plan file.
 ```
 
 ## How It Works
 
 `checkloop` is a modular Python CLI that orchestrates Claude Code as a subprocess. Here is the high-level flow:
 
-1. **Argument resolution** — Parses CLI flags, loads the tier file (or resolves manual check selection), and validates the target directory.
+1. **Argument resolution** — Parses CLI flags, loads the plan file (or resolves manual check selection), and validates the target directory.
 2. **Pre-run warning** — Displays a 5-second countdown so the user can abort. Warns if `--dangerously-skip-permissions` is (or isn't) set.
 3. **Check execution** — For each check, builds a focused prompt (with commit-message rules appended) and invokes `claude -p <prompt> --output-format stream-json --verbose` as a subprocess.
 4. **Real-time streaming** — Streams JSONL output from the subprocess, displaying tool-use events (file reads, edits, shell commands) and assistant messages with elapsed-time prefixes.
@@ -280,25 +280,26 @@ Every run writes a DEBUG-level log to `.checkloop-run.log` in the target project
 ## Project Structure
 
 ```
+execution_plans/          # Execution plan files (TOML)
+├── basic.toml            # 5 checks — core code quality (all sonnet)
+├── thorough.toml         # 10 checks — adds security (opus), perf (opus), etc.
+└── exhaustive.toml       # 18 checks — all checks with optimized model assignments
+
 src/checkloop/
-├── __init__.py       # Public API exports (main, run_claude, CHECKS, TIERS, etc.)
-├── check_runner.py   # Single-check execution: prompt assembly, invocation, change reporting
-├── checkpoint.py     # Checkpoint save/load/clear for resume-after-interrupt
-├── checks.py         # Check definitions, tier configuration, dangerous-prompt guard
-├── cli.py            # CLI entry point, logging setup, checkpoint resume, signal handling
-├── cli_args.py       # Argument parsing, validation, resolution, and pre-run display
-├── commit_message.py # Commit message generation via Claude Code (plain-text, no streaming)
-├── git.py            # Git operations: commits, diffs, line counting, branch detection
-├── monitoring.py     # Memory/process monitoring, orphan detection, session cleanup
-├── process.py        # Claude Code subprocess spawning, streaming, and cleanup
-├── streaming.py      # JSONL stream parsing and real-time event display
-├── suite.py          # Multi-cycle suite orchestration and convergence detection
-├── terminal.py       # ANSI colours, banners, status messages, duration formatting
-├── tier_config.py    # TOML-based tier configuration loading
-└── tiers/            # Pre-populated tier files (TOML)
-    ├── basic.toml    # 5 checks — core code quality (all sonnet)
-    ├── thorough.toml # 10 checks — adds security (opus), perf (opus), etc.
-    └── exhaustive.toml # 18 checks — all checks with optimized model assignments
+├── __init__.py           # Public API exports
+├── check_runner.py       # Single-check execution: prompt assembly, invocation, change reporting
+├── checkpoint.py         # Checkpoint save/load/clear for resume-after-interrupt
+├── checks.py             # Check definitions, plan configuration, dangerous-prompt guard
+├── cli.py                # CLI entry point, logging setup, checkpoint resume, signal handling
+├── cli_args.py           # Argument parsing, validation, resolution, and pre-run display
+├── commit_message.py     # Commit message generation via Claude Code (plain-text, no streaming)
+├── git.py                # Git operations: commits, diffs, line counting, branch detection
+├── monitoring.py         # Memory/process monitoring, orphan detection, session cleanup
+├── process.py            # Claude Code subprocess spawning, streaming, and cleanup
+├── streaming.py          # JSONL stream parsing and real-time event display
+├── suite.py              # Multi-cycle suite orchestration and convergence detection
+├── terminal.py           # ANSI colours, banners, status messages, duration formatting
+└── tier_config.py        # TOML-based execution plan loading
 ```
 
 ## Development
