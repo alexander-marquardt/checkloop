@@ -26,7 +26,7 @@ from checkloop.checks import (
     TIER_THOROUGH,
     TIERS,
 )
-from checkloop.tier_config import TierConfig, load_tier_file
+from checkloop.tier_config import BUILTIN_TIER_NAMES, TierConfig, load_builtin_tier, load_tier_file
 from checkloop.git import (
     build_changed_files_prefix,
     detect_default_branch,
@@ -52,12 +52,12 @@ DEFAULT_CONVERGENCE_THRESHOLD = 0.1
 # --- Argument parsing ---------------------------------------------------------
 
 def build_argument_parser() -> argparse.ArgumentParser:
-    tier_names = ", ".join(TIERS)
+    tier_names = ", ".join(BUILTIN_TIER_NAMES)
     parser = argparse.ArgumentParser(
         description="Autonomous multi-check code review using Claude Code.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="\n".join([
-            "Check tiers (loaded from TOML files in src/checkloop/tiers/):",
+            "Built-in tiers (loaded from TOML files in src/checkloop/tiers/):",
             f"  basic       {', '.join(TIER_BASIC)}",
             f"  thorough    basic + {', '.join(cid for cid in TIER_THOROUGH if cid not in TIER_BASIC)}",
             f"  exhaustive  thorough + {', '.join(cid for cid in TIER_EXHAUSTIVE if cid not in TIER_THOROUGH)}",
@@ -70,12 +70,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
             "",
             "Examples:",
             "  checkloop --dir .                                  # basic tier (default)",
-            "  checkloop --dir ~/proj --level thorough            # thorough tier",
-            "  checkloop --dir ~/proj --level exhaustive --cycles 2",
+            "  checkloop --dir ~/proj --tier thorough             # thorough tier",
+            "  checkloop --dir ~/proj --tier exhaustive --cycles 2",
             "  checkloop --dir ~/proj --checks readability security",
-            "  checkloop --dir ~/proj --all-checks                # same as --level exhaustive",
-            "  checkloop --dir ~/proj --level thorough --checks cleanup-ai-slop  # tier + extra check",
-            "  checkloop --dir ~/proj --tier-file my-tier.toml    # custom tier file",
+            "  checkloop --dir ~/proj --all-checks                # same as --tier exhaustive",
+            "  checkloop --dir ~/proj --tier thorough --checks cleanup-ai-slop",
+            "  checkloop --dir ~/proj --tier ./my-tier.toml       # custom tier file",
             "  checkloop --dir ~/proj --model opus                # force all checks to opus",
             "  checkloop --dir ~/proj --dry-run",
         ]),
@@ -86,18 +86,21 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="Project directory to check",
     )
     parser.add_argument(
-        "--level", "-l", choices=list(TIERS), default=None,
-        metavar="TIER",
-        help=f"Check depth: {tier_names} (default: basic)",
+        "--tier", "-t", default=None, metavar="TIER",
+        help=(
+            f"Tier name or path to a custom TOML tier file. "
+            f"Built-in tiers: {tier_names} (default: basic). "
+            "If the value is a path to a .toml file, it is loaded as a custom tier."
+        ),
     )
     parser.add_argument(
         "--checks", nargs="+", choices=CHECK_IDS, default=None,
         metavar="CHECK",
-        help="Manually select checks. Alone: runs only these checks. Combined with --level: adds these checks to the tier.",
+        help="Manually select checks. Alone: runs only these checks. Combined with --tier: adds these checks to the tier.",
     )
     parser.add_argument(
         "--all-checks", action="store_true",
-        help="Run every available check (same as --level exhaustive)",
+        help="Run every available check (same as --tier exhaustive)",
     )
     parser.add_argument(
         "--cycles", "-c", type=int, default=1, metavar="N",
@@ -168,15 +171,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help=(
             "Claude model override for ALL checks. Accepts aliases (e.g. 'sonnet', 'opus') "
             "or full model IDs (e.g. 'claude-sonnet-4-6'). When omitted, each check uses "
-            "the model specified in the tier configuration file."
-        ),
-    )
-    parser.add_argument(
-        "--tier-file", default=None, metavar="PATH",
-        help=(
-            "Path to a custom tier TOML file. Overrides --level with a user-defined "
-            "set of checks and per-check model assignments. See the built-in tier files "
-            "in src/checkloop/tiers/ for the format."
+            "the model specified in the tier file."
         ),
     )
 
@@ -259,35 +254,38 @@ def resolve_changed_files_prefix(args: argparse.Namespace, workdir: str) -> str:
 
 
 def _resolve_tier_config(args: argparse.Namespace) -> TierConfig | None:
-    """Resolve a TierConfig from --tier-file, --level, or the default tier.
+    """Resolve a TierConfig from --tier, --all-checks, or the default.
 
-    Returns ``None`` when the user specified ``--checks`` without ``--level``
-    or ``--tier-file`` (ad-hoc check selection with no tier context).
+    The ``--tier`` flag accepts either a pre-populated tier name (basic,
+    thorough, exhaustive) or a path to any TOML tier file.
+
+    Returns ``None`` when the user specified ``--checks`` without ``--tier``
+    (ad-hoc check selection with no tier context).
     """
-    tier_file = getattr(args, "tier_file", None)
-    if tier_file:
-        return load_tier_file(tier_file)
     if args.all_checks:
-        return TIER_CONFIGS.get("exhaustive")
-    if args.level:
-        return TIER_CONFIGS.get(args.level)
+        return load_builtin_tier("exhaustive")
+    tier = getattr(args, "tier", None)
+    if tier:
+        if tier in BUILTIN_TIER_NAMES:
+            return load_builtin_tier(tier)
+        return load_tier_file(tier)
     # --checks alone: no tier context.
     if args.checks:
         return None
     # Nothing specified: use the default tier.
-    return TIER_CONFIGS.get(DEFAULT_TIER)
+    return load_builtin_tier(DEFAULT_TIER)
 
 
 def resolve_selected_checks(args: argparse.Namespace) -> list[CheckDef]:
     """Resolve CLI flags to an ordered list of CheckDef objects.
 
-    When both ``--level`` and ``--checks`` are specified, the manual check
+    When both ``--tier`` and ``--checks`` are specified, the manual check
     list is *added* to the tier rather than replacing it.  This lets the user
     append a single out-of-tier check (e.g. ``--checks cleanup-ai-slop``) to
-    a standard tier without rewriting the full check list.
+    a tier without rewriting the full check list.
 
     Also sets ``args.check_models`` — a dict mapping check ID to model name
-    from the tier config.  The ``--model`` CLI flag overrides this per-check
+    from the tier file.  The ``--model`` CLI flag overrides this per-check
     mapping when specified.
     """
     tier_config = _resolve_tier_config(args)

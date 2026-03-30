@@ -110,8 +110,8 @@ class TestMainNonDryRun:
                     cli.main()
                 mock_warn.assert_called_once()
 
-    def test_level_thorough(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--level", "thorough", "--dry-run", "--pause", "0"]):
+    def test_tier_thorough(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--tier", "thorough", "--dry-run", "--pause", "0"]):
             cli.main()
         out = capsys.readouterr().out
         assert "security" in out

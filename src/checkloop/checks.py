@@ -413,12 +413,12 @@ _BUILTIN_TIER_CONFIGS: dict[str, TierConfig] = load_all_builtin_tiers()
 # Checks that are only run when explicitly requested via --checks, never included in tiers.
 _ON_DEMAND_ONLY: set[str] = set()
 
-# Public tier lists — used by --level and exposed for programmatic access.
+# Public tier lists — derived from tier TOML files for programmatic access.
 TIER_BASIC: list[str] = _BUILTIN_TIER_CONFIGS["basic"].check_ids()
 TIER_THOROUGH: list[str] = _BUILTIN_TIER_CONFIGS["thorough"].check_ids()
 TIER_EXHAUSTIVE: list[str] = _BUILTIN_TIER_CONFIGS["exhaustive"].check_ids()
 
-# Maps tier name (used by --level) to the list of check IDs for that tier.
+# Maps tier name to the list of check IDs for that tier.
 TIERS: dict[str, list[str]] = {
     name: config.check_ids() for name, config in _BUILTIN_TIER_CONFIGS.items()
 }

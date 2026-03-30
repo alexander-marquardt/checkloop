@@ -6,11 +6,11 @@ Parses arguments (via ``cli_args``), sets up logging and signal handlers,
 offers checkpoint resume, and delegates to the check suite.
 
 Usage:
-    checkloop --dir ~/my-project                        # basic tier review
-    checkloop --dir ~/my-project --level thorough       # thorough review
-    checkloop --dir ~/my-project --cycles 3             # repeat the full suite 3x
+    checkloop --dir ~/my-project                        # basic tier (default)
+    checkloop --dir ~/my-project --tier thorough        # thorough tier
+    checkloop --dir ~/my-project --tier exhaustive --cycles 3
     checkloop --dir ~/my-project --checks readability dry tests
-    checkloop --dir ~/my-project --all-checks --cycles 2
+    checkloop --dir ~/my-project --tier ./my-tier.toml  # custom tier file
     checkloop --dir ~/my-project --dry-run              # preview without running
 """
 
@@ -204,7 +204,7 @@ def main() -> None:
 
     selected_checks = resolve_selected_checks(args)
     if not selected_checks:
-        fatal("No checks selected. Check your --checks or --level arguments.")
+        fatal("No checks selected. Check your --checks or --tier arguments.")
     num_cycles = args.cycles
     total_steps = len(selected_checks) * num_cycles
     convergence_threshold = args.convergence_threshold
