@@ -159,6 +159,26 @@ uv run checkloop --dir ~/my-project --plan ./security-audit.toml
 
 The pre-populated plans in `execution_plans/` use the same format — copy and modify them as a starting point.
 
+## Customizing Checks
+
+Each check is a Markdown file in `checks/` with YAML frontmatter (`id`, `label`) and a prompt body:
+
+```markdown
+---
+id: readability
+label: "Readability & Code Quality"
+---
+
+Improve naming (variables, functions, classes), but only where the current name
+is genuinely confusing...
+```
+
+To customize a check, edit the `.md` file directly — no Python changes needed. To add a new check, create a new `.md` file in `checks/` and reference its `id` in a plan TOML or via `--checks`.
+
+The `prompt_templates/` directory contains boilerplate injected into every check at runtime:
+- `full_codebase_scope.md` — prepended to every check (unless `--changed-only` is used)
+- `commit_message_instructions.md` — appended to every check
+
 ## Why Multi-Check Works
 
 A single "review everything" prompt overwhelms the model. Dimension-specific checks let it focus deeply on one concern at a time. And cycling produces compounding improvements:
@@ -280,16 +300,40 @@ Every run writes a DEBUG-level log to `.checkloop-run.log` in the target project
 ## Project Structure
 
 ```
-execution_plans/          # Execution plan files (TOML)
-├── basic.toml            # 5 checks — core code quality (all sonnet)
-├── thorough.toml         # 10 checks — adds security (opus), perf (opus), etc.
-└── exhaustive.toml       # 18 checks — all checks with optimized model assignments
+checks/                   # Check definitions — one Markdown file per check
+├── test-fix.md           # Each file has YAML frontmatter (id, label) and the prompt body
+├── readability.md
+├── dry.md
+├── tests.md
+├── docs.md
+├── security.md
+├── perf.md
+├── errors.md
+├── types.md
+├── edge-cases.md
+├── complexity.md
+├── deps.md
+├── logging.md
+├── concurrency.md
+├── accessibility.md
+├── api-design.md
+├── cleanup-ai-slop.md
+└── test-validate.md
+
+execution_plans/          # Execution plans — which checks to run, which model for each
+├── basic.toml
+├── thorough.toml
+└── exhaustive.toml
+
+prompt_templates/         # Prompt fragments injected into every check at runtime
+├── full_codebase_scope.md        # Prepended to every check (unless --changed-only)
+└── commit_message_instructions.md # Appended to every check
 
 src/checkloop/
 ├── __init__.py           # Public API exports
 ├── check_runner.py       # Single-check execution: prompt assembly, invocation, change reporting
 ├── checkpoint.py         # Checkpoint save/load/clear for resume-after-interrupt
-├── checks.py             # Check definitions, plan configuration, dangerous-prompt guard
+├── checks.py             # Check loader (reads checks/), plan config, dangerous-prompt guard
 ├── cli.py                # CLI entry point, logging setup, checkpoint resume, signal handling
 ├── cli_args.py           # Argument parsing, validation, resolution, and pre-run display
 ├── commit_message.py     # Commit message generation via Claude Code (plain-text, no streaming)
