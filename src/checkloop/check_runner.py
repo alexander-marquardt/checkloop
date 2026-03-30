@@ -139,7 +139,10 @@ def _invoke_claude(
     prompt: str,
     workdir: str,
     args: argparse.Namespace,
+    *,
+    model: str | None = None,
 ) -> CheckResult:
+    effective_model = model or getattr(args, "model", None)
     return run_claude(
         prompt,
         workdir,
@@ -149,7 +152,7 @@ def _invoke_claude(
         debug=args.debug,
         check_timeout=args.check_timeout,
         max_memory_mb=args.max_memory_mb,
-        model=getattr(args, "model", None),
+        model=effective_model,
     )
 
 
@@ -224,6 +227,7 @@ def run_single_check(
     *,
     is_git: bool = False,
     cycle: int = 1,
+    model: str | None = None,
 ) -> CheckOutcome:
     """Execute a single check.
 
@@ -234,10 +238,15 @@ def run_single_check(
     "memory fix" check is run once to diagnose and fix the root cause
     before the suite continues.
 
+    When *model* is provided, it overrides the CLI ``--model`` flag for
+    this specific check.  This is used by the per-check model assignment
+    from tier configuration files.
+
     Returns a ``CheckOutcome`` with full details for the post-run summary.
     """
     check_start = time.time()
-    logger.info("Check started: id=%s, label=%s, step=%s", check["id"], check["label"], step_label)
+    model_label = f", model={model}" if model else ""
+    logger.info("Check started: id=%s, label=%s, step=%s%s", check["id"], check["label"], step_label, model_label)
     print_banner(f"{step_label} {check['label']}", CYAN)
 
     prompt = _build_check_prompt(check, args)
@@ -250,7 +259,7 @@ def run_single_check(
     sha_before = git_head_sha(workdir) if is_git else None
 
     try:
-        result = _invoke_claude(prompt, workdir, args)
+        result = _invoke_claude(prompt, workdir, args, model=model)
     except Exception as exc:
         logger.error("Check '%s' raised an unexpected exception: %s", check["id"], exc, exc_info=True)
         print_status(f"Check '{check['id']}' failed with error: {exc}. Continuing...", YELLOW)

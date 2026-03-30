@@ -1,0 +1,23 @@
+[tier]
+name = "basic"
+description = "Core code quality — readability, DRY, tests"
+
+[[checks]]
+id = "test-fix"
+model = "sonnet"
+
+[[checks]]
+id = "readability"
+model = "sonnet"
+
+[[checks]]
+id = "dry"
+model = "sonnet"
+
+[[checks]]
+id = "tests"
+model = "sonnet"
+
+[[checks]]
+id = "test-validate"
+model = "sonnet"

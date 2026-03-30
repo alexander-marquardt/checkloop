@@ -235,6 +235,8 @@ def _run_single_cycle(
     """
     changed_this_cycle: set[str] = set(initial_changed or ())
     outcomes: list[CheckOutcome] = []
+    check_models: dict[str, str] = getattr(args, "check_models", {})
+    global_model: str | None = getattr(args, "model", None)
     for i, check in enumerate(active_checks[start_index:], start=start_index):
         # Only pause between checks, not before the first one we actually run.
         if i > start_index:
@@ -243,7 +245,9 @@ def _run_single_cycle(
         cycle_suffix = f" (cycle {cycle}/{num_cycles})" if num_cycles > 1 else ""
         step_label = f"[{display_idx}/{len(active_checks)}]{cycle_suffix}"
 
-        outcome = run_single_check(check, workdir, args, step_label, is_git=is_git, cycle=cycle)
+        # Per-check model from tier config, overridden by --model if specified.
+        per_check_model = global_model or check_models.get(check["id"])
+        outcome = run_single_check(check, workdir, args, step_label, is_git=is_git, cycle=cycle, model=per_check_model)
         outcomes.append(outcome)
         if outcome.made_changes:
             changed_this_cycle.add(check["id"])

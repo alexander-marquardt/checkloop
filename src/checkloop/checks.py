@@ -5,6 +5,12 @@ from __future__ import annotations
 import re
 from typing import TypedDict
 
+from checkloop.tier_config import (
+    DEFAULT_TIER_NAME,
+    TierConfig,
+    load_all_builtin_tiers,
+)
+
 
 class CheckDef(TypedDict):
     """A single check definition with its identifier, display label, and prompt.
@@ -398,33 +404,28 @@ CHECK_IDS: list[str] = [check["id"] for check in CHECKS]
 
 
 # --- Check tiers --------------------------------------------------------------
-# Tiers control which checks run at each review depth.  Each tier is a list of
-# check IDs that includes the bookend checks (test-fix first, test-validate last)
-# plus a progressively larger set of checks.
+# Tiers are loaded from TOML files in the ``tiers/`` package directory.
+# Each TOML file defines the check IDs and per-check model for that tier.
+# The constants below are derived from those files for backward compatibility.
 
-_BOOKEND_FIRST_CHECKS: list[str] = ["test-fix"]
-_BOOKEND_LAST_CHECKS: list[str] = ["test-validate"]
-_CORE_BASIC: list[str] = ["readability", "dry", "tests"]
-_CORE_THOROUGH: list[str] = ["docs", "security", "perf", "errors", "types"]
-_CORE_EXHAUSTIVE: list[str] = ["edge-cases", "complexity", "deps", "logging", "concurrency", "accessibility", "api-design"]
+_BUILTIN_TIER_CONFIGS: dict[str, TierConfig] = load_all_builtin_tiers()
 
 # Checks that are only run when explicitly requested via --checks, never included in tiers.
 _ON_DEMAND_ONLY: set[str] = set()
 
 # Public tier lists — used by --level and exposed for programmatic access.
-TIER_BASIC: list[str] = _BOOKEND_FIRST_CHECKS + _CORE_BASIC + _BOOKEND_LAST_CHECKS
-TIER_THOROUGH: list[str] = _BOOKEND_FIRST_CHECKS + _CORE_BASIC + _CORE_THOROUGH + _BOOKEND_LAST_CHECKS
-TIER_EXHAUSTIVE: list[str] = [
-    cid for cid in CHECK_IDS if cid not in _ON_DEMAND_ONLY
-]
+TIER_BASIC: list[str] = _BUILTIN_TIER_CONFIGS["basic"].check_ids()
+TIER_THOROUGH: list[str] = _BUILTIN_TIER_CONFIGS["thorough"].check_ids()
+TIER_EXHAUSTIVE: list[str] = _BUILTIN_TIER_CONFIGS["exhaustive"].check_ids()
 
 # Maps tier name (used by --level) to the list of check IDs for that tier.
 TIERS: dict[str, list[str]] = {
-    "basic": TIER_BASIC,
-    "thorough": TIER_THOROUGH,
-    "exhaustive": TIER_EXHAUSTIVE,
+    name: config.check_ids() for name, config in _BUILTIN_TIER_CONFIGS.items()
 }
-DEFAULT_TIER: str = "basic"
+DEFAULT_TIER: str = DEFAULT_TIER_NAME
+
+# Maps tier name to its full TierConfig (including per-check models).
+TIER_CONFIGS: dict[str, TierConfig] = _BUILTIN_TIER_CONFIGS
 
 
 # --- Prompt constants ---------------------------------------------------------

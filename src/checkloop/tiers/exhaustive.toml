@@ -1,0 +1,75 @@
+[tier]
+name = "exhaustive"
+description = "All checks — includes edge cases, complexity, deps, logging, concurrency, a11y, API design, and AI slop cleanup"
+
+[[checks]]
+id = "test-fix"
+model = "sonnet"
+
+[[checks]]
+id = "readability"
+model = "sonnet"
+
+[[checks]]
+id = "dry"
+model = "sonnet"
+
+[[checks]]
+id = "tests"
+model = "sonnet"
+
+[[checks]]
+id = "docs"
+model = "sonnet"
+
+[[checks]]
+id = "security"
+model = "opus"
+
+[[checks]]
+id = "perf"
+model = "opus"
+
+[[checks]]
+id = "errors"
+model = "sonnet"
+
+[[checks]]
+id = "types"
+model = "sonnet"
+
+[[checks]]
+id = "edge-cases"
+model = "opus"
+
+[[checks]]
+id = "complexity"
+model = "sonnet"
+
+[[checks]]
+id = "deps"
+model = "sonnet"
+
+[[checks]]
+id = "logging"
+model = "sonnet"
+
+[[checks]]
+id = "concurrency"
+model = "opus"
+
+[[checks]]
+id = "accessibility"
+model = "sonnet"
+
+[[checks]]
+id = "api-design"
+model = "sonnet"
+
+[[checks]]
+id = "cleanup-ai-slop"
+model = "sonnet"
+
+[[checks]]
+id = "test-validate"
+model = "sonnet"

@@ -1,0 +1,43 @@
+[tier]
+name = "thorough"
+description = "Basic plus docs, security, performance, error handling, type safety"
+
+[[checks]]
+id = "test-fix"
+model = "sonnet"
+
+[[checks]]
+id = "readability"
+model = "sonnet"
+
+[[checks]]
+id = "dry"
+model = "sonnet"
+
+[[checks]]
+id = "tests"
+model = "sonnet"
+
+[[checks]]
+id = "docs"
+model = "sonnet"
+
+[[checks]]
+id = "security"
+model = "opus"
+
+[[checks]]
+id = "perf"
+model = "opus"
+
+[[checks]]
+id = "errors"
+model = "sonnet"
+
+[[checks]]
+id = "types"
+model = "sonnet"
+
+[[checks]]
+id = "test-validate"
+model = "sonnet"

@@ -14,7 +14,14 @@ Public API:
     CHECKS          — Ordered list of all available check definitions.
     CHECK_IDS       — List of valid check ID strings.
     TIERS           — Maps tier name to its list of check IDs.
+    TIER_CONFIGS    — Maps tier name to its full ``TierConfig`` (including per-check models).
     DEFAULT_TIER    — Default tier name (``"basic"``).
+
+Tier configuration:
+    TierConfig      — Parsed tier config (name, description, checks with models).
+    TierCheckEntry  — A single check entry in a tier (id, model).
+    load_builtin_tier() — Load a built-in tier by name.
+    load_tier_file()    — Load a custom tier from a TOML file.
     TIER_BASIC      — Check IDs for the basic tier.
     TIER_THOROUGH   — Check IDs for the thorough tier.
     TIER_EXHAUSTIVE — Check IDs for the exhaustive tier.
@@ -38,10 +45,17 @@ from checkloop.checks import (
     CheckDef,
     DEFAULT_TIER,
     TIER_BASIC,
+    TIER_CONFIGS,
     TIER_EXHAUSTIVE,
     TIER_THOROUGH,
     TIERS,
     looks_dangerous,
+)
+from checkloop.tier_config import (
+    TierCheckEntry,
+    TierConfig,
+    load_builtin_tier,
+    load_tier_file,
 )
 from checkloop.cli import main
 from checkloop.cli_args import DEFAULT_CONVERGENCE_THRESHOLD, DEFAULT_PAUSE_SECONDS
@@ -71,9 +85,14 @@ __all__ = [
     "KILL_REASON_MEMORY",
     "KILL_REASON_TIMEOUT",
     "TIER_BASIC",
+    "TIER_CONFIGS",
     "TIER_EXHAUSTIVE",
     "TIER_THOROUGH",
+    "TierCheckEntry",
+    "TierConfig",
     "TIERS",
+    "load_builtin_tier",
+    "load_tier_file",
     "looks_dangerous",
     "main",
     "run_claude",

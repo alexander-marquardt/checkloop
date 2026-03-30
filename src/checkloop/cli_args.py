@@ -21,10 +21,12 @@ from checkloop.checks import (
     CheckDef,
     DEFAULT_TIER,
     TIER_BASIC,
+    TIER_CONFIGS,
     TIER_EXHAUSTIVE,
     TIER_THOROUGH,
     TIERS,
 )
+from checkloop.tier_config import TierConfig, load_tier_file
 from checkloop.git import (
     build_changed_files_prefix,
     detect_default_branch,
@@ -157,10 +159,19 @@ def build_argument_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--model", "-m", default="sonnet", metavar="MODEL",
+        "--model", "-m", default=None, metavar="MODEL",
         help=(
-            "Claude model to use. Accepts aliases (e.g. 'sonnet', 'opus') or full model IDs "
-            "(e.g. 'claude-sonnet-4-6'). Defaults to 'sonnet'."
+            "Claude model override for ALL checks. Accepts aliases (e.g. 'sonnet', 'opus') "
+            "or full model IDs (e.g. 'claude-sonnet-4-6'). When omitted, each check uses "
+            "the model specified in the tier configuration file."
+        ),
+    )
+    parser.add_argument(
+        "--tier-file", default=None, metavar="PATH",
+        help=(
+            "Path to a custom tier TOML file. Overrides --level with a user-defined "
+            "set of checks and per-check model assignments. See the built-in tier files "
+            "in src/checkloop/tiers/ for the format."
         ),
     )
 
@@ -242,6 +253,21 @@ def resolve_changed_files_prefix(args: argparse.Namespace, workdir: str) -> str:
     return build_changed_files_prefix(changed_files)
 
 
+def _resolve_tier_config(args: argparse.Namespace) -> TierConfig | None:
+    """Resolve a TierConfig from --tier-file, --level, or the default tier.
+
+    Returns ``None`` when the user specified ``--checks`` without ``--level``
+    or ``--tier-file`` (ad-hoc check selection with no tier context).
+    """
+    tier_file = getattr(args, "tier_file", None)
+    if tier_file:
+        return load_tier_file(tier_file)
+    tier_name = args.level if args.level else DEFAULT_TIER
+    if args.all_checks:
+        tier_name = "exhaustive"
+    return TIER_CONFIGS.get(tier_name)
+
+
 def resolve_selected_checks(args: argparse.Namespace) -> list[CheckDef]:
     """Resolve CLI flags to an ordered list of CheckDef objects.
 
@@ -249,18 +275,38 @@ def resolve_selected_checks(args: argparse.Namespace) -> list[CheckDef]:
     list is *added* to the tier rather than replacing it.  This lets the user
     append a single out-of-tier check (e.g. ``--checks cleanup-ai-slop``) to
     a standard tier without rewriting the full check list.
+
+    Also sets ``args.check_models`` — a dict mapping check ID to model name
+    from the tier config.  The ``--model`` CLI flag overrides this per-check
+    mapping when specified.
     """
-    if args.all_checks:
+    tier_config = _resolve_tier_config(args)
+    tier_file = getattr(args, "tier_file", None)
+
+    if tier_file and tier_config:
+        # --tier-file takes full control of check selection.
+        selected_ids = set(tier_config.check_ids())
+        if args.checks:
+            selected_ids |= set(args.checks)
+    elif args.all_checks:
         selected_ids = set(TIERS["exhaustive"])
     elif args.checks and args.level:
-        # Both specified: --checks adds to the tier rather than replacing it.
         selected_ids = set(TIERS[args.level]) | set(args.checks)
     elif args.checks:
         selected_ids = set(args.checks)
     else:
         selected_ids = set(TIERS[args.level or DEFAULT_TIER])
+
     selected = [check for check in CHECKS if check["id"] in selected_ids]
+
+    # Build per-check model map from the tier config.
+    check_models: dict[str, str] = {}
+    if tier_config:
+        check_models = tier_config.model_map()
+    args.check_models = check_models
+
     logger.info("Selected %d checks: %s", len(selected), [check["id"] for check in selected])
+    logger.info("Per-check models: %s", check_models)
     return selected
 
 
