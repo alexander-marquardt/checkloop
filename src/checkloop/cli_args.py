@@ -286,21 +286,18 @@ def resolve_selected_checks(args: argparse.Namespace) -> list[CheckDef]:
     mapping when specified.
     """
     tier_config = _resolve_tier_config(args)
-    tier_file = getattr(args, "tier_file", None)
 
-    if tier_file and tier_config:
-        # --tier-file takes full control of check selection.
+    if tier_config and args.checks:
+        # Tier + --checks: add manual checks on top of the tier.
+        selected_ids = set(tier_config.check_ids()) | set(args.checks)
+    elif tier_config:
+        # Pure tier selection (--level, --tier-file, --all-checks, or default).
         selected_ids = set(tier_config.check_ids())
-        if args.checks:
-            selected_ids |= set(args.checks)
-    elif args.all_checks:
-        selected_ids = set(TIERS["exhaustive"])
-    elif args.checks and args.level:
-        selected_ids = set(TIERS[args.level]) | set(args.checks)
     elif args.checks:
+        # Ad-hoc check selection with no tier context.
         selected_ids = set(args.checks)
     else:
-        selected_ids = set(TIERS[args.level or DEFAULT_TIER])
+        selected_ids = set(TIERS[DEFAULT_TIER])
 
     selected = [check for check in CHECKS if check["id"] in selected_ids]
 
