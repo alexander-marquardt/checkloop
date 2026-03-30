@@ -1,0 +1,6 @@
+---
+id: test-fix
+label: "Run Existing Tests & Fix Failures"
+---
+
+Find and run the existing test suite for this project. Use whatever test runner is already configured (pytest, jest, go test, cargo test, etc.). Run ALL tests including integration tests — do not skip test categories. If some tests require external services (databases, Elasticsearch, Redis, etc.) that are unavailable, report this explicitly and list which test files/categories could not be run. Do not treat 'skipped due to missing service' as equivalent to 'passing'. If tests fail, diagnose and fix the root cause in the SOURCE code — not by weakening or deleting the tests. Also fix pre-existing flaky tests where the fix is obvious — for example, timing assertions that fail when operations complete within the same millisecond (relax `assert a > b` to `assert a >= b`, or add a small `time.sleep(0.01)` before the assertion). If this is a Python project and mypy is available, run it on the source tree after the tests pass. If the project has a mypy config (mypy.ini, pyproject.toml [tool.mypy], setup.cfg), use it; otherwise run `mypy --strict`. Fix any type errors mypy reports. If mypy is not available, skip this step. Do NOT write new tests in this step — only fix failures in the existing suite. Report what you found and fixed.

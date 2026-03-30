@@ -1,8 +1,9 @@
-"""Check definitions, tier configuration, and dangerous-prompt safety guard."""
+"""Check definitions (loaded from checks/ directory), plan configuration, and dangerous-prompt safety guard."""
 
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import TypedDict
 
 from checkloop.tier_config import (
@@ -26,381 +27,98 @@ class CheckDef(TypedDict):
     prompt: str
 
 
-# --- Check definitions --------------------------------------------------------
+# --- Check loading ------------------------------------------------------------
 #
-# Ordering matters: bookend checks (test-fix, test-validate) are first and
-# last; the remaining checks are grouped by tier (basic -> thorough -> exhaustive).
+# Each check is a Markdown file in the checks/ directory with YAML frontmatter
+# containing ``id`` and ``label``.  The body (everything after the closing
+# ``---``) is the prompt text.
 
-CHECKS: list[CheckDef] = [
-    # --- Bookend: run first ---
-    {
-        "id": "test-fix",
-        "label": "Run Existing Tests & Fix Failures",
-        "prompt": (
-            "Find and run the existing test suite for this project. "
-            "Use whatever test runner is already configured (pytest, jest, go test, cargo test, etc.). "
-            "Run ALL tests including integration tests — do not skip test categories. "
-            "If some tests require external services (databases, Elasticsearch, Redis, etc.) that are "
-            "unavailable, report this explicitly and list which test files/categories could not be run. "
-            "Do not treat 'skipped due to missing service' as equivalent to 'passing'. "
-            "If tests fail, diagnose and fix the root cause in the SOURCE code — not by weakening or "
-            "deleting the tests. "
-            "Also fix pre-existing flaky tests where the fix is obvious — for example, timing assertions "
-            "that fail when operations complete within the same millisecond (relax `assert a > b` to "
-            "`assert a >= b`, or add a small `time.sleep(0.01)` before the assertion). "
-            "If this is a Python project and mypy is available, run it on the source tree after the tests "
-            "pass. If the project has a mypy config (mypy.ini, pyproject.toml [tool.mypy], setup.cfg), "
-            "use it; otherwise run `mypy --strict`. Fix any type errors mypy reports. "
-            "If mypy is not available, skip this step. "
-            "Do NOT write new tests in this step — only fix failures in the existing suite. "
-            "Report what you found and fixed."
-        ),
-    },
-    # --- Basic tier (default) ---
-    {
-        "id": "readability",
-        "label": "Readability & Code Quality",
-        "prompt": (
-            "Improve naming (variables, functions, classes), but only where the current name "
-            "is genuinely confusing — do NOT rename for marginal gains or personal preference, "
-            "as rename churn creates large diffs through hot paths for little value. "
-            "Break up any function that does more than one logical thing, "
-            "or that requires scrolling to read in full. "
-            "Prefer small, named functions where the name removes the need for a comment. "
-            "If any source file is longer than roughly 500 lines, split it into "
-            "smaller, well-named modules with clear responsibilities — group "
-            "related functions together and use imports to reconnect them. "
-            "Apply the same standard to test files: split large test files "
-            "so each module has a corresponding focused test file. "
-            "Do NOT add docstrings, comments, or type annotations to code you didn't change. "
-            "Do NOT add module-level, class, or function docstrings unless the code is "
-            "genuinely confusing without one. If the name and signature tell the story, "
-            "a docstring adds nothing — leave it out. "
-            "Do NOT add inline comments that restate what the code does. Only comment "
-            "on non-obvious design decisions or surprising behaviour. "
-            "Ensure consistent formatting. "
-            "Do NOT change any behaviour — only improve clarity."
-        ),
-    },
-    {
-        "id": "dry",
-        "label": "DRY / Eliminate Repetition",
-        "prompt": (
-            "Find repeated or near-repeated logic. "
-            "Extract shared helpers, base classes, or utility modules to eliminate "
-            "duplication. Consolidate config values or magic numbers into constants. "
-            "Where a module mixes multiple concerns (e.g. data models, API serialization, "
-            "and validation in one file), consider extracting each concern into a focused "
-            "module — but only when the separation makes each piece independently testable "
-            "or reusable. "
-            "Ensure each concept has a single canonical home in the code. "
-            "Do NOT extract helpers for code that is only duplicated 2-3 lines or used in "
-            "only 2 places — three similar lines is better than a premature abstraction. "
-            "Do NOT change observable behaviour — only reduce repetition."
-        ),
-    },
-    {
-        "id": "tests",
-        "label": "Write / Improve Tests",
-        "prompt": (
-            "Write behaviour-driven tests that verify what the code does, not how it's implemented. "
-            "Cover: happy paths, meaningful edge cases, and real error conditions. "
-            "Test correctness of complex logic — regex patterns, parsing, serialization, "
-            "validation rules — not just that code runs without error. "
-            "Write unit tests that can run without external services (databases, APIs) by "
-            "using mocks or fixtures. Write integration tests separately for end-to-end flows. "
-            "If the project has a web UI and no end-to-end browser tests, add Playwright tests "
-            "(or Cypress/Puppeteer if already used) for the critical user journeys — login, "
-            "primary workflows, key forms. If no E2E framework is installed, set up Playwright. "
-            "Skip this if the project has no browser-facing interface. "
-            "Make integration tests CI-friendly: they should read service URLs and credentials from "
-            "environment variables (not hardcoded to localhost), and skip gracefully when those "
-            "variables are absent (e.g. pytest.mark.skipif, jest --testPathIgnorePatterns). "
-            "Where the project already has a CI config (GitHub Actions, CircleCI, etc.), check that "
-            "new tests fit the existing test job structure — don't add tests that require services "
-            "the CI job doesn't provision. "
-            "Ensure tests are order-independent and isolated: each test must set up its own state "
-            "and clean up after itself (teardown, fixture cleanup, index deletion, transaction rollback). "
-            "Tests that share mutable external state (a database, Elasticsearch index, Redis instance) "
-            "without cleanup cause failures that only appear when tests run in a specific order — "
-            "the hardest class of flake to diagnose. Fix any such isolation gaps you find. "
-            "Do NOT write tests for defensive paths that can't actually happen "
-            "(e.g. passing None where the type says str, or catching exceptions from code "
-            "that can't raise them). Do NOT use # type: ignore to force invalid inputs. "
-            "Do NOT create test files named test_*_coverage.py or test_*_extended.py — these "
-            "suggest coverage-chasing, not behaviour testing. Do NOT organize tests by source "
-            "file line numbers or add comments referencing line numbers. "
-            "Each test file should map to a module and test its public behaviour, not mirror its "
-            "internal structure. Avoid overlapping test files with near-identical names — each "
-            "test file should have a clear, distinct purpose. "
-            "Use the testing framework already in the project (or pytest/jest if none). "
-            "Do NOT remove existing coverage gates or test configuration. "
-            "Run the test suite and fix any failures before finishing."
-        ),
-    },
-    {
-        "id": "docs",
-        "label": "Documentation",
-        "prompt": (
-            "Improve documentation where it is genuinely missing and needed. "
-            "Update (or create) a README section describing what was built, "
-            "and document any non-obvious environment variables or config. "
-            "The bar for adding docstrings is HIGH — most well-named code does not need them. "
-            "Only add a docstring when the name and signature leave genuine ambiguity: "
-            "complex return values, non-obvious side effects, important preconditions, "
-            "surprising parameter semantics, or design rationale that isn't evident from the code. "
-            "Do NOT add module-level, class, or function docstrings as a blanket pass — "
-            "if the code is clear without one, adding a docstring is noise, not documentation. "
-            "Do NOT add docstrings that restate the function name or signature "
-            "(e.g. 'Get a user by their ID' on get_user_by_id). "
-            "Do NOT add inline comments that describe what the code obviously does. "
-            "Prefer comments that explain WHY and design rationale, not WHAT the code does. "
-            "When in doubt, leave the code undocumented — clean code is its own documentation."
-        ),
-    },
-    # --- Thorough tier ---
-    {
-        "id": "security",
-        "label": "Security Review",
-        "prompt": (
-            "Do a security review. "
-            "Look for: injection vulnerabilities, insecure defaults, "
-            "hardcoded secrets, missing input validation, "
-            "overly broad permissions, and unsafe dependencies. "
-            "Fix any issues you find and explain what you changed. "
-            "Be careful not to break existing behaviour when tightening security — "
-            "do NOT change CORS settings, authentication config, retry policies, or "
-            "client library options unless there is a clear vulnerability. "
-            "Do NOT add browser security headers (X-Frame-Options, X-Content-Type-Options, "
-            "Content-Security-Policy) to JSON/API-only services that don't serve HTML — "
-            "these headers are ignored by API clients and add misleading complexity. "
-            "Tightening security is not the same as changing operational defaults."
-        ),
-    },
-    {
-        "id": "perf",
-        "label": "Performance",
-        "prompt": (
-            "Review for obvious performance issues: "
-            "N+1 queries, O(N²) algorithms that could be O(N) or O(N log N), "
-            "missing indexes, unnecessary re-renders, "
-            "blocking I/O that could be async, large allocations in loops. "
-            "Add caching (@cache, @lru_cache, memoization) for expensive computations "
-            "that are called repeatedly with the same inputs — especially compiled regexes, "
-            "schema introspection, and config loading. Only cache where the inputs are "
-            "stable and the cache won't grow unbounded. "
-            "Fix anything significant. Add a brief comment only if the optimisation "
-            "would be surprising to a reader — do not comment obvious improvements."
-        ),
-    },
-    {
-        "id": "errors",
-        "label": "Error Handling",
-        "prompt": (
-            "Audit error handling. "
-            "Ensure I/O operations, network calls, and parsing steps "
-            "have proper try/except (or try/catch) with meaningful error messages. "
-            "Where multiple call sites handle the same external service errors (e.g. database, "
-            "API clients, message queues), consider centralizing error handling into a shared "
-            "helper that logs context and raises a consistent application-level error. "
-            "Only add error handling where the code can MEANINGFULLY respond to the error — "
-            "do NOT wrap code in try/except when the wrapped call cannot actually raise. "
-            "Before adding error handling, READ the called function's source to verify it "
-            "actually performs I/O or can raise the exception you're catching. A function "
-            "named create_connection() might just register a config in a dict without doing "
-            "any I/O — don't assume from the name. Misleading error handling is worse than none. "
-            "Add logging only where it would help diagnose production issues. "
-            "Do NOT add docstrings or comments to code you didn't change."
-        ),
-    },
-    {
-        "id": "types",
-        "label": "Type Safety",
-        "prompt": (
-            "Review for type safety issues. "
-            "Add or fix type annotations (Python type hints, TypeScript types, JSDoc @param/@returns). "
-            "Replace uses of Any, Object, or untyped collections with precise types. "
-            "Ensure function signatures, return types, and class attributes are all typed. "
-            "Where the framework supports it, use types for runtime validation at API boundaries "
-            "(e.g. Annotated types with FastAPI/Pydantic constraints, Zod schemas, or "
-            "class-validator decorators) — this makes the type system enforce input validation. "
-            "Run the type checker (mypy, tsc, etc.) if available and fix any errors. "
-            "Do NOT add complex generic types or multi-line type aliases that hurt readability — "
-            "a simple Any is better than a 3-line generic constraint that is harder to understand. "
-            "Do NOT change field types on data models, ORM models, or search-engine document classes "
-            "(e.g. Elasticsearch mappings, Pydantic models used for serialization) — changing a field "
-            "type changes the serialized format and breaks existing indexed data. "
-            "Do NOT change runtime behaviour beyond adding input validation at system boundaries."
-        ),
-    },
-    # --- Exhaustive tier ---
-    {
-        "id": "edge-cases",
-        "label": "Edge Cases & Boundary Conditions",
-        "prompt": (
-            "Look for unhandled edge cases and boundary conditions: "
-            "off-by-one errors, empty/null/undefined inputs, integer overflow, "
-            "empty collections, zero-length strings, negative numbers where unsigned expected, "
-            "concurrent modification, and Unicode/encoding edge cases. "
-            "Only fix edge cases that can realistically occur in production usage. "
-            "Do NOT add defensive handling for inputs that the type system already prevents "
-            "(e.g. null checks where the type is non-nullable, bounds checks on validated input). "
-            "Fix any issues and add tests for the edge cases you find."
-        ),
-    },
-    {
-        "id": "complexity",
-        "label": "Reduce Complexity",
-        "prompt": (
-            "Review for excessive complexity. "
-            "Simplify deeply nested conditionals (flatten with early returns or guard clauses). "
-            "Break apart functions with high cyclomatic complexity. "
-            "Replace complex boolean expressions with named variables or helper functions. "
-            "Simplify state machines, reduce the number of code paths where possible. "
-            "Do NOT change observable behaviour — only reduce complexity."
-        ),
-    },
-    {
-        "id": "deps",
-        "label": "Dependency Hygiene",
-        "prompt": (
-            "Audit the project's dependencies for issues. "
-            "Identify unused dependencies and remove them, but ONLY if they are truly unused — "
-            "verify that no source file imports the package before removing it. "
-            "Also verify the package is not used as a CLI tool, plugin, or runtime server. "
-            "Do NOT remove a dependency if any code still imports or references it. "
-            "Check for outdated packages with known vulnerabilities. "
-            "Flag dependencies that are unmaintained or have better alternatives. "
-            "Ensure lock files are consistent with declared dependencies. "
-            "Check that dependency version constraints are neither too loose nor too tight."
-        ),
-    },
-    {
-        "id": "logging",
-        "label": "Logging & Observability",
-        "prompt": (
-            "Review for logging and observability gaps. "
-            "Ensure entry points (API routes, CLI commands, queue consumers) log "
-            "request/response summaries. Add structured logging with context (request IDs, "
-            "user IDs, operation names) where missing. Ensure errors are logged with stack traces. "
-            "Remove or downgrade noisy debug logs that would clutter production. "
-            "Do NOT add logger.debug() to every function entry point — avoid logging arguments "
-            "that are already visible in request context or stack traces. "
-            "Do NOT add logging on hot paths (query builders, inner loops, per-item processing) "
-            "where it adds overhead for minimal diagnostic value. "
-            "Add metrics or timing instrumentation to performance-critical paths if appropriate."
-        ),
-    },
-    {
-        "id": "concurrency",
-        "label": "Concurrency & Thread Safety",
-        "prompt": (
-            "Review for concurrency issues. "
-            "Look for: race conditions, shared mutable state without synchronisation, "
-            "deadlock potential, missing locks around critical sections, "
-            "non-atomic read-modify-write sequences, and unsafe use of globals. "
-            "Check async code for missing awaits, unawaited coroutines, and blocking calls "
-            "in async contexts. Fix any issues you find."
-        ),
-    },
-    {
-        "id": "accessibility",
-        "label": "Accessibility (a11y)",
-        "prompt": (
-            "Review UI code (HTML, JSX, templates, components) for accessibility issues. "
-            "Ensure: semantic HTML elements are used instead of generic divs/spans, "
-            "images have meaningful alt text, form inputs have associated labels, "
-            "ARIA attributes are used correctly, keyboard navigation works, "
-            "colour contrast meets WCAG AA standards, and focus management is correct. "
-            "If the project has no UI code, report that and skip."
-        ),
-    },
-    {
-        "id": "api-design",
-        "label": "API Design & Consistency",
-        "prompt": (
-            "Review public APIs (REST endpoints, library interfaces, CLI commands, "
-            "exported functions) for consistency and usability. "
-            "Check for: consistent naming conventions, predictable parameter ordering, "
-            "appropriate HTTP methods and status codes, consistent error response formats, "
-            "proper use of pagination, versioning where needed, and idempotency of mutating operations. "
-            "Do NOT rename endpoints, change HTTP methods, or alter response shapes — "
-            "these are breaking changes. Focus on parameter validation and error response consistency. "
-            "Fix inconsistencies and document any breaking changes."
-        ),
-    },
-    # --- Exhaustive tier — positioned last so it runs AFTER all other checks ---
-    # Earlier checks (tests, docs, errors) tend to re-introduce slop, so
-    # cleanup-ai-slop runs last to get the final word.  It can also be invoked
-    # explicitly via --checks cleanup-ai-slop on any tier.
-    {
-        "id": "cleanup-ai-slop",
-        "label": "Remove AI-Generated Code Slop",
-        "prompt": (
-            "Your job is to REMOVE unnecessary code, not add anything. "
-            "Go through the codebase and delete AI-generated slop:\n\n"
-            "1. Remove docstrings that merely restate what the function name and signature already "
-            "communicate. If the function is called get_user_by_id(user_id: int) -> User, a docstring "
-            "saying 'Get a user by their ID' adds nothing — delete it. Remove __init__ docstrings "
-            "that just restate the parameter names. KEEP module-level docstrings "
-            "that explain design strategy, class docstrings that explain intent or relationships, "
-            "and function docstrings that explain non-obvious behavior, side effects, or complex "
-            "return values.\n\n"
-            "2. Remove logger.debug() calls that log function entry or arguments already visible in "
-            "request context or stack traces. Delete logging on hot paths (query builders, inner loops, "
-            "per-item processing). Keep logging only at system boundaries (API entry/exit, external "
-            "service calls, error paths).\n\n"
-            "3. Remove try/except blocks that wrap code that cannot actually raise the caught exception. "
-            "Read the called function's source to check whether it actually performs I/O before assuming "
-            "it can raise IOError/ConnectionError. For example, a function that registers a connection "
-            "in a dict doesn't do I/O even if the word 'connection' is in its name. "
-            "Misleading error handling is worse than none.\n\n"
-            "4. Remove defensive null/None/undefined checks where the type system already guarantees "
-            "the value is non-nullable. Remove type: ignore comments that were added to force invalid "
-            "inputs in tests.\n\n"
-            "5. Remove tests that exist only to hit coverage numbers — tests that pass None where types "
-            "say str, tests for unreachable error paths, tests with near-duplicate names like "
-            "test_boundary_conditions.py / test_boundary_edge_cases.py / test_edge_case_boundaries.py. "
-            "Remove test files with names like test_*_coverage.py or test_*_extended.py that suggest "
-            "iterative AI generation. Remove test files that reference source line numbers in comments. "
-            "Consolidate overlapping test files into focused, well-named ones.\n\n"
-            "6. Remove unnecessary inline comments that describe what the code obviously does "
-            "(e.g. '# Initialize the logger' above logger = logging.getLogger(__name__)). "
-            "Do NOT remove blank lines before section separator comments (# ---, # ===, etc.) "
-            "or between logical groups — these are style conventions that linters may enforce.\n\n"
-            "7. Revert any operational config changes that were made in the name of 'improvement' but "
-            "actually change runtime behavior — things like CORS tightening, retry policy changes, "
-            "timeout changes, or dependency removals where the dependency is still used. "
-            "Remove browser security headers (X-Frame-Options, X-Content-Type-Options, CSP) from "
-            "JSON/API-only services that don't serve HTML — these headers are ignored by API clients "
-            "and add misleading complexity.\n\n"
-            "Run the full test suite after cleanup to ensure nothing broke. "
-            "Report what you removed and how many lines were deleted."
-        ),
-    },
-    # --- Bookend: run last ---
-    {
-        "id": "test-validate",
-        "label": "Validate All Tests Pass",
-        "prompt": (
-            "Run the FULL test suite (including any tests written or modified during earlier checks). "
-            "Run ALL test categories including integration tests — do not skip any. "
-            "If some tests require external services that are unavailable, report this explicitly "
-            "rather than treating skipped tests as passing. "
-            "If any tests fail, diagnose whether the failure is due to a bug in the source code "
-            "or a bad test. Fix the root cause — prefer fixing source code over weakening tests. "
-            "Re-run until all tests pass. "
-            "If this is a Python project and mypy is available, run it on the source tree after the tests "
-            "pass. If the project has a mypy config (mypy.ini, pyproject.toml [tool.mypy], setup.cfg), "
-            "use it; otherwise run `mypy --strict`. Fix any type errors mypy reports. "
-            "If mypy is not available, skip this step. "
-            "Report the final test count, results, and mypy outcome (or note that mypy was skipped)."
-        ),
-    },
-]
+def _find_checks_dir() -> Path:
+    """Locate the checks/ directory.
+
+    Checks two locations:
+    1. Installed mode — ``checks/`` is force-included inside the package
+       directory during wheel build.
+    2. Dev mode — ``checks/`` lives at the repository root, which is three
+       levels up from this file (``src/checkloop/checks.py``).
+    """
+    pkg_dir = Path(__file__).parent / "checks"
+    if pkg_dir.is_dir():
+        return pkg_dir
+    repo_dir = Path(__file__).parent.parent.parent / "checks"
+    if repo_dir.is_dir():
+        return repo_dir
+    raise FileNotFoundError(
+        "Cannot find checks directory. Expected it next to the "
+        "package or at the repository root."
+    )
+
+
+def _parse_check_file(path: Path) -> CheckDef:
+    """Parse a single check Markdown file into a CheckDef.
+
+    Expects YAML frontmatter delimited by ``---`` lines, with ``id`` and
+    ``label`` fields.  Everything after the closing ``---`` is the prompt.
+    """
+    text = path.read_text(encoding="utf-8")
+    if not text.startswith("---"):
+        raise ValueError(f"Check file {path.name} must start with '---' (YAML frontmatter)")
+
+    # Split on the second '---' to separate frontmatter from body.
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        raise ValueError(f"Check file {path.name} has malformed frontmatter (missing closing '---')")
+
+    frontmatter = parts[1].strip()
+    prompt = parts[2].strip()
+
+    # Simple YAML parsing — only need id and label, both simple strings.
+    check_id = ""
+    label = ""
+    for line in frontmatter.splitlines():
+        line = line.strip()
+        if line.startswith("id:"):
+            check_id = line[3:].strip().strip('"').strip("'")
+        elif line.startswith("label:"):
+            label = line[6:].strip().strip('"').strip("'")
+
+    if not check_id:
+        raise ValueError(f"Check file {path.name} missing 'id' in frontmatter")
+    if not label:
+        raise ValueError(f"Check file {path.name} missing 'label' in frontmatter")
+    if not prompt:
+        raise ValueError(f"Check file {path.name} has empty prompt body")
+
+    return CheckDef(id=check_id, label=label, prompt=prompt)
+
+
+def _load_all_checks() -> list[CheckDef]:
+    """Load all check definitions from the checks/ directory.
+
+    Returns checks ordered by filename so the ordering is predictable
+    and matches the order defined in the plan TOML files.
+    """
+    checks_dir = _find_checks_dir()
+    checks: dict[str, CheckDef] = {}
+    for md_file in sorted(checks_dir.glob("*.md")):
+        check = _parse_check_file(md_file)
+        checks[check["id"]] = check
+    return list(checks.values())
+
+
+# The canonical ordered list of all available checks, loaded at import time.
+CHECKS: list[CheckDef] = _load_all_checks()
 
 # All valid check IDs, derived from CHECKS to stay in sync.
 CHECK_IDS: list[str] = [check["id"] for check in CHECKS]
+
+# Lookup by ID for fast access.
+_CHECKS_BY_ID: dict[str, CheckDef] = {check["id"]: check for check in CHECKS}
+
+
+def get_check_by_id(check_id: str) -> CheckDef | None:
+    """Return the CheckDef for a given ID, or None if not found."""
+    return _CHECKS_BY_ID.get(check_id)
 
 
 # --- Execution plans ----------------------------------------------------------
@@ -428,38 +146,35 @@ DEFAULT_TIER: str = DEFAULT_PLAN_NAME
 PLAN_CONFIGS: dict[str, PlanConfig] = _BUILTIN_PLAN_CONFIGS
 
 
-# --- Prompt constants ---------------------------------------------------------
+# --- Prompt template loading --------------------------------------------------
 
-FULL_CODEBASE_SCOPE: str = (
-    "Review ALL code in this project (not just recently written code). "
-    "IMPORTANT: Respect the existing codebase style. Do NOT make changes that create "
-    "large diffs for marginal improvement. Do NOT add docstrings, comments, or type "
-    "annotations to code you didn't otherwise change — only document code you are "
-    "actively modifying, and only when the change makes the code harder to understand "
-    "without explanation. Avoid blanket additions (docstrings on every function, "
-    "logger.debug in every method, try/except around code that can't fail). "
-    "Well-named code does not need a docstring restating its name. "
-    "Do NOT remove blank lines that follow a consistent pattern in the codebase — for example, "
-    "blank lines before section separator comments (# ---), or between logical groups. "
-    "These are intentional style conventions and removing them may break the project's linter. "
-    "Do NOT change data schemas, database/search-engine mappings, document field types, or "
-    "serialization formats — changing a field from str to int or adding/removing fields breaks "
-    "existing indexed data and causes bulk index errors in tests. "
-    "Every change should be clearly justified — if in doubt, leave the existing code alone. "
-    "IMPORTANT: Do NOT run 'git push' or push commits to any remote. "
-    "All commits must remain local — the human will push when ready. "
-)
+def _find_prompt_templates_dir() -> Path:
+    """Locate the prompt_templates/ directory."""
+    pkg_dir = Path(__file__).parent / "prompt_templates"
+    if pkg_dir.is_dir():
+        return pkg_dir
+    repo_dir = Path(__file__).parent.parent.parent / "prompt_templates"
+    if repo_dir.is_dir():
+        return repo_dir
+    raise FileNotFoundError(
+        "Cannot find prompt_templates directory. Expected it next to the "
+        "package or at the repository root."
+    )
+
+
+def _load_prompt_template(filename: str) -> str:
+    """Load a prompt template file and return its contents."""
+    templates_dir = _find_prompt_templates_dir()
+    path = templates_dir / filename
+    if not path.is_file():
+        raise FileNotFoundError(f"Prompt template not found: {path}")
+    return path.read_text(encoding="utf-8")
+
+
+FULL_CODEBASE_SCOPE: str = _load_prompt_template("full_codebase_scope.md") + " "
 """Default scope prefix prepended to every check when --changed-only is not used."""
 
-COMMIT_MESSAGE_INSTRUCTIONS: str = (
-    "\n\nIf you make any git commits, follow these commit message rules:\n"
-    "- Write a 2-3 sentence description of what was changed and why\n"
-    "- Do NOT mention Claude, AI, checkloop, or any AI tools anywhere in the message\n"
-    "- Do NOT add Co-Authored-By or Signed-off-by trailers\n"
-    "- Do NOT use generic messages like 'test-fix', 'cleanup', or single-word summaries\n"
-    "- Use clear, professional commit message style\n"
-    "- Do NOT run 'git push' — commits must stay local for the human to review and push"
-)
+COMMIT_MESSAGE_INSTRUCTIONS: str = _load_prompt_template("commit_message_instructions.md")
 """Instructions appended to every check prompt to enforce clean commit messages."""
 
 

@@ -1,0 +1,6 @@
+---
+id: types
+label: "Type Safety"
+---
+
+Review for type safety issues. Add or fix type annotations (Python type hints, TypeScript types, JSDoc @param/@returns). Replace uses of Any, Object, or untyped collections with precise types. Ensure function signatures, return types, and class attributes are all typed. Where the framework supports it, use types for runtime validation at API boundaries (e.g. Annotated types with FastAPI/Pydantic constraints, Zod schemas, or class-validator decorators) — this makes the type system enforce input validation. Run the type checker (mypy, tsc, etc.) if available and fix any errors. Do NOT add complex generic types or multi-line type aliases that hurt readability — a simple Any is better than a 3-line generic constraint that is harder to understand. Do NOT change field types on data models, ORM models, or search-engine document classes (e.g. Elasticsearch mappings, Pydantic models used for serialization) — changing a field type changes the serialized format and breaks existing indexed data. Do NOT change runtime behaviour beyond adding input validation at system boundaries.

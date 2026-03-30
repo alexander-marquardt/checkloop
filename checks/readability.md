@@ -1,0 +1,6 @@
+---
+id: readability
+label: "Readability & Code Quality"
+---
+
+Improve naming (variables, functions, classes), but only where the current name is genuinely confusing — do NOT rename for marginal gains or personal preference, as rename churn creates large diffs through hot paths for little value. Break up any function that does more than one logical thing, or that requires scrolling to read in full. Prefer small, named functions where the name removes the need for a comment. If any source file is longer than roughly 500 lines, split it into smaller, well-named modules with clear responsibilities — group related functions together and use imports to reconnect them. Apply the same standard to test files: split large test files so each module has a corresponding focused test file. Do NOT add docstrings, comments, or type annotations to code you didn't change. Do NOT add module-level, class, or function docstrings unless the code is genuinely confusing without one. If the name and signature tell the story, a docstring adds nothing — leave it out. Do NOT add inline comments that restate what the code does. Only comment on non-obvious design decisions or surprising behaviour. Ensure consistent formatting. Do NOT change any behaviour — only improve clarity.

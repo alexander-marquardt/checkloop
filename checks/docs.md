@@ -1,0 +1,6 @@
+---
+id: docs
+label: "Documentation"
+---
+
+Improve documentation where it is genuinely missing and needed. Update (or create) a README section describing what was built, and document any non-obvious environment variables or config. The bar for adding docstrings is HIGH — most well-named code does not need them. Only add a docstring when the name and signature leave genuine ambiguity: complex return values, non-obvious side effects, important preconditions, surprising parameter semantics, or design rationale that isn't evident from the code. Do NOT add module-level, class, or function docstrings as a blanket pass — if the code is clear without one, adding a docstring is noise, not documentation. Do NOT add docstrings that restate the function name or signature (e.g. 'Get a user by their ID' on get_user_by_id). Do NOT add inline comments that describe what the code obviously does. Prefer comments that explain WHY and design rationale, not WHAT the code does. When in doubt, leave the code undocumented — clean code is its own documentation.

@@ -49,6 +49,7 @@ from checkloop.checks import (
     TIER_EXHAUSTIVE,
     TIER_THOROUGH,
     TIERS,
+    get_check_by_id,
     looks_dangerous,
 )
 from checkloop.tier_config import (
@@ -81,6 +82,7 @@ __all__ = [
     "DEFAULT_MAX_MEMORY_MB",
     "DEFAULT_PAUSE_SECONDS",
     "DEFAULT_TIER",
+    "get_check_by_id",
     "KILL_REASON_IDLE",
     "KILL_REASON_MEMORY",
     "KILL_REASON_TIMEOUT",

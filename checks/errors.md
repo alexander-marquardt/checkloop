@@ -1,0 +1,6 @@
+---
+id: errors
+label: "Error Handling"
+---
+
+Audit error handling. Ensure I/O operations, network calls, and parsing steps have proper try/except (or try/catch) with meaningful error messages. Where multiple call sites handle the same external service errors (e.g. database, API clients, message queues), consider centralizing error handling into a shared helper that logs context and raises a consistent application-level error. Only add error handling where the code can MEANINGFULLY respond to the error — do NOT wrap code in try/except when the wrapped call cannot actually raise. Before adding error handling, READ the called function's source to verify it actually performs I/O or can raise the exception you're catching. A function named create_connection() might just register a config in a dict without doing any I/O — don't assume from the name. Misleading error handling is worse than none. Add logging only where it would help diagnose production issues. Do NOT add docstrings or comments to code you didn't change.
