@@ -71,8 +71,8 @@ Execution plans are TOML files that define which checks to run and which model t
 | Plan | Checks | Description |
 |------|--------|-------------|
 | **basic** (default) | 5 checks | Core code quality — readability, DRY, tests (plus test-fix/test-validate bookends) |
-| **thorough** | 10 checks | Adds docs, security, performance, error handling, type safety |
-| **exhaustive** | 18 checks | Everything — includes edge cases, complexity, deps, logging, concurrency, a11y, API design, and AI slop cleanup |
+| **thorough** | 12 checks | Adds docs, docs-accuracy, security, performance, error handling, type safety |
+| **exhaustive** | 19 checks | Everything — includes edge cases, complexity, deps, logging, concurrency, a11y, API design, docs-accuracy, and AI slop cleanup |
 
 Every plan includes the `test-fix` (first) and `test-validate` (last) bookend checks to ensure the test suite is green before and after the review.
 
@@ -82,7 +82,7 @@ Use `--checks` to pick individual checks, or `--all-checks` as a shortcut for `-
 
 Each plan file specifies which Claude model to use for each check. The pre-populated plans assign models based on the cognitive demands of each task:
 
-- **Sonnet** (faster, used for most checks) — pattern-matching tasks like readability, DRY, tests, docs, error handling, types, complexity, deps, logging, accessibility, API design, and AI slop cleanup.
+- **Sonnet** (faster, used for most checks) — pattern-matching tasks like readability, DRY, tests, docs, docs-accuracy, error handling, types, complexity, deps, logging, accessibility, API design, and AI slop cleanup.
 - **Opus** (deeper reasoning, used selectively) — multi-layer analysis tasks like security, concurrency, performance, and edge cases, where subtle issues span multiple code layers.
 
 The `--model` flag overrides the per-check model for all checks:
@@ -107,6 +107,7 @@ uv run checkloop --dir ~/my-project --plan thorough --model sonnet
 | `dry` | basic | sonnet | Finds repeated logic, extracts helpers, separates mixed concerns into focused modules. |
 | `tests` | basic | sonnet | Behaviour-driven tests for happy paths, edge cases, complex logic correctness. Unit tests with mocks, integration tests separately. |
 | `docs` | thorough | sonnet | README, config docs. Module-level docstrings for design strategy, class docstrings for intent. Function docstrings only where name+signature don't tell the full story. |
+| `docs-accuracy` | thorough | sonnet | Cross-references CLI help, README examples, error messages, and API docs against actual code. Fixes factual inaccuracies — wrong defaults, renamed flags, stale file paths. Does not add documentation. |
 | `security` | thorough | opus | Injection, hardcoded secrets, input validation. Won't change CORS/retry/auth config without a clear vuln. |
 | `perf` | thorough | opus | N+1 queries, O(N²) algorithms, blocking I/O, unnecessary allocations. Selective caching for expensive repeated computations. |
 | `errors` | thorough | sonnet | Centralized error handling for external services. Only where code can meaningfully respond. No wrapping code that can't fail. |
@@ -223,7 +224,7 @@ uv run checkloop --cycles 5 --convergence-threshold 0.5
 --plan, -p PLAN        Plan name or path to a TOML plan file.
                        Pre-populated: basic, thorough, exhaustive (default: basic).
 --checks CHECK [...]   Manually select checks (overrides --plan)
---all-checks           Run all 18 checks (same as --plan exhaustive)
+--all-checks           Run all 19 checks (same as --plan exhaustive)
 --cycles, -c N         Repeat the full suite N times (default: 1)
 --idle-timeout SECS    Kill after N seconds of silence (default: 300)
 --check-timeout SECS   Hard wall-clock limit per check (default: 0 = no limit).
@@ -306,6 +307,7 @@ checks/                   # Check definitions — one Markdown file per check
 ├── dry.md
 ├── tests.md
 ├── docs.md
+├── docs-accuracy.md
 ├── security.md
 ├── perf.md
 ├── errors.md
