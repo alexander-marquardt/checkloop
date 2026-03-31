@@ -71,8 +71,8 @@ Execution plans are TOML files that define which checks to run and which model t
 | Plan | Checks | Description |
 |------|--------|-------------|
 | **basic** (default) | 5 checks | Core code quality — readability, DRY, tests (plus test-fix/test-validate bookends) |
-| **thorough** | 12 checks | Adds docs, docs-accuracy, security, performance, error handling, type safety |
-| **exhaustive** | 19 checks | Everything — includes edge cases, complexity, deps, logging, concurrency, a11y, API design, docs-accuracy, and code cleanup |
+| **thorough** | 13 checks | Adds docs, docs-accuracy, security, performance, error handling, type safety, derived-value consistency |
+| **exhaustive** | 20 checks | Everything — includes edge cases, complexity, deps, logging, concurrency, a11y, API design, docs-accuracy, derived-value consistency, and code cleanup |
 
 Every plan includes the `test-fix` (first) and `test-validate` (last) bookend checks to ensure the test suite is green before and after the review.
 
@@ -112,6 +112,7 @@ uv run checkloop --dir ~/my-project --plan thorough --model sonnet
 | `perf` | thorough | opus | N+1 queries, O(N²) algorithms, blocking I/O, unnecessary allocations. Selective caching for expensive repeated computations. |
 | `errors` | thorough | sonnet | Centralized error handling for external services. Only where code can meaningfully respond. No wrapping code that can't fail. |
 | `types` | thorough | sonnet | Type annotations, replace `Any`/untyped code, runtime validation at API boundaries (Annotated/Pydantic/Zod). |
+| `derived-values` | thorough | opus | Finds frontend code that re-derives values the backend already computes and sends. Ensures derived values flow from one source instead of being independently calculated on both sides. |
 | `edge-cases` | exhaustive | opus | Off-by-one, null/empty inputs, overflow, Unicode edge cases. |
 | `complexity` | exhaustive | sonnet | Flatten nested conditionals, reduce cyclomatic complexity. |
 | `deps` | exhaustive | sonnet | Remove verified-unused deps, flag vulnerable/outdated packages. |
@@ -224,7 +225,7 @@ uv run checkloop --cycles 5 --convergence-threshold 0.5
 --plan, -p PLAN        Plan name or path to a TOML plan file.
                        Pre-populated: basic, thorough, exhaustive (default: basic).
 --checks CHECK [...]   Manually select checks (overrides --plan)
---all-checks           Run all 19 checks (same as --plan exhaustive)
+--all-checks           Run all 20 checks (same as --plan exhaustive)
 --cycles, -c N         Repeat the full suite N times (default: 1)
 --idle-timeout SECS    Kill after N seconds of silence (default: 300)
 --check-timeout SECS   Hard wall-clock limit per check (default: 0 = no limit).
@@ -314,6 +315,7 @@ checks/                   # Check definitions — one Markdown file per check
 ├── types.md
 ├── edge-cases.md
 ├── complexity.md
+├── derived-values.md
 ├── deps.md
 ├── logging.md
 ├── concurrency.md
