@@ -156,12 +156,11 @@ class TestPrintEvent:
         streaming._print_event(event, self._now())
         assert capsys.readouterr().out.strip() == ""
 
-    def test_result_event(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_result_event_not_printed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Result text is not printed because it duplicates streamed assistant events."""
         event = {"type": "result", "result": "All good"}
         streaming._print_event(event, self._now())
-        out = capsys.readouterr().out
-        assert "Result" in out
-        assert "All good" in out
+        assert capsys.readouterr().out.strip() == ""
 
     def test_result_event_empty(self, capsys: pytest.CaptureFixture[str]) -> None:
         event = {"type": "result", "result": ""}
