@@ -112,7 +112,7 @@ uv run checkloop --dir ~/my-project --plan thorough --model sonnet
 | `perf` | thorough | opus | N+1 queries, O(N²) algorithms, blocking I/O, unnecessary allocations. Selective caching for expensive repeated computations. |
 | `errors` | thorough | sonnet | Centralized error handling for external services. Only where code can meaningfully respond. No wrapping code that can't fail. |
 | `types` | thorough | sonnet | Type annotations, replace `Any`/untyped code, runtime validation at API boundaries (Annotated/Pydantic/Zod). |
-| `derived-values` | thorough | opus | Finds frontend code that re-derives values the backend already computes and sends. Ensures derived values flow from one source instead of being independently calculated on both sides. |
+| `derived-values` | thorough | opus | Finds frontend code that re-derives values the backend already computes. Fix is to add missing values to existing API responses — not create new API calls or recompute on the frontend. Trivially deterministic computations are excluded. |
 | `edge-cases` | exhaustive | opus | Off-by-one, null/empty inputs, overflow, Unicode edge cases. |
 | `complexity` | exhaustive | sonnet | Flatten nested conditionals, reduce cyclomatic complexity. |
 | `deps` | exhaustive | sonnet | Remove verified-unused deps, flag vulnerable/outdated packages. |
