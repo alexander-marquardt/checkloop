@@ -43,6 +43,10 @@ id = "types"
 model = "sonnet"
 
 [[checks]]
+id = "derived-values"
+model = "opus"
+
+[[checks]]
 id = "edge-cases"
 model = "opus"
 
