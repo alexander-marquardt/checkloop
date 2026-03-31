@@ -89,9 +89,8 @@ def _print_result_event(event: dict[str, Any], elapsed_prefix: str) -> None:
         else:
             logger.warning("Unexpected result type %s in result event — converting to string",
                            type(result_text).__name__)
-            result_text = str(result_text)
-        print(f"\n{elapsed_prefix}{GREEN}--- Result ---{RESET}")
-        print(result_text)
+        # The result text is not printed here because it duplicates what was
+        # already shown via streamed assistant events.
 
 
 # Type alias for event handler functions used by _print_event dispatch.
