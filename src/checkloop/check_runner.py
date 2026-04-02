@@ -247,7 +247,7 @@ def run_single_check(
     check_start = time.time()
     model_label = f", model={model}" if model else ""
     logger.info("Check started: id=%s, label=%s, step=%s%s", check["id"], check["label"], step_label, model_label)
-    print_banner(f"{step_label} {check['label']}", CYAN)
+    print_banner(f"{step_label} {check['label']}", CYAN, timestamp=True)
 
     prompt = _build_check_prompt(check, args)
 

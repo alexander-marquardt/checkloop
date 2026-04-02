@@ -11,6 +11,7 @@ import logging
 import math
 import re
 import sys
+from datetime import datetime, timezone
 from typing import NamedTuple, NoReturn, TypedDict
 
 logger = logging.getLogger(__name__)
@@ -29,10 +30,15 @@ BLUE   = "\033[94m"
 RULE_WIDTH = 72  # character width for banner horizontal rules
 
 
-def print_banner(title: str, colour: str = CYAN) -> None:
+def print_banner(title: str, colour: str = CYAN, *, timestamp: bool = False) -> None:
     horizontal_rule = "\u2500" * RULE_WIDTH  # ─
     print(f"\n{colour}{BOLD}{horizontal_rule}")
-    print(f"  {title}")
+    if timestamp:
+        now = datetime.now(timezone.utc).astimezone()
+        ts = now.strftime("%Y-%m-%d %H:%M:%S %Z")
+        print(f"  {title}  ({ts})")
+    else:
+        print(f"  {title}")
     print(f"{horizontal_rule}{RESET}\n")
 
 

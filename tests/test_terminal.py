@@ -25,6 +25,14 @@ class TestPrintBanner:
         assert terminal.GREEN in out
         assert "Title" in out
 
+    def test_timestamp(self, capsys: pytest.CaptureFixture[str]) -> None:
+        terminal.print_banner("Check", timestamp=True)
+        out = capsys.readouterr().out
+        assert "Check" in out
+        # Timestamp format includes year and time components
+        import re
+        assert re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", out)
+
 
 class TestPrintStatus:
     """Tests for the print_status() terminal output helper."""
