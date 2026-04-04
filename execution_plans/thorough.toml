@@ -47,5 +47,9 @@ id = "derived-values"
 model = "opus"
 
 [[checks]]
+id = "architecture-boundaries"
+model = "opus"
+
+[[checks]]
 id = "test-validate"
 model = "sonnet"
