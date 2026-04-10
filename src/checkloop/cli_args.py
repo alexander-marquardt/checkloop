@@ -304,9 +304,17 @@ def resolve_selected_checks(args: argparse.Namespace) -> list[CheckDef]:
     selected = [check for check in CHECKS if check["id"] in selected_ids]
 
     # Build per-check model map from the plan config.
+    # For checks added via --checks that are not in the active plan, fall back
+    # to the exhaustive plan's model assignment, then to "sonnet" as a safe
+    # default.  This prevents ad-hoc checks from inheriting the outer Claude
+    # Code session's model (which may be a non-standard cross-region profile).
     check_models: dict[str, str] = {}
     if plan_config:
         check_models = plan_config.model_map()
+    exhaustive_models = PLAN_CONFIGS["exhaustive"].model_map()
+    for check_id in selected_ids:
+        if check_id not in check_models:
+            check_models[check_id] = exhaustive_models.get(check_id, "sonnet")
     args.check_models = check_models
 
     logger.info("Selected %d checks: %s", len(selected), [check["id"] for check in selected])
