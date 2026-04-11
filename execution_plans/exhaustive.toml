@@ -1,6 +1,6 @@
 [tier]
 name = "exhaustive"
-description = "All checks — includes edge cases, complexity, deps, logging, concurrency, a11y, API design, docs-accuracy, and AI slop cleanup"
+description = "All checks — includes edge cases, complexity, deps, logging, concurrency, a11y, API design, docs-accuracy, cross-check coherence, and AI slop cleanup"
 
 [[checks]]
 id = "test-fix"

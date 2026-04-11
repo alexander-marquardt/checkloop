@@ -33,7 +33,7 @@ uv run checkloop --dir ~/my-project
 # Use the thorough plan for deeper checks
 uv run checkloop --dir ~/my-project --plan thorough
 
-# Exhaustive — all 21 checks, repeat twice
+# Exhaustive — all 22 checks, repeat twice
 uv run checkloop --dir ~/my-project --plan exhaustive --cycles 2
 
 # Pick specific checks manually (overrides plan)
@@ -74,8 +74,8 @@ Execution plans are TOML files that define which checks to run and which model t
 | Plan | Checks | Description |
 |------|--------|-------------|
 | **basic** (default) | 5 checks | Core code quality — readability, DRY, tests (plus test-fix/test-validate bookends) |
-| **thorough** | 14 checks | Adds docs, docs-accuracy, security, performance, error handling, type safety, derived-value consistency, architecture layer separation |
-| **exhaustive** | 21 checks | Everything — includes edge cases, complexity, deps, logging, concurrency, a11y, API design, docs-accuracy, derived-value consistency, architecture layer separation, and code cleanup |
+| **thorough** | 15 checks | Adds docs, docs-accuracy, security, performance, error handling, type safety, derived-value consistency, architecture layer separation, cross-check coherence |
+| **exhaustive** | 22 checks | Everything — includes edge cases, complexity, deps, logging, concurrency, a11y, API design, docs-accuracy, derived-value consistency, architecture layer separation, cross-check coherence, and code cleanup |
 
 Every plan includes the `test-fix` (first) and `test-validate` (last) bookend checks to ensure the test suite is green before and after the review.
 
@@ -86,7 +86,7 @@ Use `--checks` to pick individual checks, or `--all-checks` as a shortcut for `-
 Each plan file specifies which Claude model to use for each check. The pre-populated plans assign models based on the cognitive demands of each task:
 
 - **Sonnet** (faster, used for most checks) — pattern-matching tasks like readability, DRY, tests, docs, docs-accuracy, error handling, types, complexity, deps, logging, accessibility, API design, and code cleanup.
-- **Opus** (deeper reasoning, used selectively) — multi-layer analysis tasks like security, concurrency, performance, and edge cases, where subtle issues span multiple code layers.
+- **Opus** (deeper reasoning, used selectively) — multi-layer analysis tasks like security, concurrency, performance, edge cases, and cross-check coherence, where subtle issues span multiple code layers.
 
 The `--model` flag overrides the per-check model for all checks:
 
@@ -117,6 +117,7 @@ uv run checkloop --dir ~/my-project --plan thorough --model sonnet
 | `types` | thorough | sonnet | Type annotations, replace `Any`/untyped code, runtime validation at API boundaries (Annotated/Pydantic/Zod). |
 | `derived-values` | thorough | opus | Finds frontend code that re-derives values the backend already computes. Fix is to add missing values to existing API responses — not create new API calls or recompute on the frontend. Trivially deterministic computations are excluded. |
 | `architecture-boundaries` | thorough | opus | Discovers the project's architectural layers, checks that dependencies flow in one direction, and fixes violations — upward imports, leaking internals, shared state coupling, mixed-layer modules, circular dependencies. Skips single-layer projects. |
+| `coherence` | thorough | opus | Reviews the codebase as a whole after all other checks and fixes cases where checks worked against each other — conflicting changes, cumulative over-engineering, style drift, redundant layering, broken call chains. |
 | `edge-cases` | exhaustive | opus | Off-by-one, null/empty inputs, overflow, Unicode edge cases. |
 | `complexity` | exhaustive | sonnet | Flatten nested conditionals, reduce cyclomatic complexity. |
 | `deps` | exhaustive | sonnet | Remove verified-unused deps, flag vulnerable/outdated packages. |
@@ -125,7 +126,7 @@ uv run checkloop --dir ~/my-project --plan thorough --model sonnet
 | `accessibility` | exhaustive | sonnet | Semantic HTML, ARIA, keyboard nav, colour contrast (WCAG AA). |
 | `api-design` | exhaustive | sonnet | Consistent naming, HTTP methods, error formats, pagination. |
 | `test-validate` | bookend | sonnet | Re-runs the full test suite after all checks. Fixes any regressions. Always runs last. |
-| `cleanup-ai-slop` | exhaustive | sonnet | Removes unnecessary noise: redundant docstrings, unnecessary logging, misleading error handling, coverage-driven tests. Runs last (before test-validate) so it gets the final word on slop that earlier checks re-introduce. |
+| `cleanup-ai-slop` | exhaustive | sonnet | Removes unnecessary noise: redundant docstrings, unnecessary logging, misleading error handling, coverage-driven tests. |
 
 ## Writing Your Own Plan Files
 
@@ -229,7 +230,7 @@ uv run checkloop --cycles 5 --convergence-threshold 0.5
 --plan, -p PLAN        Plan name or path to a TOML plan file.
                        Pre-populated: basic, thorough, exhaustive (default: basic).
 --checks CHECK [...]   Manually select checks (overrides --plan)
---all-checks           Run all 21 checks (same as --plan exhaustive)
+--all-checks           Run all 22 checks (same as --plan exhaustive)
 --cycles, -c N         Repeat the full suite N times (default: 1)
 --idle-timeout SECS    Kill after N seconds of silence (default: 300)
 --check-timeout SECS   Hard wall-clock limit per check (default: 0 = no limit).
@@ -330,6 +331,7 @@ checks/                   # Check definitions — one Markdown file per check
 ├── accessibility.md
 ├── api-design.md
 ├── cleanup-ai-slop.md
+├── coherence.md
 └── test-validate.md
 
 execution_plans/          # Execution plans — which checks to run, which model for each

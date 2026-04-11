@@ -1,6 +1,6 @@
 [tier]
 name = "thorough"
-description = "Basic plus docs, docs-accuracy, security, performance, error handling, type safety, derived-value consistency"
+description = "Basic plus docs, docs-accuracy, security, performance, error handling, type safety, derived-value consistency, cross-check coherence"
 
 [[checks]]
 id = "test-fix"
