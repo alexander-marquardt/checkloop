@@ -173,6 +173,14 @@ def build_argument_parser() -> argparse.ArgumentParser:
             "the model specified in the plan file."
         ),
     )
+    parser.add_argument(
+        "--claude-command", default="claude", metavar="CMD",
+        help=(
+            "Name or path of the Claude CLI executable to invoke "
+            "(default: 'claude'). Useful when multiple Claude installations "
+            "exist, e.g. 'claude-bedrock'."
+        ),
+    )
 
     return parser
 

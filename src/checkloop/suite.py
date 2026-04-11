@@ -107,7 +107,7 @@ _MAX_DIFF_LEN = 50_000  # truncate diffs beyond this to avoid overwhelming Claud
 _FALLBACK_COMMIT_MSG = "Snapshot uncommitted work before checkloop review"
 
 
-def _commit_uncommitted_changes(workdir: str, skip_permissions: bool, model: str | None = None) -> None:
+def _commit_uncommitted_changes(workdir: str, skip_permissions: bool, model: str | None = None, claude_command: str = "claude") -> None:
     """Commit any uncommitted changes with a Claude-generated message.
 
     Called at the start of a suite run to preserve the user's in-progress
@@ -122,7 +122,7 @@ def _commit_uncommitted_changes(workdir: str, skip_permissions: bool, model: str
     if diff:
         if len(diff) > _MAX_DIFF_LEN:
             diff = diff[:_MAX_DIFF_LEN] + f"\n\n... (truncated, {len(diff) - _MAX_DIFF_LEN} more characters)"
-        message = generate_commit_message(diff, workdir, skip_permissions=skip_permissions, model=model) or _FALLBACK_COMMIT_MSG
+        message = generate_commit_message(diff, workdir, skip_permissions=skip_permissions, model=model, claude_command=claude_command) or _FALLBACK_COMMIT_MSG
 
     committed = git_commit_all(workdir, message)
     if committed:
@@ -288,7 +288,7 @@ def _run_check_suite(
     """
     is_git = is_git_repo(workdir)
     if is_git and not args.dry_run:
-        _commit_uncommitted_changes(workdir, args.dangerously_skip_permissions, getattr(args, "model", None))
+        _commit_uncommitted_changes(workdir, args.dangerously_skip_permissions, getattr(args, "model", None), getattr(args, "claude_command", "claude"))
     convergence_enabled = convergence_threshold > 0 and is_git
     check_ids = [c["id"] for c in selected_checks]
     state = _build_suite_state(resume_from)

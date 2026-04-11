@@ -78,8 +78,16 @@ SANITIZED_ENV: dict[str, str] = {k: v for k, v in os.environ.items() if k != "CL
 
 # --- Claude command construction ----------------------------------------------
 
-def _build_claude_command(prompt: str, skip_permissions: bool, model: str | None = None) -> list[str]:
-    cmd = ["claude"]
+DEFAULT_CLAUDE_COMMAND = "claude"
+"""Default Claude CLI executable name."""
+
+def _build_claude_command(
+    prompt: str,
+    skip_permissions: bool,
+    model: str | None = None,
+    claude_command: str = DEFAULT_CLAUDE_COMMAND,
+) -> list[str]:
+    cmd = [claude_command]
     if skip_permissions:
         cmd.append("--dangerously-skip-permissions")
     if model:
@@ -117,8 +125,9 @@ def _spawn_claude_process(
             start_new_session=True,  # creates a new process group
         )
     except FileNotFoundError:
+        exe = cmd[0] if cmd else "claude"
         fatal(
-            "Error: `claude` not found. Is Claude Code installed?\n"
+            f"Error: `{exe}` not found. Is Claude Code installed?\n"
             "  Install: npm install -g @anthropic-ai/claude-code"
         )
     except OSError as exc:
@@ -391,6 +400,7 @@ def run_claude(
     check_timeout: int = DEFAULT_CHECK_TIMEOUT,
     max_memory_mb: int = DEFAULT_MAX_MEMORY_MB,
     model: str | None = None,
+    claude_command: str = DEFAULT_CLAUDE_COMMAND,
 ) -> CheckResult:
     """Run a single Claude Code check.
 
@@ -418,7 +428,7 @@ def run_claude(
         the reason (``KILL_REASON_MEMORY``, ``KILL_REASON_TIMEOUT``, or
         ``KILL_REASON_IDLE``).
     """
-    cmd = _build_claude_command(prompt, skip_permissions, model)
+    cmd = _build_claude_command(prompt, skip_permissions, model, claude_command)
     logger.info("run_claude: workdir=%s, prompt_len=%d, skip_permissions=%s, model=%s, idle_timeout=%d, "
                 "check_timeout=%d, max_memory_mb=%d",
                 workdir, len(prompt), skip_permissions, model, idle_timeout, check_timeout, max_memory_mb)

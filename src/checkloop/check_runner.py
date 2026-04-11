@@ -48,7 +48,8 @@ def _commit_with_generated_message(workdir: str, args: argparse.Namespace, fallb
     diff = get_uncommitted_diff(workdir)
     skip = getattr(args, "dangerously_skip_permissions", False)
     model = getattr(args, "model", None)
-    message = generate_commit_message(diff, workdir, skip_permissions=skip, model=model) or fallback
+    claude_cmd = getattr(args, "claude_command", "claude")
+    message = generate_commit_message(diff, workdir, skip_permissions=skip, model=model, claude_command=claude_cmd) or fallback
     git_commit_all(workdir, message)
 
 
@@ -143,6 +144,7 @@ def _invoke_claude(
     model: str | None = None,
 ) -> CheckResult:
     effective_model = model or getattr(args, "model", None)
+    claude_cmd = getattr(args, "claude_command", "claude")
     return run_claude(
         prompt,
         workdir,
@@ -153,6 +155,7 @@ def _invoke_claude(
         check_timeout=args.check_timeout,
         max_memory_mb=args.max_memory_mb,
         model=effective_model,
+        claude_command=claude_cmd,
     )
 
 

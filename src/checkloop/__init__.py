@@ -63,6 +63,7 @@ from checkloop.cli_args import DEFAULT_CONVERGENCE_THRESHOLD, DEFAULT_PAUSE_SECO
 from checkloop.process import (
     CheckResult,
     DEFAULT_CHECK_TIMEOUT,
+    DEFAULT_CLAUDE_COMMAND,
     DEFAULT_IDLE_TIMEOUT,
     DEFAULT_MAX_MEMORY_MB,
     KILL_REASON_IDLE,
@@ -77,6 +78,7 @@ __all__ = [
     "CheckDef",
     "CheckResult",
     "DEFAULT_CHECK_TIMEOUT",
+    "DEFAULT_CLAUDE_COMMAND",
     "DEFAULT_CONVERGENCE_THRESHOLD",
     "DEFAULT_IDLE_TIMEOUT",
     "DEFAULT_MAX_MEMORY_MB",
