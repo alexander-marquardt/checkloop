@@ -404,3 +404,164 @@ class TestRunCmdQuietTimeout:
         ):
             result = monitoring._run_cmd_quiet(["ps", "-o", "rss="])
         assert result is None
+
+
+# =============================================================================
+# find_all_descendant_pids — process tree walking
+# =============================================================================
+
+
+class TestFindAllDescendantPids:
+    """Tests for find_all_descendant_pids() BFS tree-walking logic."""
+
+    def _make_ps_output(self, pairs: list[tuple[int, int]]) -> str:
+        """Build fake ``ps -eo pid=,ppid=`` output from (pid, ppid) pairs."""
+        return "\n".join(f"  {pid}  {ppid}" for pid, ppid in pairs) + "\n"
+
+    def test_returns_direct_children(self) -> None:
+        ps_out = self._make_ps_output([(10, 1), (20, 10), (30, 10)])
+        with mock.patch.object(monitoring, "_run_cmd_quiet",
+                               return_value=make_git_result(stdout=ps_out)):
+            result = monitoring.find_all_descendant_pids(10)
+        assert sorted(result) == [20, 30]
+
+    def test_returns_deep_descendants(self) -> None:
+        """Grandchildren and great-grandchildren are included."""
+        ps_out = self._make_ps_output([
+            (10, 1), (20, 10), (30, 20), (40, 30), (50, 40),
+        ])
+        with mock.patch.object(monitoring, "_run_cmd_quiet",
+                               return_value=make_git_result(stdout=ps_out)):
+            result = monitoring.find_all_descendant_pids(10)
+        assert sorted(result) == [20, 30, 40, 50]
+
+    def test_no_children_returns_empty(self) -> None:
+        ps_out = self._make_ps_output([(10, 1), (20, 1)])
+        with mock.patch.object(monitoring, "_run_cmd_quiet",
+                               return_value=make_git_result(stdout=ps_out)):
+            result = monitoring.find_all_descendant_pids(10)
+        assert result == []
+
+    def test_root_pid_not_in_ps_output(self) -> None:
+        """If root_pid doesn't appear as a parent, return empty."""
+        ps_out = self._make_ps_output([(20, 1), (30, 1)])
+        with mock.patch.object(monitoring, "_run_cmd_quiet",
+                               return_value=make_git_result(stdout=ps_out)):
+            result = monitoring.find_all_descendant_pids(9999)
+        assert result == []
+
+    def test_ps_failure_returns_empty(self) -> None:
+        with mock.patch.object(monitoring, "_run_cmd_quiet", return_value=None):
+            assert monitoring.find_all_descendant_pids(10) == []
+
+    def test_ps_nonzero_returns_empty(self) -> None:
+        with mock.patch.object(monitoring, "_run_cmd_quiet",
+                               return_value=make_git_result(returncode=1)):
+            assert monitoring.find_all_descendant_pids(10) == []
+
+    def test_malformed_lines_skipped(self) -> None:
+        """Lines with non-numeric content are silently skipped."""
+        raw = "  20  10\n  bad  line\n  30  10\n"
+        with mock.patch.object(monitoring, "_run_cmd_quiet",
+                               return_value=make_git_result(stdout=raw)):
+            result = monitoring.find_all_descendant_pids(10)
+        assert sorted(result) == [20, 30]
+
+    def test_short_lines_skipped(self) -> None:
+        """Lines with fewer than 2 fields are skipped."""
+        raw = "  20  10\n999\n  30  10\n"
+        with mock.patch.object(monitoring, "_run_cmd_quiet",
+                               return_value=make_git_result(stdout=raw)):
+            result = monitoring.find_all_descendant_pids(10)
+        assert sorted(result) == [20, 30]
+
+    def test_excludes_own_pid(self) -> None:
+        """Our own PID must never appear in descendants (visited set starts with it)."""
+        my_pid = os.getpid()
+        ps_out = self._make_ps_output([(my_pid, 10), (20, 10)])
+        with mock.patch.object(monitoring, "_run_cmd_quiet",
+                               return_value=make_git_result(stdout=ps_out)):
+            result = monitoring.find_all_descendant_pids(10)
+        assert my_pid not in result
+        assert 20 in result
+
+    def test_handles_cycle_in_tree(self) -> None:
+        """A cycle in the ps output (corrupted data) must not cause infinite loop."""
+        ps_out = self._make_ps_output([(20, 10), (30, 20), (20, 30)])
+        with mock.patch.object(monitoring, "_run_cmd_quiet",
+                               return_value=make_git_result(stdout=ps_out)):
+            result = monitoring.find_all_descendant_pids(10)
+        assert sorted(result) == [20, 30]
+
+    def test_catches_escaped_setsid_descendant(self) -> None:
+        """A descendant that called setsid() (different session) is still found
+        because the tree walk uses parent-child links, not sessions."""
+        # PID 20 is direct child; PID 30 is child of 20 but has called setsid()
+        # (it would have a different session ID, but tree walk doesn't care).
+        ps_out = self._make_ps_output([(20, 10), (30, 20)])
+        with mock.patch.object(monitoring, "_run_cmd_quiet",
+                               return_value=make_git_result(stdout=ps_out)):
+            result = monitoring.find_all_descendant_pids(10)
+        assert sorted(result) == [20, 30]
+
+
+# =============================================================================
+# _sweep_previous_sessions — descendant PID cleanup
+# =============================================================================
+
+
+class TestSweepPreviousSessionsDescendants:
+    """Tests for descendant PID handling in _sweep_previous_sessions()."""
+
+    def test_kills_tracked_descendants(self) -> None:
+        """Tracked descendant PIDs are killed during sweep."""
+        monitoring.previous_session_ids[:] = []
+        monitoring.previous_descendant_pids.clear()
+        monitoring.previous_descendant_pids.update([111, 222])
+        with mock.patch.object(monitoring, "kill_pids", return_value=2) as mock_kill:
+            monitoring._sweep_previous_sessions()
+            mock_kill.assert_called_once_with([111, 222])
+        assert monitoring.previous_descendant_pids == set()
+
+    def test_clears_descendants_even_if_none_killed(self) -> None:
+        monitoring.previous_session_ids[:] = []
+        monitoring.previous_descendant_pids.clear()
+        monitoring.previous_descendant_pids.update([333])
+        with mock.patch.object(monitoring, "kill_pids", return_value=0):
+            monitoring._sweep_previous_sessions()
+        assert monitoring.previous_descendant_pids == set()
+
+    def test_no_descendants_no_call(self) -> None:
+        """When previous_descendant_pids is empty, kill_pids is not called."""
+        monitoring.previous_session_ids[:] = []
+        monitoring.previous_descendant_pids.clear()
+        with mock.patch.object(monitoring, "kill_pids") as mock_kill:
+            monitoring._sweep_previous_sessions()
+            mock_kill.assert_not_called()
+
+
+# =============================================================================
+# cleanup_all_sessions — descendant PID cleanup at exit
+# =============================================================================
+
+
+class TestCleanupAllSessionsDescendants:
+    """Tests for descendant PID handling in cleanup_all_sessions()."""
+
+    def test_kills_tracked_descendants_at_exit(self) -> None:
+        monitoring.previous_session_ids[:] = []
+        monitoring.previous_descendant_pids.clear()
+        monitoring.previous_descendant_pids.update([444, 555])
+        with mock.patch.object(monitoring, "kill_pids", return_value=2) as mock_kill, \
+             mock.patch.object(monitoring, "_find_child_pids", return_value=[]):
+            monitoring.cleanup_all_sessions()
+            mock_kill.assert_called_once_with([444, 555])
+        assert monitoring.previous_descendant_pids == set()
+
+    def test_no_descendants_at_exit(self) -> None:
+        monitoring.previous_session_ids[:] = []
+        monitoring.previous_descendant_pids.clear()
+        with mock.patch.object(monitoring, "kill_pids") as mock_kill, \
+             mock.patch.object(monitoring, "_find_child_pids", return_value=[]):
+            monitoring.cleanup_all_sessions()
+            mock_kill.assert_not_called()
