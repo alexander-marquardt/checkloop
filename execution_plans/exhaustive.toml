@@ -83,5 +83,9 @@ id = "cleanup-ai-slop"
 model = "sonnet"
 
 [[checks]]
+id = "coherence"
+model = "opus"
+
+[[checks]]
 id = "test-validate"
 model = "sonnet"
