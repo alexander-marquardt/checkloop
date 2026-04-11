@@ -56,6 +56,9 @@ uv run checkloop --dir ~/my-project -v
 
 # Add a specific check on top of a plan
 uv run checkloop --dir ~/my-project --plan thorough --checks cleanup-ai-slop
+
+# Use a different Claude CLI (e.g. Bedrock-backed)
+uv run checkloop --dir ~/my-project --claude-command claude-bedrock
 ```
 
 To make `checkloop` available globally (without `uv run`):
@@ -251,6 +254,9 @@ uv run checkloop --cycles 5 --convergence-threshold 0.5
 --model, -m MODEL      Override the model for ALL checks. Accepts aliases
                        ('sonnet', 'opus') or full model IDs ('claude-sonnet-4-6').
                        When omitted, each check uses the model from the plan file.
+--claude-command CMD   Name or path of the Claude CLI executable to invoke
+                       (default: 'claude'). Useful when multiple Claude
+                       installations exist, e.g. 'claude-bedrock'.
 ```
 
 ## How It Works
@@ -376,7 +382,7 @@ The project has no runtime dependencies — only `pytest` and `mypy` in the dev 
 
 | Problem | Solution |
 |---------|----------|
-| `claude` not found | Install Claude Code: `npm install -g @anthropic-ai/claude-code` |
+| `claude` not found | Install Claude Code: `npm install -g @anthropic-ai/claude-code`. If you have a non-standard install (e.g. `claude-bedrock`), use `--claude-command` to specify the executable name. |
 | Checks hang waiting for permission prompts | You must use `--dangerously-skip-permissions` — checkloop cannot relay interactive prompts |
 | "CLAUDECODE" conflict when running inside a Claude session | checkloop automatically strips this variable; no action needed |
 | Convergence detection not working | Ensure the project directory is a git repo (`git init` if needed) |
