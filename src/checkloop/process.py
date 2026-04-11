@@ -115,16 +115,16 @@ def _spawn_claude_process(
     # in run_claude() before this function is called.
     p_idx = cmd.index("-p") if "-p" in cmd else len(cmd)
     logger.info("Spawning subprocess: %s (cwd=%s)", cmd[:p_idx], workdir)
-    popen_kwargs = dict(
-        cwd=workdir,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        env=SANITIZED_ENV,
-        start_new_session=True,  # creates a new process group
-    )
     try:
-        return subprocess.Popen(cmd, **popen_kwargs)
+        return subprocess.Popen(
+            cmd,
+            cwd=workdir,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env=SANITIZED_ENV,
+            start_new_session=True,  # creates a new process group
+        )
     except FileNotFoundError:
         # Command not found as a direct executable — it may be a shell
         # alias or function (e.g. `claude-bedrock` aliased to
@@ -134,7 +134,13 @@ def _spawn_claude_process(
         logger.info("Retrying via %s -ic — %r not found on PATH", shell, cmd[0])
         try:
             return subprocess.Popen(
-                [shell, "-ic", shlex.join(cmd)], **popen_kwargs,
+                [shell, "-ic", shlex.join(cmd)],
+                cwd=workdir,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                env=SANITIZED_ENV,
+                start_new_session=True,
             )
         except (FileNotFoundError, OSError):
             pass  # fall through to the original fatal error
