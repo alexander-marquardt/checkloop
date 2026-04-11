@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import select
+import shlex
 import signal
 import subprocess
 import time
@@ -114,17 +115,29 @@ def _spawn_claude_process(
     # in run_claude() before this function is called.
     p_idx = cmd.index("-p") if "-p" in cmd else len(cmd)
     logger.info("Spawning subprocess: %s (cwd=%s)", cmd[:p_idx], workdir)
+    popen_kwargs = dict(
+        cwd=workdir,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        env=SANITIZED_ENV,
+        start_new_session=True,  # creates a new process group
+    )
     try:
-        return subprocess.Popen(
-            cmd,
-            cwd=workdir,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            env=SANITIZED_ENV,
-            start_new_session=True,  # creates a new process group
-        )
+        return subprocess.Popen(cmd, **popen_kwargs)
     except FileNotFoundError:
+        # Command not found as a direct executable — it may be a shell
+        # alias or function (e.g. `claude-bedrock` aliased to
+        # `CLAUDE_CODE_USE_BEDROCK=1 claude`).  Retry through the user's
+        # interactive shell so aliases and functions are resolved.
+        shell = os.environ.get("SHELL", "/bin/sh")
+        logger.info("Retrying via %s -ic — %r not found on PATH", shell, cmd[0])
+        try:
+            return subprocess.Popen(
+                [shell, "-ic", shlex.join(cmd)], **popen_kwargs,
+            )
+        except (FileNotFoundError, OSError):
+            pass  # fall through to the original fatal error
         exe = cmd[0] if cmd else "claude"
         fatal(
             f"Error: `{exe}` not found. Is Claude Code installed?\n"
