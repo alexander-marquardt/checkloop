@@ -520,7 +520,8 @@ class TestSweepPreviousSessionsDescendants:
         monitoring.previous_descendant_pids.update([111, 222])
         with mock.patch.object(monitoring, "kill_pids", return_value=2) as mock_kill:
             monitoring._sweep_previous_sessions()
-            mock_kill.assert_called_once_with([111, 222])
+            mock_kill.assert_called_once()
+            assert set(mock_kill.call_args[0][0]) == {111, 222}
         assert monitoring.previous_descendant_pids == set()
 
     def test_clears_descendants_even_if_none_killed(self) -> None:
@@ -555,7 +556,8 @@ class TestCleanupAllSessionsDescendants:
         with mock.patch.object(monitoring, "kill_pids", return_value=2) as mock_kill, \
              mock.patch.object(monitoring, "_find_child_pids", return_value=[]):
             monitoring.cleanup_all_sessions()
-            mock_kill.assert_called_once_with([444, 555])
+            mock_kill.assert_called_once()
+            assert set(mock_kill.call_args[0][0]) == {444, 555}
         assert monitoring.previous_descendant_pids == set()
 
     def test_no_descendants_at_exit(self) -> None:
