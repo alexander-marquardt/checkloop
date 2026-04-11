@@ -24,6 +24,7 @@ dependencies = []
 [dependency-groups]
 dev = [
     "pytest>=8",
+    "pytest-timeout>=2.3",
     "mypy>=1.10",
 ]
 
