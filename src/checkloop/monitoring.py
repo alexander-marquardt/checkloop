@@ -106,6 +106,42 @@ def find_session_pids(session_id: int) -> list[int]:
     return [pid for pid in _run_pgrep("-s", str(session_id)) if pid != my_pid]
 
 
+def find_all_descendant_pids(root_pid: int) -> list[int]:
+    """Walk the process tree to find every descendant of *root_pid*.
+
+    Uses a single ``ps`` call to build a parent→children mapping, then
+    BFS-walks from *root_pid*.  This catches descendants that created new
+    sessions or process groups (e.g. via ``setsid()``) and would escape
+    ``os.killpg()`` and ``pgrep -s``.
+    """
+    result = _run_cmd_quiet(["ps", "-eo", "pid=,ppid="])
+    if result is None or result.returncode != 0:
+        return []
+
+    children_of: dict[int, list[int]] = {}
+    for line in result.stdout.strip().splitlines():
+        parts = line.split()
+        if len(parts) >= 2:
+            try:
+                pid, ppid = int(parts[0]), int(parts[1])
+                children_of.setdefault(ppid, []).append(pid)
+            except ValueError:
+                continue
+
+    descendants: list[int] = []
+    queue = list(children_of.get(root_pid, []))
+    visited: set[int] = {root_pid, os.getpid()}
+    while queue:
+        pid = queue.pop(0)
+        if pid in visited:
+            continue
+        visited.add(pid)
+        descendants.append(pid)
+        queue.extend(children_of.get(pid, []))
+
+    return descendants
+
+
 # --- Orphan and straggler cleanup --------------------------------------------
 
 def kill_pids(pids: list[int], sig: signal.Signals = signal.SIGKILL) -> int:
@@ -139,6 +175,14 @@ previous_session_ids: list[int] = []
 Used by ``log_memory_usage`` and ``cleanup_all_sessions`` to catch processes
 that survived ``_kill_process_group``.  Each entry is the PID of a Claude
 subprocess that was also the session leader (because of ``start_new_session=True``).
+"""
+
+previous_descendant_pids: set[int] = set()
+"""Descendant PIDs collected during check execution.
+
+Accumulated by periodic tree walks during ``_stream_process_output`` and at
+cleanup time.  Covers descendants that created new sessions (via ``setsid()``)
+and escaped both ``os.killpg()`` and session-based cleanup.
 """
 
 
@@ -204,6 +248,14 @@ def _sweep_previous_sessions() -> None:
             logger.warning("Failed to sweep session %d: %s", sid, exc, exc_info=True)
     previous_session_ids[:] = still_active
 
+    # Kill tracked descendants that escaped session/group cleanup (e.g. processes
+    # that called setsid() and ended up in a different session).
+    if previous_descendant_pids:
+        killed = kill_pids(list(previous_descendant_pids))
+        if killed:
+            print_status(f"  Warning: {killed} tracked descendant(s) still alive — killed.", YELLOW)
+        previous_descendant_pids.clear()
+
 
 def cleanup_all_sessions() -> None:
     """Kill all processes from every tracked session.
@@ -222,6 +274,11 @@ def cleanup_all_sessions() -> None:
             kill_session_stragglers(sid)
         except Exception as exc:
             logger.warning("Failed to clean up session %d: %s", sid, exc)
+    # Kill tracked descendants that escaped session/group cleanup.
+    if previous_descendant_pids:
+        logger.info("Cleaning up %d tracked descendant PID(s)", len(previous_descendant_pids))
+        kill_pids(list(previous_descendant_pids))
+        previous_descendant_pids.clear()
     # Also kill any direct children that might have escaped session tracking.
     try:
         child_pids = _find_child_pids()
