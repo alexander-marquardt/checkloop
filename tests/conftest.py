@@ -33,12 +33,16 @@ def _reset_monitoring_globals() -> None:
     calls against stale PIDs.
     """
     saved_sessions = list(monitoring.previous_session_ids)
+    saved_descendants = set(monitoring.previous_descendant_pids)
 
     monitoring.previous_session_ids.clear()
+    monitoring.previous_descendant_pids.clear()
 
     yield  # type: ignore[misc]
 
     monitoring.previous_session_ids[:] = saved_sessions
+    monitoring.previous_descendant_pids.clear()
+    monitoring.previous_descendant_pids.update(saved_descendants)
 
 
 @pytest.fixture(autouse=True)
