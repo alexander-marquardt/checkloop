@@ -9,7 +9,6 @@ on:
 jobs:
   lint:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
@@ -26,11 +25,7 @@ jobs:
         run: uv run python -m mypy src/checkloop
 
       - name: Run tests
-        env:
-          PYTHONUNBUFFERED: "1"
-        run: |
-          echo "=== Starting pytest at $(date) ==="
-          timeout 120 uv run python -m pytest tests/ -x -v -s --timeout=30 --timeout-method=thread 2>&1 || echo "=== pytest failed or timed out (exit=$?) at $(date) ==="
+        run: uv run python -m pytest tests/ -x -q
 
       - name: Verify CLI entry point
         run: uv run checkloop --help

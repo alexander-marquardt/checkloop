@@ -183,15 +183,9 @@ class TestAddFileLogHandlerOSError:
 
 
 class TestSignalHandler:
-    """Test signal handler body inside _register_cleanup_handlers().
+    """Test signal handler body inside main()."""
 
-    These tests call the *real* ``_register_cleanup_handlers`` (obtained
-    via the ``real_register_cleanup_handlers`` fixture) with ``atexit``
-    and ``signal.signal`` mocked, so no real handlers are installed on
-    the pytest process.
-    """
-
-    def test_sigterm_handler_exits(self, real_register_cleanup_handlers) -> None:  # type: ignore[no-untyped-def]
+    def test_sigterm_handler_exits(self) -> None:
         """Verify that the SIGTERM handler calls sys.exit(128 + signum)."""
         import signal as signal_mod
 
@@ -202,9 +196,15 @@ class TestSignalHandler:
             captured_handlers[signum] = handler
             return original_signal(signum, signal_mod.SIG_DFL)
 
-        with mock.patch("atexit.register"), \
-             mock.patch("signal.signal", side_effect=capture_signal):
-            real_register_cleanup_handlers()
+        mock_args = make_mock_cli_args(dry_run=True)
+        with mock.patch.object(cli, "build_argument_parser") as mock_parser:
+            mock_parser.return_value.parse_args.return_value = mock_args
+            with mock.patch.object(cli, "resolve_working_directory", return_value="/tmp"), \
+                 mock.patch.object(cli, "validate_arguments"), \
+                 mock.patch.object(cli, "display_pre_run_warning"), \
+                 mock.patch.object(cli, "run_suite_with_error_handling"), \
+                 mock.patch("signal.signal", side_effect=capture_signal):
+                cli.main()
 
         handler = captured_handlers.get(signal_mod.SIGTERM)
         assert handler is not None
@@ -212,16 +212,25 @@ class TestSignalHandler:
             handler(signal_mod.SIGTERM, None)  # type: ignore[operator]
         assert exc_info.value.code == 128 + signal_mod.SIGTERM
 
-    def test_signal_registration_oserror_is_caught(self, real_register_cleanup_handlers) -> None:  # type: ignore[no-untyped-def]
-        """When signal.signal raises OSError, _register_cleanup_handlers logs and continues."""
+    def test_signal_registration_oserror_is_caught(self) -> None:
+        """When signal.signal raises OSError, main() logs a warning and continues."""
+        import signal as signal_mod
+
+        original_signal = signal_mod.signal
 
         def failing_signal(signum: int, handler: object) -> object:
             raise OSError("Operation not permitted")
 
-        with mock.patch("atexit.register"), \
-             mock.patch("signal.signal", side_effect=failing_signal):
-            # Should not raise — the OSError is caught
-            real_register_cleanup_handlers()
+        mock_args = make_mock_cli_args(dry_run=True)
+        with mock.patch.object(cli, "build_argument_parser") as mock_parser:
+            mock_parser.return_value.parse_args.return_value = mock_args
+            with mock.patch.object(cli, "resolve_working_directory", return_value="/tmp"), \
+                 mock.patch.object(cli, "validate_arguments"), \
+                 mock.patch.object(cli, "display_pre_run_warning"), \
+                 mock.patch.object(cli, "run_suite_with_error_handling"), \
+                 mock.patch("signal.signal", side_effect=failing_signal):
+                # Should not raise — the OSError is caught
+                cli.main()
 
 
 # =============================================================================
