@@ -203,6 +203,7 @@ class TestSignalHandler:
                  mock.patch.object(cli, "validate_arguments"), \
                  mock.patch.object(cli, "display_pre_run_warning"), \
                  mock.patch.object(cli, "run_suite_with_error_handling"), \
+                 mock.patch("atexit.register"), \
                  mock.patch("signal.signal", side_effect=capture_signal):
                 cli.main()
 
@@ -228,6 +229,7 @@ class TestSignalHandler:
                  mock.patch.object(cli, "validate_arguments"), \
                  mock.patch.object(cli, "display_pre_run_warning"), \
                  mock.patch.object(cli, "run_suite_with_error_handling"), \
+                 mock.patch("atexit.register"), \
                  mock.patch("signal.signal", side_effect=failing_signal):
                 # Should not raise — the OSError is caught
                 cli.main()
