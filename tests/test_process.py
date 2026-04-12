@@ -291,7 +291,7 @@ class TestExecuteClaudeProcessCleanup:
                 with mock.patch.object(process, "_kill_process_group") as kill_mock:
                     with pytest.raises(RuntimeError, match="boom"):
                         process._execute_claude_process(["claude"], "/tmp", idle_timeout=120, debug=False)
-                    kill_mock.assert_called_with(mock_proc, extra_pids=set())
+                    kill_mock.assert_called_with(mock_proc)
 
 
 class TestKillProcessGroup:

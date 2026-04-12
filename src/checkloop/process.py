@@ -20,12 +20,9 @@ from dataclasses import dataclass
 from typing import IO
 
 from checkloop.monitoring import (
-    find_all_descendant_pids,
-    kill_pids,
     kill_session_stragglers,
     log_memory_usage,
     measure_session_rss_mb,
-    previous_descendant_pids,
     previous_session_ids,
 )
 from checkloop.streaming import process_jsonl_buffer
@@ -308,18 +305,12 @@ def _stream_process_output(
     *,
     check_timeout: int = 0,
     max_memory_mb: int = 0,
-    accumulated_descendant_pids: set[int] | None = None,
 ) -> tuple[float, str | None]:
     """Stream and display JSONL output from the Claude process.
 
     Kills the process if it produces no output for *idle_timeout* seconds,
     if the hard *check_timeout* is exceeded, or if the child process tree
     exceeds *max_memory_mb* of RSS.
-
-    If *accumulated_descendant_pids* is provided, periodically walks the
-    full process tree to collect descendant PIDs that may have escaped the
-    session/process group (e.g. via ``setsid()``).  These are used by
-    ``_kill_process_group`` for robust cleanup.
 
     Returns ``(check_start_time, kill_reason)`` where *kill_reason* is one of
     the ``KILL_REASON_*`` constants, or None for a normal exit.
@@ -331,7 +322,6 @@ def _stream_process_output(
     check_start_time = time.time()
     last_output_time = check_start_time  # idle timer starts from launch
     last_memory_check = check_start_time
-    last_descendant_scan = check_start_time
     output_buffer = bytearray()
     kill_reason: str | None = None
 
@@ -343,17 +333,6 @@ def _stream_process_output(
             )
             if kill_reason:
                 break
-
-            # Periodically snapshot the full descendant tree so cleanup can
-            # kill processes that escape the session/group (e.g. shells that
-            # call setsid(), spawning vitest workers in a new session).
-            if accumulated_descendant_pids is not None:
-                now = time.time()
-                if now - last_descendant_scan >= _MEMORY_CHECK_INTERVAL:
-                    last_descendant_scan = now
-                    descendants = find_all_descendant_pids(process.pid)
-                    if descendants:
-                        accumulated_descendant_pids.update(descendants)
 
             try:
                 # 1s timeout lets us check idle timeout and process exit between reads
@@ -397,35 +376,17 @@ def _signal_process_group(pgid: int, sig: signal.Signals) -> None:
         logger.debug("%s to pgid %d failed: %s", sig.name, pgid, exc)
 
 
-def _kill_process_group(
-    process: subprocess.Popen[bytes],
-    *,
-    extra_pids: set[int] | None = None,
-) -> None:
+def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
     """Terminate the process and its entire process group.
 
     Sends SIGTERM first (graceful), waits briefly, then SIGKILL if needed.
     This prevents orphaned child processes from leaking memory.
-
-    If *extra_pids* is provided (typically accumulated during streaming by
-    periodic tree walks), those PIDs are also killed after the group and
-    session cleanup.  This catches descendants that created new sessions
-    via ``setsid()`` and escaped both ``os.killpg()`` and ``pgrep -s``.
     """
-    # Snapshot the descendant tree BEFORE killing, while parent→child links
-    # are still intact.  Best-effort: may miss some if the process already
-    # exited and children were reparented to PID 1.
-    all_known: set[int] = set(extra_pids) if extra_pids else set()
-    fresh = find_all_descendant_pids(process.pid)
-    if fresh:
-        all_known.update(fresh)
-
     try:
         pgid = os.getpgid(process.pid)
     except OSError:
         # Process already gone — just clean up session stragglers.
         kill_session_stragglers(process.pid)
-        _kill_remaining_descendants(all_known, process.pid)
         return
 
     # Escalate: SIGTERM → wait → SIGKILL → wait
@@ -443,25 +404,6 @@ def _kill_process_group(
     # session created by start_new_session=True.  The session ID equals the
     # claude PID because setsid() makes it the session leader.
     kill_session_stragglers(process.pid)
-
-    # Kill descendants that escaped both group and session cleanup (e.g.
-    # processes that called setsid() and ended up in a different session).
-    _kill_remaining_descendants(all_known, process.pid)
-
-
-def _kill_remaining_descendants(all_known: set[int], root_pid: int) -> None:
-    """Kill accumulated descendant PIDs and track survivors for later sweeps."""
-    if not all_known:
-        return
-    our_pid = os.getpid()
-    targets = [p for p in all_known if p != root_pid and p != our_pid]
-    if not targets:
-        return
-    killed = kill_pids(targets)
-    if killed:
-        logger.warning("Killed %d descendant(s) that escaped group/session cleanup", killed)
-    # Track for follow-up sweeps in case any survive (e.g. stopped processes).
-    previous_descendant_pids.update(targets)
 
 
 # --- Public API: run a single Claude Code check ------------------------------
@@ -547,16 +489,11 @@ def _execute_claude_process(
     kill_reason: str | None = None
     # Track session ID so kill_session_stragglers can catch stragglers later.
     previous_session_ids.append(process.pid)
-    # Accumulates descendant PIDs discovered by periodic tree walks during
-    # streaming.  Passed to _kill_process_group so it can kill descendants
-    # that escaped the session/process group (e.g. via setsid()).
-    known_descendants: set[int] = set()
     try:
         check_start_time, kill_reason = _stream_process_output(
             process, idle_timeout, debug,
             check_timeout=check_timeout,
             max_memory_mb=max_memory_mb,
-            accumulated_descendant_pids=known_descendants,
         )
 
         try:
@@ -576,7 +513,7 @@ def _execute_claude_process(
         # Ensure the entire process group is dead on every exit path.
         # Claude may spawn child processes (language servers, etc.) that
         # survive after the main process exits.
-        _kill_process_group(process, extra_pids=known_descendants)
+        _kill_process_group(process)
 
     exit_code = _report_check_exit_status(process, check_start_time)
     if kill_reason is not None:
