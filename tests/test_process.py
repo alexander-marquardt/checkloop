@@ -710,27 +710,16 @@ class TestStreamDescendantAccumulation:
         mock_proc = mock.MagicMock()
         mock_proc.pid = 100
         mock_proc.stdout = io.BytesIO(b"")  # empty → EOF immediately
-        mock_proc.poll.return_value = None
+        mock_proc.poll.return_value = 0
+        mock_proc.returncode = 0
 
         accumulated: set[int] = set()
 
-        # Make time advance past _MEMORY_CHECK_INTERVAL to trigger a scan
-        time_values = iter([
-            0.0,   # check_start_time
-            0.0,   # last_output_time init
-            0.0,   # last_memory_check init
-            0.0,   # last_descendant_scan init
-            15.0,  # first loop: now > last_descendant_scan + interval
-            15.0,  # select time
-        ])
-
-        with mock.patch.object(process, "_check_resource_limits", return_value=(None, 0.0)), \
-             mock.patch.object(process, "find_all_descendant_pids", return_value=[200, 300]) as mock_find, \
-             mock.patch("time.time", side_effect=lambda: next(time_values, 15.0)), \
+        # Set interval to 0 so scan triggers on every loop iteration.
+        with mock.patch.object(process, "_MEMORY_CHECK_INTERVAL", 0), \
+             mock.patch.object(process, "_check_resource_limits", return_value=(None, 0.0)), \
+             mock.patch.object(process, "find_all_descendant_pids", return_value=[200, 300]), \
              mock.patch("select.select", return_value=([], [], [])):
-            # Process exits on first poll after empty select
-            mock_proc.poll.return_value = 0
-            mock_proc.returncode = 0
             process._stream_process_output(
                 mock_proc, idle_timeout=120, debug=False,
                 accumulated_descendant_pids=accumulated,
