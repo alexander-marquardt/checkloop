@@ -597,3 +597,161 @@ class TestCheckResourceLimitsCombined:
                 last_memory_check=now - 20,  # past the check interval
             )
         assert kill_reason == process.KILL_REASON_MEMORY
+
+
+# =============================================================================
+# _kill_remaining_descendants — descendant cleanup after group/session kill
+# =============================================================================
+
+
+class TestKillRemainingDescendants:
+    """Tests for _kill_remaining_descendants() post-teardown cleanup."""
+
+    def test_kills_descendants_and_tracks_them(self) -> None:
+        """Known descendant PIDs are killed and added to previous_descendant_pids."""
+        from checkloop.monitoring import previous_descendant_pids
+        known = {200, 300, 400}
+        with mock.patch.object(process, "kill_pids", return_value=3) as mock_kill:
+            process._kill_remaining_descendants(known, root_pid=100)
+        # All PIDs except self and root should be targeted
+        called_pids = set(mock_kill.call_args[0][0])
+        assert called_pids == {200, 300, 400}
+        # Should be tracked for follow-up sweeps
+        assert {200, 300, 400} <= previous_descendant_pids
+
+    def test_excludes_self_and_root(self) -> None:
+        """The current process and the root_pid must be excluded."""
+        import os
+        my_pid = os.getpid()
+        known = {my_pid, 100, 200}
+        with mock.patch.object(process, "kill_pids", return_value=1) as mock_kill:
+            process._kill_remaining_descendants(known, root_pid=100)
+        called_pids = set(mock_kill.call_args[0][0])
+        assert my_pid not in called_pids
+        assert 100 not in called_pids
+        assert called_pids == {200}
+
+    def test_empty_known_set_is_noop(self) -> None:
+        """An empty known set should not call kill_pids."""
+        with mock.patch.object(process, "kill_pids") as mock_kill:
+            process._kill_remaining_descendants(set(), root_pid=100)
+        mock_kill.assert_not_called()
+
+    def test_only_self_and_root_is_noop(self) -> None:
+        """If known only contains self and root, nothing to kill."""
+        import os
+        my_pid = os.getpid()
+        with mock.patch.object(process, "kill_pids") as mock_kill:
+            process._kill_remaining_descendants({my_pid, 100}, root_pid=100)
+        mock_kill.assert_not_called()
+
+
+# =============================================================================
+# _kill_process_group — descendant handling via extra_pids
+# =============================================================================
+
+
+class TestKillProcessGroupDescendants:
+    """Tests for _kill_process_group() descendant cleanup with extra_pids."""
+
+    def test_merges_extra_pids_with_teardown_snapshot(self) -> None:
+        """extra_pids from streaming are merged with the teardown tree snapshot."""
+        mock_proc = mock.MagicMock()
+        mock_proc.pid = 100
+        extra = {200, 300}  # collected during streaming
+        teardown_snapshot = [400, 500]  # fresh snapshot at teardown
+
+        with mock.patch("os.getpgid", return_value=100), \
+             mock.patch("os.killpg"), \
+             mock.patch.object(process, "find_all_descendant_pids", return_value=teardown_snapshot), \
+             mock.patch.object(process, "kill_session_stragglers"), \
+             mock.patch.object(process, "_kill_remaining_descendants") as mock_desc:
+            process._kill_process_group(mock_proc, extra_pids=extra)
+
+        # Should be called with the union of teardown snapshot and extra_pids
+        all_known = mock_desc.call_args[0][0]
+        assert all_known == {200, 300, 400, 500}
+        assert mock_desc.call_args[0][1] == 100  # root_pid
+
+    def test_no_extra_pids_still_snapshots(self) -> None:
+        """Without extra_pids, only the teardown snapshot is used."""
+        mock_proc = mock.MagicMock()
+        mock_proc.pid = 100
+        with mock.patch("os.getpgid", return_value=100), \
+             mock.patch("os.killpg"), \
+             mock.patch.object(process, "find_all_descendant_pids", return_value=[400]), \
+             mock.patch.object(process, "kill_session_stragglers"), \
+             mock.patch.object(process, "_kill_remaining_descendants") as mock_desc:
+            process._kill_process_group(mock_proc)
+
+        all_known = mock_desc.call_args[0][0]
+        assert all_known == {400}
+
+    def test_process_already_dead_still_cleans_session(self) -> None:
+        """When os.getpgid raises OSError, session stragglers are still cleaned."""
+        mock_proc = mock.MagicMock()
+        mock_proc.pid = 100
+        with mock.patch("os.getpgid", side_effect=OSError("No such process")), \
+             mock.patch.object(process, "kill_session_stragglers") as mock_sess:
+            process._kill_process_group(mock_proc, extra_pids={200, 300})
+        mock_sess.assert_called_once_with(100)
+
+
+# =============================================================================
+# _stream_process_output — descendant accumulation during streaming
+# =============================================================================
+
+
+class TestStreamDescendantAccumulation:
+    """Tests for periodic descendant scanning in _stream_process_output."""
+
+    def test_accumulates_descendants_during_streaming(self) -> None:
+        """Descendants found during periodic scans are added to accumulated set."""
+        mock_proc = mock.MagicMock()
+        mock_proc.pid = 100
+        mock_proc.stdout = io.BytesIO(b"")  # empty → EOF immediately
+        mock_proc.poll.return_value = None
+
+        accumulated: set[int] = set()
+
+        # Make time advance past _MEMORY_CHECK_INTERVAL to trigger a scan
+        time_values = iter([
+            0.0,   # check_start_time
+            0.0,   # last_output_time init
+            0.0,   # last_memory_check init
+            0.0,   # last_descendant_scan init
+            15.0,  # first loop: now > last_descendant_scan + interval
+            15.0,  # select time
+        ])
+
+        with mock.patch.object(process, "_check_resource_limits", return_value=(None, 0.0)), \
+             mock.patch.object(process, "find_all_descendant_pids", return_value=[200, 300]) as mock_find, \
+             mock.patch("time.time", side_effect=lambda: next(time_values, 15.0)), \
+             mock.patch("select.select", return_value=([], [], [])):
+            # Process exits on first poll after empty select
+            mock_proc.poll.return_value = 0
+            mock_proc.returncode = 0
+            process._stream_process_output(
+                mock_proc, idle_timeout=120, debug=False,
+                accumulated_descendant_pids=accumulated,
+            )
+
+        assert {200, 300} <= accumulated
+
+    def test_no_accumulation_without_parameter(self) -> None:
+        """When accumulated_descendant_pids is None, no tree scans happen."""
+        mock_proc = mock.MagicMock()
+        mock_proc.pid = 100
+        mock_proc.stdout = io.BytesIO(b"")
+        mock_proc.poll.return_value = 0
+        mock_proc.returncode = 0
+
+        with mock.patch.object(process, "_check_resource_limits", return_value=(None, 0.0)), \
+             mock.patch.object(process, "find_all_descendant_pids") as mock_find, \
+             mock.patch("select.select", return_value=([], [], [])):
+            process._stream_process_output(
+                mock_proc, idle_timeout=120, debug=False,
+                # accumulated_descendant_pids not provided — defaults to None
+            )
+
+        mock_find.assert_not_called()

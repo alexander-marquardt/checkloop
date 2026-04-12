@@ -404,3 +404,165 @@ class TestRunCmdQuietTimeout:
         ):
             result = monitoring._run_cmd_quiet(["ps", "-o", "rss="])
         assert result is None
+
+
+# =============================================================================
+# find_all_descendant_pids — BFS tree walking
+# =============================================================================
+
+
+class TestFindAllDescendantPids:
+    """Tests for find_all_descendant_pids() process-tree BFS walk."""
+
+    def _make_ps_output(self, pairs: list[tuple[int, int]]) -> str:
+        """Build ps -eo pid=,ppid= output from (pid, ppid) pairs."""
+        return "\n".join(f"  {pid}  {ppid}" for pid, ppid in pairs) + "\n"
+
+    def test_simple_tree(self) -> None:
+        """A root with two direct children and one grandchild."""
+        ps_out = self._make_ps_output([
+            (100, 1),     # root_pid
+            (200, 100),   # child of 100
+            (300, 100),   # child of 100
+            (400, 200),   # grandchild
+        ])
+        with mock.patch("subprocess.run", return_value=make_git_result(stdout=ps_out)):
+            result = monitoring.find_all_descendant_pids(100)
+        assert set(result) == {200, 300, 400}
+
+    def test_excludes_self(self) -> None:
+        """The current process (os.getpid()) must never appear in results."""
+        my_pid = os.getpid()
+        ps_out = self._make_ps_output([
+            (100, 1),
+            (my_pid, 100),   # this is us — should be excluded
+            (300, 100),
+        ])
+        with mock.patch("subprocess.run", return_value=make_git_result(stdout=ps_out)):
+            result = monitoring.find_all_descendant_pids(100)
+        assert my_pid not in result
+        assert set(result) == {300}
+
+    def test_no_children(self) -> None:
+        """A root with no children returns an empty list."""
+        ps_out = self._make_ps_output([
+            (100, 1),
+            (200, 1),  # sibling, not a descendant
+        ])
+        with mock.patch("subprocess.run", return_value=make_git_result(stdout=ps_out)):
+            result = monitoring.find_all_descendant_pids(100)
+        assert result == []
+
+    def test_cycle_in_process_tree(self) -> None:
+        """Cycles in ps output (should not happen, but defensive) don't loop forever."""
+        ps_out = self._make_ps_output([
+            (100, 1),
+            (200, 100),
+            (300, 200),
+            (200, 300),   # cycle: 200 is also a child of 300
+        ])
+        with mock.patch("subprocess.run", return_value=make_git_result(stdout=ps_out)):
+            result = monitoring.find_all_descendant_pids(100)
+        assert set(result) == {200, 300}
+
+    def test_malformed_lines_skipped(self) -> None:
+        """Lines with non-integer values or wrong column count are ignored."""
+        ps_out = "  200  100\n  abc  100\n  300\n  400  200\n"
+        with mock.patch("subprocess.run", return_value=make_git_result(stdout=ps_out)):
+            result = monitoring.find_all_descendant_pids(100)
+        assert set(result) == {200, 400}
+
+    def test_ps_failure_returns_empty(self) -> None:
+        """If ps fails, return an empty list."""
+        with mock.patch("subprocess.run", return_value=make_git_result(returncode=1)):
+            result = monitoring.find_all_descendant_pids(100)
+        assert result == []
+
+    def test_ps_timeout_returns_empty(self) -> None:
+        """If ps times out, return an empty list."""
+        with mock.patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="ps", timeout=10)):
+            result = monitoring.find_all_descendant_pids(100)
+        assert result == []
+
+    def test_deep_tree(self) -> None:
+        """A chain of 5 descendants should all be found."""
+        ps_out = self._make_ps_output([
+            (100, 1),
+            (200, 100),
+            (300, 200),
+            (400, 300),
+            (500, 400),
+            (600, 500),
+        ])
+        with mock.patch("subprocess.run", return_value=make_git_result(stdout=ps_out)):
+            result = monitoring.find_all_descendant_pids(100)
+        assert set(result) == {200, 300, 400, 500, 600}
+
+    def test_setsid_escaped_descendants(self) -> None:
+        """Descendants that called setsid() still appear in ps output.
+
+        setsid() changes the session ID but not the parent PID, so the
+        process tree walk still finds them.
+        """
+        ps_out = self._make_ps_output([
+            (100, 1),      # root
+            (200, 100),    # normal child
+            (300, 200),    # child that called setsid() — still has ppid=200
+        ])
+        with mock.patch("subprocess.run", return_value=make_git_result(stdout=ps_out)):
+            result = monitoring.find_all_descendant_pids(100)
+        assert set(result) == {200, 300}
+
+
+class TestSweepPreviousSessionsDescendants:
+    """Tests for _sweep_previous_sessions() descendant cleanup."""
+
+    def test_kills_tracked_descendants(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Tracked descendants in previous_descendant_pids should be killed and cleared."""
+        monitoring.previous_descendant_pids.update({1001, 1002, 1003})
+        monitoring.previous_session_ids[:] = []
+        with mock.patch.object(monitoring, "kill_pids", return_value=3) as mock_kill:
+            monitoring._sweep_previous_sessions()
+        # Should have been called with the tracked descendants
+        mock_kill.assert_called_once()
+        assert set(mock_kill.call_args[0][0]) == {1001, 1002, 1003}
+        # Descendants should be cleared after sweep
+        assert monitoring.previous_descendant_pids == set()
+        out = capsys.readouterr().out
+        assert "tracked descendant" in out
+
+    def test_no_descendants_skips_kill(self) -> None:
+        """When previous_descendant_pids is empty, kill_pids is not called for descendants."""
+        monitoring.previous_descendant_pids.clear()
+        monitoring.previous_session_ids[:] = []
+        with mock.patch.object(monitoring, "kill_pids") as mock_kill:
+            monitoring._sweep_previous_sessions()
+        mock_kill.assert_not_called()
+
+
+class TestCleanupAllSessionsDescendants:
+    """Tests for cleanup_all_sessions() descendant cleanup."""
+
+    def test_kills_tracked_descendants(self) -> None:
+        """cleanup_all_sessions should kill tracked descendant PIDs."""
+        monitoring.previous_descendant_pids.update({2001, 2002})
+        monitoring.previous_session_ids[:] = []
+        with mock.patch.object(monitoring, "kill_pids", return_value=2) as mock_kill, \
+             mock.patch.object(monitoring, "_find_child_pids", return_value=[]):
+            monitoring.cleanup_all_sessions()
+        # kill_pids called once for descendants
+        mock_kill.assert_called_once()
+        assert set(mock_kill.call_args[0][0]) == {2001, 2002}
+        assert monitoring.previous_descendant_pids == set()
+
+    def test_kills_descendants_and_sessions(self) -> None:
+        """cleanup_all_sessions handles both sessions and descendants."""
+        monitoring.previous_session_ids[:] = [100]
+        monitoring.previous_descendant_pids.update({3001})
+        with mock.patch.object(monitoring, "find_session_pids", return_value=[111]) as mock_find, \
+             mock.patch.object(monitoring, "kill_pids") as mock_kill, \
+             mock.patch.object(monitoring, "_find_child_pids", return_value=[]):
+            monitoring.cleanup_all_sessions()
+        # kill_pids called for session stragglers and for descendants
+        assert mock_kill.call_count == 2
+        assert monitoring.previous_descendant_pids == set()
