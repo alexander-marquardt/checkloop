@@ -20,9 +20,12 @@ from dataclasses import dataclass
 from typing import IO
 
 from checkloop.monitoring import (
+    find_all_descendant_pids,
+    kill_pids,
     kill_session_stragglers,
     log_memory_usage,
     measure_session_rss_mb,
+    previous_descendant_pids,
     previous_session_ids,
 )
 from checkloop.streaming import process_jsonl_buffer
@@ -305,12 +308,19 @@ def _stream_process_output(
     *,
     check_timeout: int = 0,
     max_memory_mb: int = 0,
+    accumulated_descendant_pids: set[int] | None = None,
 ) -> tuple[float, str | None]:
     """Stream and display JSONL output from the Claude process.
 
     Kills the process if it produces no output for *idle_timeout* seconds,
     if the hard *check_timeout* is exceeded, or if the child process tree
     exceeds *max_memory_mb* of RSS.
+
+    If *accumulated_descendant_pids* is provided, the process tree is
+    periodically scanned (every ``_MEMORY_CHECK_INTERVAL`` seconds) and
+    newly discovered descendant PIDs are added to the set.  This catches
+    processes that call ``setsid()`` mid-flight and would escape normal
+    group/session cleanup at teardown.
 
     Returns ``(check_start_time, kill_reason)`` where *kill_reason* is one of
     the ``KILL_REASON_*`` constants, or None for a normal exit.
@@ -322,6 +332,7 @@ def _stream_process_output(
     check_start_time = time.time()
     last_output_time = check_start_time  # idle timer starts from launch
     last_memory_check = check_start_time
+    last_descendant_scan = check_start_time
     output_buffer = bytearray()
     kill_reason: str | None = None
 
@@ -333,6 +344,15 @@ def _stream_process_output(
             )
             if kill_reason:
                 break
+
+            # Periodic descendant tree scan — piggybacks on the same interval
+            # as memory checks to avoid excessive ps calls.
+            if accumulated_descendant_pids is not None:
+                now = time.time()
+                if now - last_descendant_scan >= _MEMORY_CHECK_INTERVAL:
+                    descendants = find_all_descendant_pids(process.pid)
+                    accumulated_descendant_pids.update(descendants)
+                    last_descendant_scan = now
 
             try:
                 # 1s timeout lets us check idle timeout and process exit between reads
@@ -376,11 +396,44 @@ def _signal_process_group(pgid: int, sig: signal.Signals) -> None:
         logger.debug("%s to pgid %d failed: %s", sig.name, pgid, exc)
 
 
-def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
+def _kill_remaining_descendants(all_known: set[int], root_pid: int) -> None:
+    """Kill descendant PIDs that survived process-group and session cleanup.
+
+    *all_known* is the union of PIDs collected during streaming and a fresh
+    tree snapshot taken at teardown time.  PIDs that match this process or
+    *root_pid* (the Claude session leader) are excluded — we only target
+    descendants that called ``setsid()`` and escaped ``os.killpg()`` /
+    ``pgrep -s`` cleanup.
+
+    Surviving PIDs are also added to the module-level
+    ``previous_descendant_pids`` set so that ``_sweep_previous_sessions``
+    and ``cleanup_all_sessions`` can re-check them later.
+    """
+    my_pid = os.getpid()
+    targets = [pid for pid in all_known if pid != my_pid and pid != root_pid]
+    if not targets:
+        return
+    killed = kill_pids(targets)
+    if killed:
+        logger.info("Killed %d descendant(s) that escaped group/session cleanup", killed)
+    # Track survivors for follow-up sweeps.
+    previous_descendant_pids.update(targets)
+
+
+def _kill_process_group(
+    process: subprocess.Popen[bytes],
+    *,
+    extra_pids: set[int] | None = None,
+) -> None:
     """Terminate the process and its entire process group.
 
     Sends SIGTERM first (graceful), waits briefly, then SIGKILL if needed.
     This prevents orphaned child processes from leaking memory.
+
+    If *extra_pids* is provided, those PIDs (collected during streaming via
+    periodic tree walks) are merged with a fresh descendant snapshot and
+    killed after the normal group/session cleanup, catching processes that
+    escaped via ``setsid()``.
     """
     try:
         pgid = os.getpgid(process.pid)
@@ -388,6 +441,10 @@ def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
         # Process already gone — just clean up session stragglers.
         kill_session_stragglers(process.pid)
         return
+
+    # Snapshot the descendant tree *before* killing the group — some
+    # descendants may exit once the leader dies, so grab them now.
+    teardown_descendants = set(find_all_descendant_pids(process.pid))
 
     # Escalate: SIGTERM → wait → SIGKILL → wait
     for sig in (signal.SIGTERM, signal.SIGKILL):
@@ -404,6 +461,13 @@ def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
     # session created by start_new_session=True.  The session ID equals the
     # claude PID because setsid() makes it the session leader.
     kill_session_stragglers(process.pid)
+
+    # Kill descendants that escaped both group and session cleanup (e.g.
+    # processes that called setsid() and ended up in a different session).
+    all_known = teardown_descendants
+    if extra_pids:
+        all_known |= extra_pids
+    _kill_remaining_descendants(all_known, process.pid)
 
 
 # --- Public API: run a single Claude Code check ------------------------------
@@ -489,11 +553,16 @@ def _execute_claude_process(
     kill_reason: str | None = None
     # Track session ID so kill_session_stragglers can catch stragglers later.
     previous_session_ids.append(process.pid)
+    # Accumulate descendant PIDs during streaming so that setsid-escaped
+    # processes can be killed at teardown even if they're no longer in the
+    # tree when _kill_process_group runs.
+    known_descendants: set[int] = set()
     try:
         check_start_time, kill_reason = _stream_process_output(
             process, idle_timeout, debug,
             check_timeout=check_timeout,
             max_memory_mb=max_memory_mb,
+            accumulated_descendant_pids=known_descendants,
         )
 
         try:
@@ -513,7 +582,7 @@ def _execute_claude_process(
         # Ensure the entire process group is dead on every exit path.
         # Claude may spawn child processes (language servers, etc.) that
         # survive after the main process exits.
-        _kill_process_group(process)
+        _kill_process_group(process, extra_pids=known_descendants)
 
     exit_code = _report_check_exit_status(process, check_start_time)
     if kill_reason is not None:
