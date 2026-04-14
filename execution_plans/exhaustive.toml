@@ -71,6 +71,10 @@ id = "concurrency"
 model = "opus"
 
 [[checks]]
+id = "concurrency-testing"
+model = "opus"
+
+[[checks]]
 id = "accessibility"
 model = "sonnet"
 
