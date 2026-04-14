@@ -75,7 +75,7 @@ Execution plans are TOML files that define which checks to run and which model t
 |------|--------|-------------|
 | **basic** (default) | 5 checks | Core code quality — readability, DRY, tests (plus test-fix/test-validate bookends) |
 | **thorough** | 15 checks | Adds docs, docs-accuracy, security, performance, error handling, type safety, derived-value consistency, architecture layer separation, cross-check coherence |
-| **exhaustive** | 22 checks | Everything — includes edge cases, complexity, deps, logging, concurrency, a11y, API design, docs-accuracy, derived-value consistency, architecture layer separation, cross-check coherence, and code cleanup |
+| **exhaustive** | 23 checks | Everything — includes edge cases, complexity, deps, logging, concurrency, concurrency test coverage, a11y, API design, docs-accuracy, derived-value consistency, architecture layer separation, cross-check coherence, and code cleanup |
 
 Every plan includes the `test-fix` (first) and `test-validate` (last) bookend checks to ensure the test suite is green before and after the review.
 
@@ -86,7 +86,7 @@ Use `--checks` to pick individual checks, or `--all-checks` as a shortcut for `-
 Each plan file specifies which Claude model to use for each check. The pre-populated plans assign models based on the cognitive demands of each task:
 
 - **Sonnet** (faster, used for most checks) — pattern-matching tasks like readability, DRY, tests, docs, docs-accuracy, error handling, types, complexity, deps, logging, accessibility, API design, and code cleanup.
-- **Opus** (deeper reasoning, used selectively) — multi-layer analysis tasks like security, concurrency, performance, edge cases, and cross-check coherence, where subtle issues span multiple code layers.
+- **Opus** (deeper reasoning, used selectively) — multi-layer analysis tasks like security, concurrency, concurrency test coverage, performance, edge cases, and cross-check coherence, where subtle issues span multiple code layers.
 
 The `--model` flag overrides the per-check model for all checks:
 
@@ -123,6 +123,7 @@ uv run checkloop --dir ~/my-project --plan thorough --model sonnet
 | `deps` | exhaustive | sonnet | Remove verified-unused deps, flag vulnerable/outdated packages. |
 | `logging` | exhaustive | sonnet | Structured logging at entry points. No debug logging on hot paths. |
 | `concurrency` | exhaustive | opus | Race conditions, missing locks, async/await correctness. |
+| `concurrency-testing` | exhaustive | opus | Flags multi-user projects (web apps, APIs, e-commerce) that lack tests simulating concurrent access to shared state. Writes correctness-under-concurrency tests for critical operations (inventory, balances, reservations). Skips single-user projects. |
 | `accessibility` | exhaustive | sonnet | Semantic HTML, ARIA, keyboard nav, colour contrast (WCAG AA). |
 | `api-design` | exhaustive | sonnet | Consistent naming, HTTP methods, error formats, pagination. |
 | `test-validate` | bookend | sonnet | Re-runs the full test suite after all checks. Fixes any regressions. Always runs last. |
@@ -230,7 +231,7 @@ uv run checkloop --cycles 5 --convergence-threshold 0.5
 --plan, -p PLAN        Plan name or path to a TOML plan file.
                        Pre-populated: basic, thorough, exhaustive (default: basic).
 --checks CHECK [...]   Manually select checks (overrides --plan)
---all-checks           Run all 22 checks (same as --plan exhaustive)
+--all-checks           Run all 23 checks (same as --plan exhaustive)
 --cycles, -c N         Repeat the full suite N times (default: 1)
 --idle-timeout SECS    Kill after N seconds of silence (default: 300)
 --check-timeout SECS   Hard wall-clock limit per check (default: 0 = no limit).
@@ -328,6 +329,7 @@ checks/                   # Check definitions — one Markdown file per check
 ├── deps.md
 ├── logging.md
 ├── concurrency.md
+├── concurrency-testing.md
 ├── accessibility.md
 ├── api-design.md
 ├── cleanup-ai-slop.md
