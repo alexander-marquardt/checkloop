@@ -10,6 +10,8 @@ call with no process-group management, timeout escalation, or RSS monitoring.
 from __future__ import annotations
 
 import logging
+import os
+import shlex
 import subprocess
 
 from checkloop.process import SANITIZED_ENV
@@ -43,15 +45,7 @@ def generate_commit_message(
     cmd += ["-p", prompt]
     logger.info("Generating commit message for uncommitted changes (diff_len=%d)", len(diff_text))
     try:
-        result = subprocess.run(
-            cmd,
-            cwd=workdir,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=_COMMIT_MSG_TIMEOUT,
-            env=SANITIZED_ENV,
-        )
+        result = _run_cmd(cmd, workdir)
         if result.returncode != 0:
             logger.warning("Commit message generation failed (rc=%d): %s",
                            result.returncode, result.stderr[:200])
@@ -65,3 +59,37 @@ def generate_commit_message(
     except (FileNotFoundError, OSError) as exc:
         logger.warning("Failed to run claude for commit message generation: %s", exc)
         return None
+
+
+def _run_cmd(cmd: list[str], workdir: str) -> subprocess.CompletedProcess[str]:
+    """Run *cmd*, falling back to an interactive shell if the binary isn't found.
+
+    Shell aliases (e.g. ``claude-bedrock`` aliased to
+    ``CLAUDE_CODE_USE_BEDROCK=1 claude``) aren't visible to a direct
+    ``subprocess.run`` call.  When the first attempt raises
+    ``FileNotFoundError`` we retry via ``$SHELL -ic`` so the user's aliases
+    and functions are resolved — matching the fallback already used by
+    ``process._spawn_claude_process`` for the main check invocations.
+    """
+    try:
+        return subprocess.run(
+            cmd,
+            cwd=workdir,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=_COMMIT_MSG_TIMEOUT,
+            env=SANITIZED_ENV,
+        )
+    except FileNotFoundError:
+        shell = os.environ.get("SHELL", "/bin/sh")
+        logger.info("Retrying commit-message generation via %s -ic — %r not found on PATH", shell, cmd[0])
+        return subprocess.run(
+            [shell, "-ic", shlex.join(cmd)],
+            cwd=workdir,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=_COMMIT_MSG_TIMEOUT,
+            env=SANITIZED_ENV,
+        )
