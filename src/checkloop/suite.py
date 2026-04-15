@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import argparse
 import logging
+import shutil
 import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 
 from checkloop.check_runner import CheckOutcome as CheckOutcome, run_single_check
 from checkloop.checkpoint import (
@@ -289,6 +291,12 @@ def _run_check_suite(
     is_git = is_git_repo(workdir)
     if is_git and not args.dry_run:
         _commit_uncommitted_changes(workdir, args.dangerously_skip_permissions, getattr(args, "model", None), getattr(args, "claude_command", "claude"))
+    # On fresh runs, clear previous per-check logs so the directory only
+    # contains output from the current session.
+    log_dir = Path(workdir) / ".checkloop-logs"
+    if resume_from is None:
+        shutil.rmtree(log_dir, ignore_errors=True)
+    log_dir.mkdir(exist_ok=True)
     convergence_enabled = convergence_threshold > 0 and is_git
     check_ids = [c["id"] for c in selected_checks]
     state = _build_suite_state(resume_from)

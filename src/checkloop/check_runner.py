@@ -10,8 +10,11 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import time
 from dataclasses import dataclass
+from pathlib import Path
+from typing import IO
 
 from checkloop.checks import (
     COMMIT_MESSAGE_INSTRUCTIONS,
@@ -142,6 +145,7 @@ def _invoke_claude(
     args: argparse.Namespace,
     *,
     model: str | None = None,
+    raw_log_file: IO[bytes] | None = None,
 ) -> CheckResult:
     effective_model = model or getattr(args, "model", None)
     claude_cmd = getattr(args, "claude_command", "claude")
@@ -156,6 +160,7 @@ def _invoke_claude(
         max_memory_mb=args.max_memory_mb,
         model=effective_model,
         claude_command=claude_cmd,
+        raw_log_file=raw_log_file,
     )
 
 
@@ -261,12 +266,24 @@ def run_single_check(
 
     sha_before = git_head_sha(workdir) if is_git else None
 
+    log_dir = Path(workdir) / ".checkloop-logs"
+    log_path = log_dir / f"{check['id']}_cycle{cycle}.jsonl"
     try:
-        result = _invoke_claude(prompt, workdir, args, model=model)
+        log_dir.mkdir(exist_ok=True)
+        raw_log = open(log_path, "wb")  # noqa: SIM115
+    except OSError as exc:
+        logger.warning("Could not open raw log %s: %s", log_path, exc)
+        raw_log = None
+
+    try:
+        result = _invoke_claude(prompt, workdir, args, model=model, raw_log_file=raw_log)
     except Exception as exc:
         logger.error("Check '%s' raised an unexpected exception: %s", check["id"], exc, exc_info=True)
         print_status(f"Check '{check['id']}' failed with error: {exc}. Continuing...", YELLOW)
         return _make_outcome(check, cycle, check_start, exit_code=-1)
+    finally:
+        if raw_log is not None:
+            raw_log.close()
 
     if result.kill_reason == KILL_REASON_MEMORY:
         _run_memory_fix(workdir, args, is_git)

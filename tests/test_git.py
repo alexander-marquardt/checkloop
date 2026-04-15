@@ -73,12 +73,11 @@ class TestGitCommitAll:
     """Tests for git_commit_all() post-cycle commit."""
 
     def test_commits_when_changes_exist(self) -> None:
+        num_patterns = len(git._CHECKLOOP_UNSTAGE_PATTERNS)
         with mock.patch("subprocess.run") as mock_run:
             mock_run.side_effect = [
                 make_git_result(),                       # git add -A
-                make_git_result(),                       # git reset (pattern 1)
-                make_git_result(),                       # git reset (pattern 2)
-                make_git_result(),                       # git reset (pattern 3)
+                *[make_git_result() for _ in range(num_patterns)],  # git reset per pattern
                 make_git_result(returncode=1),           # git diff --cached --quiet (changes exist)
                 make_git_result(),                       # git commit
                 make_git_result(stdout="abc123\n"),       # git rev-parse HEAD
@@ -86,12 +85,11 @@ class TestGitCommitAll:
             assert git.git_commit_all("/tmp", "test commit") is True
 
     def test_no_commit_when_clean(self) -> None:
+        num_patterns = len(git._CHECKLOOP_UNSTAGE_PATTERNS)
         with mock.patch("subprocess.run") as mock_run:
             mock_run.side_effect = [
                 make_git_result(),  # git add -A
-                make_git_result(),  # git reset (pattern 1)
-                make_git_result(),  # git reset (pattern 2)
-                make_git_result(),  # git reset (pattern 3)
+                *[make_git_result() for _ in range(num_patterns)],  # git reset per pattern
                 make_git_result(),  # git diff --cached --quiet (no changes)
             ]
             assert git.git_commit_all("/tmp", "test commit") is False
@@ -284,12 +282,11 @@ class TestGitCommitAllUnstagePatterns:
 
     def test_unstages_checkloop_files_after_add(self) -> None:
         """git_commit_all should run git reset to unstage checkloop files after git add -A."""
+        num_patterns = len(git._CHECKLOOP_UNSTAGE_PATTERNS)
         with mock.patch("subprocess.run") as mock_run:
             mock_run.side_effect = [
                 make_git_result(),                       # git add -A
-                make_git_result(),                       # git reset (pattern 1)
-                make_git_result(),                       # git reset (pattern 2)
-                make_git_result(),                       # git reset (pattern 3)
+                *[make_git_result() for _ in range(num_patterns)],  # git reset per pattern
                 make_git_result(returncode=1),           # git diff --cached --quiet
                 make_git_result(),                       # git commit
                 make_git_result(stdout="abc123\n"),       # git rev-parse HEAD

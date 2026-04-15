@@ -309,6 +309,7 @@ def _stream_process_output(
     check_timeout: int = 0,
     max_memory_mb: int = 0,
     accumulated_descendant_pids: set[int] | None = None,
+    raw_log_file: IO[bytes] | None = None,
 ) -> tuple[float, str | None]:
     """Stream and display JSONL output from the Claude process.
 
@@ -376,6 +377,9 @@ def _stream_process_output(
                 break
 
             last_output_time = time.time()
+            if raw_log_file is not None:
+                raw_log_file.write(chunk)
+                raw_log_file.flush()
             output_buffer.extend(chunk)
             output_buffer = process_jsonl_buffer(
                 output_buffer, check_start_time, debug, max_buffer_size=_MAX_BUFFER_SIZE,
@@ -484,6 +488,7 @@ def run_claude(
     max_memory_mb: int = DEFAULT_MAX_MEMORY_MB,
     model: str | None = None,
     claude_command: str = DEFAULT_CLAUDE_COMMAND,
+    raw_log_file: IO[bytes] | None = None,
 ) -> CheckResult:
     """Run a single Claude Code check.
 
@@ -530,6 +535,7 @@ def run_claude(
         cmd, workdir,
         idle_timeout=idle_timeout, debug=debug,
         check_timeout=check_timeout, max_memory_mb=max_memory_mb,
+        raw_log_file=raw_log_file,
     )
 
 
@@ -541,6 +547,7 @@ def _execute_claude_process(
     debug: bool,
     check_timeout: int = 0,
     max_memory_mb: int = 0,
+    raw_log_file: IO[bytes] | None = None,
 ) -> CheckResult:
     """Spawn the Claude subprocess, stream its output, and clean up on exit.
 
@@ -563,6 +570,7 @@ def _execute_claude_process(
             check_timeout=check_timeout,
             max_memory_mb=max_memory_mb,
             accumulated_descendant_pids=known_descendants,
+            raw_log_file=raw_log_file,
         )
 
         try:

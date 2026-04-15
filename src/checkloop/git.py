@@ -138,6 +138,7 @@ _CHECKLOOP_UNSTAGE_PATTERNS: list[str] = [
     ".checkloop-run.log",
     ".checkloop-checkpoint.json",
     ".checkloop-ckpt-*.tmp",
+    ".checkloop-logs",
 ]
 """File patterns to unstage after `git add -A`.
 
