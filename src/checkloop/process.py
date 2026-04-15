@@ -358,6 +358,10 @@ def _stream_process_output(
             try:
                 # 1s timeout lets us check idle timeout and process exit between reads
                 ready, _, _ = select.select([stdout], [], [], 1.0)
+            except InterruptedError:
+                # SIGINT (Ctrl+C) interrupted select — let KeyboardInterrupt
+                # propagate so the suite-level handler can exit cleanly.
+                raise KeyboardInterrupt
             except (OSError, ValueError) as exc:
                 logger.debug("select() failed (fd may be closed): %s", exc)
                 break
