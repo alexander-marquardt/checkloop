@@ -235,9 +235,23 @@ def _check_idle_timeout(
     process: subprocess.Popen[bytes],
 ) -> bool:
     now = time.time()
-    if now - last_output_time > idle_timeout:
+    idle_seconds = now - last_output_time
+    if idle_seconds > idle_timeout:
+        # Before killing, check if there are active descendant processes.
+        # If Claude is waiting for subprocesses (like pytest), that's not
+        # truly idle — it's waiting for results. Only kill if Claude AND
+        # all its children have been silent.
+        descendants = find_all_descendant_pids(process.pid)
+        if descendants:
+            # There are still child processes running (e.g., test suites).
+            # Log this and skip the idle kill — the work is still in progress.
+            logger.info("Idle timeout would trigger, but %d descendant(s) still running: %s",
+                        len(descendants), descendants[:5])  # Log first 5 PIDs
+            print_status(f"\n[{int(idle_seconds)}s idle, but {len(descendants)} subprocess(es) still running]", DIM)
+            return False
+
         logger.warning("Idle timeout: pid=%d, idle=%.0fs, elapsed=%s",
-                       process.pid, now - last_output_time,
+                       process.pid, idle_seconds,
                        format_duration(now - check_start_time))
         print_status(f"\nIdle for {idle_timeout}s — killing "
                      f"(ran {format_duration(now - check_start_time)}).", RED)

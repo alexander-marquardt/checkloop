@@ -90,13 +90,43 @@ class TestCheckIdleTimeout:
 
     def test_one_second_over_threshold(self) -> None:
         mock_proc = mock.MagicMock()
+        mock_proc.pid = 12345
         with mock.patch("time.time", return_value=221.0), \
-             mock.patch.object(process, "_kill_process_group"):
+             mock.patch.object(process, "_kill_process_group"), \
+             mock.patch.object(process, "find_all_descendant_pids", return_value=[]):
             result = process._check_idle_timeout(
                 last_output_time=100.0, idle_timeout=120,
                 check_start_time=80.0, process=mock_proc,
             )
         assert result is True
+
+    def test_descendants_running_prevents_kill(self) -> None:
+        """When idle timeout triggers but descendants are running, don't kill."""
+        mock_proc = mock.MagicMock()
+        mock_proc.pid = 12345
+        with mock.patch("time.time", return_value=221.0), \
+             mock.patch.object(process, "_kill_process_group") as mock_kill, \
+             mock.patch.object(process, "find_all_descendant_pids", return_value=[200, 201]):
+            result = process._check_idle_timeout(
+                last_output_time=100.0, idle_timeout=120,
+                check_start_time=80.0, process=mock_proc,
+            )
+        assert result is False  # Should NOT kill
+        mock_kill.assert_not_called()
+
+    def test_no_descendants_allows_kill(self) -> None:
+        """When idle timeout triggers and no descendants, proceed with kill."""
+        mock_proc = mock.MagicMock()
+        mock_proc.pid = 12345
+        with mock.patch("time.time", return_value=221.0), \
+             mock.patch.object(process, "_kill_process_group") as mock_kill, \
+             mock.patch.object(process, "find_all_descendant_pids", return_value=[]):
+            result = process._check_idle_timeout(
+                last_output_time=100.0, idle_timeout=120,
+                check_start_time=80.0, process=mock_proc,
+            )
+        assert result is True  # Should kill
+        mock_kill.assert_called_once()
 
 
 class TestSpawnClaudeProcess:
