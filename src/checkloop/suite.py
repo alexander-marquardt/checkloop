@@ -297,6 +297,22 @@ def _run_check_suite(
     if resume_from is None:
         shutil.rmtree(log_dir, ignore_errors=True)
     log_dir.mkdir(exist_ok=True)
+    # Generate or validate the project structure map so every check starts
+    # with a shared understanding of the codebase layout.
+    if not args.dry_run:
+        from checkloop.project_map import ensure_project_map
+        map_text = ensure_project_map(
+            workdir,
+            skip_permissions=args.dangerously_skip_permissions,
+            model=getattr(args, "model", None),
+            claude_command=getattr(args, "claude_command", "claude"),
+        )
+        if map_text:
+            print_status(f"  Project map ready ({len(map_text)} chars)", GREEN)
+        # Store on args so _build_check_prompt can access it.
+        args.project_map = map_text
+    else:
+        args.project_map = ""
     convergence_enabled = convergence_threshold > 0 and is_git
     check_ids = [c["id"] for c in selected_checks]
     state = _build_suite_state(resume_from)

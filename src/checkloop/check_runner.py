@@ -129,11 +129,17 @@ def _build_check_prompt(check: CheckDef, args: argparse.Namespace) -> str:
     """Assemble the full prompt for a check from its definition and CLI args.
 
     Prepends the scope prefix (--changed-only file list or the default
-    "review ALL code" instruction) and appends commit-message rules.
+    "review ALL code" instruction), injects the project map if available,
+    and appends commit-message rules.
     """
     changed_files_prefix = getattr(args, "changed_files_prefix", "")
     scope_prefix = changed_files_prefix or FULL_CODEBASE_SCOPE
-    prompt = scope_prefix + check["prompt"] + COMMIT_MESSAGE_INSTRUCTIONS
+    project_map = getattr(args, "project_map", "")
+    map_section = (
+        f"\n\nHere is an overview of this project's structure:\n\n{project_map}\n\n"
+        if project_map else ""
+    )
+    prompt = scope_prefix + map_section + check["prompt"] + COMMIT_MESSAGE_INSTRUCTIONS
     return prompt
 
 
