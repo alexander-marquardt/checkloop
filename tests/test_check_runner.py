@@ -115,12 +115,17 @@ class TestReportCheckChanges:
 
     def test_different_sha_reports_changes(self, capsys: pytest.CaptureFixture[str]) -> None:
         with mock.patch.object(check_runner, "git_head_sha", return_value="sha2"):
-            with mock.patch.object(check_runner, "compute_change_stats", return_value=(10, 0.50)):
-                made, lines, pct = check_runner._report_check_changes("/tmp", "test", "sha1")
+            # compute_change_stats returns (lines_added, lines_deleted, lines_changed, pct)
+            with mock.patch.object(check_runner, "compute_change_stats", return_value=(7, 3, 10, 0.50)):
+                with mock.patch.object(check_runner, "compute_file_stats", return_value=(1, 0, 2)):
+                    made, lines, pct = check_runner._report_check_changes("/tmp", "test", "sha1")
         assert made is True
         assert lines == 10
         assert pct == 0.50
-        assert "10 lines changed" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "10 lines" in out
+        assert "+7/-3" in out  # lines breakdown
+        assert "+1/~2 files" in out  # files breakdown
 
     def test_sha_after_none_assumes_changes(self) -> None:
         with mock.patch.object(check_runner, "git_head_sha", return_value=None):

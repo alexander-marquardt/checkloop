@@ -178,12 +178,12 @@ def git_commit_all(workdir: str, message: str) -> bool:
 
 # --- Diff statistics ----------------------------------------------------------
 
-def _parse_shortstat(text: str) -> int:
-    """Parse ``git diff --shortstat`` output and return total lines changed.
+def _parse_shortstat(text: str) -> tuple[int, int]:
+    """Parse ``git diff --shortstat`` output and return (insertions, deletions).
 
-    Returns ``insertions + deletions`` rather than just one or the other because
-    convergence detection cares about total *churn* — a rename that preserves
+    Convergence detection cares about total *churn* — a rename that preserves
     line count but rewrites every line still represents significant change.
+    Callers typically sum these to get total lines changed.
     """
     insertions = deletions = 0
     match = _RE_INSERTIONS.search(text)
@@ -194,11 +194,11 @@ def _parse_shortstat(text: str) -> int:
         deletions = int(match.group(1))
     if insertions == 0 and deletions == 0 and text.strip():
         logger.debug("No insertions/deletions parsed from shortstat: %r", text)
-    return insertions + deletions
+    return insertions, deletions
 
 
-def _count_lines_changed(workdir: str, base_sha: str, target: str = "HEAD") -> int:
-    """Return total lines changed (insertions + deletions) between two refs.
+def _count_lines_changed(workdir: str, base_sha: str, target: str = "HEAD") -> tuple[int, int, int]:
+    """Return (insertions, deletions, total) lines changed between two refs.
 
     If *target* is ``"HEAD"``, compares *base_sha* to ``HEAD``.  Pass a different
     ref or SHA to compare arbitrary points.  To include uncommitted working-tree
@@ -206,12 +206,15 @@ def _count_lines_changed(workdir: str, base_sha: str, target: str = "HEAD") -> i
     """
     if not base_sha:
         logger.warning("_count_lines_changed called with empty base_sha")
-        return 0
+        return 0, 0, 0
     diff_args = ["diff", "--shortstat", base_sha]
     if target:  # empty string means diff against working tree (uncommitted changes)
         diff_args.append(target)
     output = _git_stdout(workdir, *diff_args)
-    return _parse_shortstat(output) if output is not None else 0
+    if output is None:
+        return 0, 0, 0
+    insertions, deletions = _parse_shortstat(output)
+    return insertions, deletions, insertions + deletions
 
 
 # --- Line counting (for convergence percentage) -------------------------------
@@ -373,22 +376,24 @@ def build_changed_files_prefix(changed_files: list[str]) -> str:
     )
 
 
-def compute_change_stats(workdir: str, base_sha: str) -> tuple[int, float]:
-    """Return ``(lines_changed, change_percentage)`` since *base_sha*.
+def compute_change_stats(workdir: str, base_sha: str) -> tuple[int, int, int, float]:
+    """Return ``(lines_added, lines_deleted, lines_changed, change_percentage)`` since *base_sha*.
 
+    *lines_changed* is the sum of insertions + deletions.
     *change_percentage* is calculated relative to the total number of
     tracked lines in the repository, clamped to a minimum of 1 to avoid
-    division by zero.  Returns ``(0, 0.0)`` on any unexpected error so
+    division by zero.  Returns ``(0, 0, 0, 0.0)`` on any unexpected error so
     callers can continue safely.
     """
     try:
-        lines_changed = _count_lines_changed(workdir, base_sha)
+        insertions, deletions, lines_changed = _count_lines_changed(workdir, base_sha)
         if lines_changed == 0:
-            return 0, 0.0
-        return lines_changed, (lines_changed / _cached_total_tracked_lines(workdir)) * 100
+            return 0, 0, 0, 0.0
+        pct = (lines_changed / _cached_total_tracked_lines(workdir)) * 100
+        return insertions, deletions, lines_changed, pct
     except Exception as exc:
         logger.error("Failed to compute change stats for %s vs %s: %s", workdir, base_sha, exc, exc_info=True)
-        return 0, 0.0
+        return 0, 0, 0, 0.0
 
 
 def compute_file_stats(workdir: str, base_sha: str) -> tuple[int, int, int]:

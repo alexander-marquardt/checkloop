@@ -82,7 +82,7 @@ def _check_cycle_convergence(
         print_status(f"\nNo changes in cycle {cycle} — converged.", GREEN)
         return True, prev_change_pct
 
-    lines_changed, change_pct = compute_change_stats(workdir, base_sha)
+    _added, _deleted, lines_changed, change_pct = compute_change_stats(workdir, base_sha)
     print_status(f"\nCycle {cycle}: {change_pct:.2f}% of lines changed "
                  f"(threshold: {convergence_threshold}%)")
 

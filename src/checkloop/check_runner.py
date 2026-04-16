@@ -229,17 +229,27 @@ def _report_check_changes(
     if sha_after == sha_before:
         print_status(f"  {check_id}: no changes")
         return False, 0, 0.0
-    lines_changed, pct = compute_change_stats(workdir, sha_before)
-    added, deleted, modified = compute_file_stats(workdir, sha_before)
+    lines_added, lines_deleted, lines_changed, pct = compute_change_stats(workdir, sha_before)
+    # Validate internal consistency: insertions + deletions should equal total changed.
+    if lines_added + lines_deleted != lines_changed:
+        logger.warning("Line stats inconsistent: %d + %d != %d", lines_added, lines_deleted, lines_changed)
+    files_added, files_deleted, files_modified = compute_file_stats(workdir, sha_before)
+    # Build human-readable breakdown strings.
+    line_parts = []
+    if lines_added:
+        line_parts.append(f"+{lines_added}")
+    if lines_deleted:
+        line_parts.append(f"-{lines_deleted}")
+    lines_breakdown = f" ({'/'.join(line_parts)})" if line_parts else ""
     file_parts = []
-    if added:
-        file_parts.append(f"+{added}")
-    if deleted:
-        file_parts.append(f"-{deleted}")
-    if modified:
-        file_parts.append(f"~{modified}")
+    if files_added:
+        file_parts.append(f"+{files_added}")
+    if files_deleted:
+        file_parts.append(f"-{files_deleted}")
+    if files_modified:
+        file_parts.append(f"~{files_modified}")
     files_str = f" [{'/'.join(file_parts)} files]" if file_parts else ""
-    print_status(f"  {check_id}: {lines_changed} lines changed ({pct:.2f}% of codebase){files_str}")
+    print_status(f"  {check_id}: {lines_changed} lines{lines_breakdown} ({pct:.2f}% of codebase){files_str}")
     return True, lines_changed, pct
 
 
