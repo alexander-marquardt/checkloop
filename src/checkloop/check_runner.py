@@ -25,6 +25,7 @@ from checkloop.checks import (
 from checkloop.commit_message import generate_commit_message
 from checkloop.git import (
     compute_change_stats,
+    compute_file_stats,
     get_uncommitted_diff,
     git_commit_all,
     git_head_sha,
@@ -227,7 +228,16 @@ def _report_check_changes(
         print_status(f"  {check_id}: no changes")
         return False, 0, 0.0
     lines_changed, pct = compute_change_stats(workdir, sha_before)
-    print_status(f"  {check_id}: {lines_changed} lines changed ({pct:.2f}% of codebase)")
+    added, deleted, modified = compute_file_stats(workdir, sha_before)
+    file_parts = []
+    if added:
+        file_parts.append(f"+{added}")
+    if deleted:
+        file_parts.append(f"-{deleted}")
+    if modified:
+        file_parts.append(f"~{modified}")
+    files_str = f" [{'/'.join(file_parts)} files]" if file_parts else ""
+    print_status(f"  {check_id}: {lines_changed} lines changed ({pct:.2f}% of codebase){files_str}")
     return True, lines_changed, pct
 
 

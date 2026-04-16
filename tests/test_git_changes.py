@@ -413,3 +413,47 @@ class TestCountTrackedLinesEdgeCases:
         with mock.patch.object(git, "_git_run", return_value=ls_result):
             result = git._count_tracked_lines("/tmp")
         assert result == 1
+
+
+class TestComputeFileStats:
+    """Tests for compute_file_stats()."""
+
+    def test_mixed_changes(self) -> None:
+        """Parses added, deleted, and modified files from --name-status output."""
+        output = "A\tnew_file.py\nD\tdeleted.py\nM\tmodified.py\nR100\trenamed.py\n"
+        with mock.patch.object(git, "_git_stdout", return_value=output):
+            added, deleted, modified = git.compute_file_stats("/tmp", "abc123")
+        assert added == 1
+        assert deleted == 1
+        assert modified == 2  # M and R both count as modified
+
+    def test_only_additions(self) -> None:
+        output = "A\ta.py\nA\tb.py\n"
+        with mock.patch.object(git, "_git_stdout", return_value=output):
+            added, deleted, modified = git.compute_file_stats("/tmp", "abc123")
+        assert (added, deleted, modified) == (2, 0, 0)
+
+    def test_only_deletions(self) -> None:
+        output = "D\told.py\n"
+        with mock.patch.object(git, "_git_stdout", return_value=output):
+            added, deleted, modified = git.compute_file_stats("/tmp", "abc123")
+        assert (added, deleted, modified) == (0, 1, 0)
+
+    def test_empty_base_sha_returns_zeros(self) -> None:
+        added, deleted, modified = git.compute_file_stats("/tmp", "")
+        assert (added, deleted, modified) == (0, 0, 0)
+
+    def test_git_failure_returns_zeros(self) -> None:
+        with mock.patch.object(git, "_git_stdout", return_value=None):
+            added, deleted, modified = git.compute_file_stats("/tmp", "abc123")
+        assert (added, deleted, modified) == (0, 0, 0)
+
+    def test_exception_returns_zeros(self) -> None:
+        with mock.patch.object(git, "_git_stdout", side_effect=RuntimeError("git broke")):
+            added, deleted, modified = git.compute_file_stats("/tmp", "abc123")
+        assert (added, deleted, modified) == (0, 0, 0)
+
+    def test_empty_output(self) -> None:
+        with mock.patch.object(git, "_git_stdout", return_value=""):
+            added, deleted, modified = git.compute_file_stats("/tmp", "abc123")
+        assert (added, deleted, modified) == (0, 0, 0)

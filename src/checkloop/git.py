@@ -389,3 +389,34 @@ def compute_change_stats(workdir: str, base_sha: str) -> tuple[int, float]:
     except Exception as exc:
         logger.error("Failed to compute change stats for %s vs %s: %s", workdir, base_sha, exc, exc_info=True)
         return 0, 0.0
+
+
+def compute_file_stats(workdir: str, base_sha: str) -> tuple[int, int, int]:
+    """Return ``(files_added, files_deleted, files_modified)`` since *base_sha*.
+
+    Uses ``git diff --name-status`` to classify each changed file. Returns
+    ``(0, 0, 0)`` on error or if *base_sha* is empty.
+    """
+    if not base_sha:
+        logger.warning("compute_file_stats called with empty base_sha")
+        return 0, 0, 0
+    try:
+        output = _git_stdout(workdir, "diff", "--name-status", base_sha, "HEAD")
+        if output is None:
+            return 0, 0, 0
+        added = deleted = modified = 0
+        for line in output.strip().splitlines():
+            if not line:
+                continue
+            status = line[0]
+            if status == "A":
+                added += 1
+            elif status == "D":
+                deleted += 1
+            else:
+                # M (modified), R (renamed), C (copied), T (type change) etc
+                modified += 1
+        return added, deleted, modified
+    except Exception as exc:
+        logger.error("Failed to compute file stats for %s vs %s: %s", workdir, base_sha, exc, exc_info=True)
+        return 0, 0, 0
