@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 from pathlib import Path
 from typing import Any, Iterator
 from unittest import mock
@@ -390,3 +391,109 @@ class TestTryResumeCurrentWorkdirResolutionFailure:
         assert result is None
         out = capsys.readouterr().out
         assert "Cannot resolve current workdir" in out
+
+
+# =============================================================================
+# _rotate_log_file — log rotation
+# =============================================================================
+
+
+class TestRotateLogFile:
+    """Tests for _rotate_log_file() log rotation."""
+
+    def test_rotates_existing_log(self, tmp_path: Path) -> None:
+        """The current log is moved to .log.1 after rotation."""
+        log_path = tmp_path / ".checkloop-run.log"
+        log_path.write_text("current log contents")
+        cli._rotate_log_file(log_path)
+        assert not log_path.exists()
+        rotated = log_path.with_suffix(".log.1")
+        assert rotated.exists()
+        assert rotated.read_text() == "current log contents"
+
+    def test_shifts_existing_rotated_logs(self, tmp_path: Path) -> None:
+        """Existing .log.1 is shifted to .log.2 before current moves to .log.1."""
+        log_path = tmp_path / ".checkloop-run.log"
+        log_path.write_text("current")
+        log_path.with_suffix(".log.1").write_text("previous-1")
+        cli._rotate_log_file(log_path)
+        assert log_path.with_suffix(".log.2").read_text() == "previous-1"
+        assert log_path.with_suffix(".log.1").read_text() == "current"
+
+    def test_drops_oldest_beyond_retention(self, tmp_path: Path) -> None:
+        """Files beyond _LOG_RETENTION are deleted."""
+        log_path = tmp_path / ".checkloop-run.log"
+        log_path.write_text("current")
+        # Create logs up to retention limit
+        for i in range(1, cli._LOG_RETENTION + 1):
+            log_path.with_suffix(f".log.{i}").write_text(f"old-{i}")
+        cli._rotate_log_file(log_path)
+        # The oldest (at retention limit) should be deleted, not shifted
+        assert not log_path.with_suffix(f".log.{cli._LOG_RETENTION + 1}").exists()
+        # Current should be at .log.1
+        assert log_path.with_suffix(".log.1").read_text() == "current"
+
+    def test_no_log_file_is_noop(self, tmp_path: Path) -> None:
+        """When no current log exists, rotation does nothing and doesn't crash."""
+        log_path = tmp_path / ".checkloop-run.log"
+        cli._rotate_log_file(log_path)
+        assert not log_path.exists()
+        assert not log_path.with_suffix(".log.1").exists()
+
+    def test_full_rotation_preserves_history(self, tmp_path: Path) -> None:
+        """Simulates 3 rotations to verify the full chain works."""
+        log_path = tmp_path / ".checkloop-run.log"
+
+        # Run 1
+        log_path.write_text("run-1")
+        cli._rotate_log_file(log_path)
+        assert log_path.with_suffix(".log.1").read_text() == "run-1"
+
+        # Run 2
+        log_path.write_text("run-2")
+        cli._rotate_log_file(log_path)
+        assert log_path.with_suffix(".log.1").read_text() == "run-2"
+        assert log_path.with_suffix(".log.2").read_text() == "run-1"
+
+        # Run 3
+        log_path.write_text("run-3")
+        cli._rotate_log_file(log_path)
+        assert log_path.with_suffix(".log.1").read_text() == "run-3"
+        assert log_path.with_suffix(".log.2").read_text() == "run-2"
+        assert log_path.with_suffix(".log.3").read_text() == "run-1"
+
+        # Run 4 — run-1 should be dropped (retention = 3)
+        log_path.write_text("run-4")
+        cli._rotate_log_file(log_path)
+        assert log_path.with_suffix(".log.1").read_text() == "run-4"
+        assert log_path.with_suffix(".log.2").read_text() == "run-3"
+        assert log_path.with_suffix(".log.3").read_text() == "run-2"
+        assert not log_path.with_suffix(".log.4").exists()
+
+    def test_oserror_during_rotation_is_silent(self, tmp_path: Path) -> None:
+        """OSError during rename is silently caught — rotation is best-effort."""
+        log_path = tmp_path / ".checkloop-run.log"
+        log_path.write_text("current")
+        with mock.patch.object(Path, "rename", side_effect=OSError("disk error")):
+            # Should not raise
+            cli._rotate_log_file(log_path)
+
+
+class TestAddFileLogHandlerRotation:
+    """Tests for _add_file_log_handler integrating with log rotation."""
+
+    def test_creates_log_file_after_rotation(self, tmp_path: Path) -> None:
+        """_add_file_log_handler rotates the existing log and creates a new one."""
+        log_path = tmp_path / ".checkloop-run.log"
+        log_path.write_text("old log")
+        cli._add_file_log_handler(str(tmp_path))
+        # Old log should be rotated to .log.1
+        assert log_path.with_suffix(".log.1").read_text() == "old log"
+        # New log file should exist
+        assert log_path.exists()
+        # Clean up handler to prevent interference with other tests
+        root = logging.getLogger()
+        for handler in root.handlers[:]:
+            if isinstance(handler, logging.FileHandler) and str(tmp_path) in handler.baseFilename:
+                root.removeHandler(handler)
+                handler.close()

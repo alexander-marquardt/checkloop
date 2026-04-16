@@ -401,7 +401,7 @@ class TestCheckMemoryLimit:
     """Tests for _check_memory_limit() child tree RSS monitoring."""
 
     def test_disabled_when_zero(self) -> None:
-        exceeded, _ = process._check_memory_limit(
+        exceeded, _, _ = process._check_memory_limit(
             session_id=123, max_memory_mb=0,
             check_start_time=time.time(), process=mock.MagicMock(),
             last_memory_check=time.time(),
@@ -410,7 +410,7 @@ class TestCheckMemoryLimit:
 
     def test_skipped_before_interval(self) -> None:
         now = time.time()
-        exceeded, last = process._check_memory_limit(
+        exceeded, last, _ = process._check_memory_limit(
             session_id=123, max_memory_mb=4096,
             check_start_time=now, process=mock.MagicMock(),
             last_memory_check=now,  # just checked
@@ -422,7 +422,7 @@ class TestCheckMemoryLimit:
         now = time.time()
         old_check = now - 20  # well past interval
         with mock.patch.object(process, "measure_session_rss_mb", return_value=500.0):
-            exceeded, last = process._check_memory_limit(
+            exceeded, last, _ = process._check_memory_limit(
                 session_id=123, max_memory_mb=4096,
                 check_start_time=now - 60, process=mock.MagicMock(),
                 last_memory_check=old_check,
@@ -433,13 +433,14 @@ class TestCheckMemoryLimit:
     def test_over_limit_kills_process(self) -> None:
         now = time.time()
         mock_proc = mock.MagicMock()
-        with mock.patch.object(process, "measure_session_rss_mb", return_value=5000.0):
-            with mock.patch.object(process, "_kill_process_group") as mock_kill:
-                exceeded, _ = process._check_memory_limit(
-                    session_id=123, max_memory_mb=4096,
-                    check_start_time=now - 60, process=mock_proc,
-                    last_memory_check=now - 20,
-                )
+        with mock.patch.object(process, "measure_session_rss_mb", return_value=5000.0), \
+             mock.patch.object(process, "_kill_process_group") as mock_kill, \
+             mock.patch.object(process, "_log_per_pid_breakdown"):
+            exceeded, _, _ = process._check_memory_limit(
+                session_id=123, max_memory_mb=4096,
+                check_start_time=now - 60, process=mock_proc,
+                last_memory_check=now - 20,
+            )
         assert exceeded is True
         mock_kill.assert_called_once_with(mock_proc)
 
@@ -455,7 +456,7 @@ class TestStreamProcessOutputKillReasons:
 
         with mock.patch.object(process, "_check_idle_timeout", return_value=False), \
              mock.patch.object(process, "_check_hard_timeout", return_value=True), \
-             mock.patch.object(process, "_check_memory_limit", return_value=(False, time.time())):
+             mock.patch.object(process, "_check_memory_limit", return_value=(False, time.time(), 0.0)):
             _, kill_reason = process._stream_process_output(
                 mock_proc, idle_timeout=120, debug=False,
                 check_timeout=60, max_memory_mb=0,
@@ -470,7 +471,7 @@ class TestStreamProcessOutputKillReasons:
 
         with mock.patch.object(process, "_check_idle_timeout", return_value=False), \
              mock.patch.object(process, "_check_hard_timeout", return_value=False), \
-             mock.patch.object(process, "_check_memory_limit", return_value=(True, time.time())):
+             mock.patch.object(process, "_check_memory_limit", return_value=(True, time.time(), 5000.0)):
             _, kill_reason = process._stream_process_output(
                 mock_proc, idle_timeout=120, debug=False,
                 check_timeout=60, max_memory_mb=4096,
@@ -516,7 +517,7 @@ class TestCheckMemoryLimitBoundary:
         """rss_mb == max_memory_mb uses > comparison, so exact match doesn't kill."""
         now = time.time()
         with mock.patch.object(process, "measure_session_rss_mb", return_value=4096.0):
-            exceeded, _ = process._check_memory_limit(
+            exceeded, _, _ = process._check_memory_limit(
                 session_id=123, max_memory_mb=4096,
                 check_start_time=now - 60, process=mock.MagicMock(),
                 last_memory_check=now - 20,
@@ -527,19 +528,20 @@ class TestCheckMemoryLimitBoundary:
         """One MB over the limit should trigger kill."""
         now = time.time()
         mock_proc = mock.MagicMock()
-        with mock.patch.object(process, "measure_session_rss_mb", return_value=4097.0):
-            with mock.patch.object(process, "_kill_process_group") as mock_kill:
-                exceeded, _ = process._check_memory_limit(
-                    session_id=123, max_memory_mb=4096,
-                    check_start_time=now - 60, process=mock_proc,
-                    last_memory_check=now - 20,
-                )
+        with mock.patch.object(process, "measure_session_rss_mb", return_value=4097.0), \
+             mock.patch.object(process, "_kill_process_group") as mock_kill, \
+             mock.patch.object(process, "_log_per_pid_breakdown"):
+            exceeded, _, _ = process._check_memory_limit(
+                session_id=123, max_memory_mb=4096,
+                check_start_time=now - 60, process=mock_proc,
+                last_memory_check=now - 20,
+            )
         assert exceeded is True
         mock_kill.assert_called_once_with(mock_proc)
 
     def test_negative_max_memory_disabled(self) -> None:
         """Negative max_memory_mb should be treated as disabled."""
-        exceeded, _ = process._check_memory_limit(
+        exceeded, _, _ = process._check_memory_limit(
             session_id=123, max_memory_mb=-100,
             check_start_time=time.time(), process=mock.MagicMock(),
             last_memory_check=0.0,
@@ -588,7 +590,7 @@ class TestCheckResourceLimitsCombined:
         """When all limits are within bounds, returns None kill_reason."""
         proc = self._make_mock_process()
         now = time.time()
-        kill_reason, last_mem, last_nudge = process._check_resource_limits(
+        kill_reason, last_mem, last_nudge, _ = process._check_resource_limits(
             proc, check_start_time=now, last_output_time=now,
             idle_timeout=300, check_timeout=0, max_memory_mb=0,
             last_memory_check=now, last_nudge_time=0.0,
@@ -599,7 +601,7 @@ class TestCheckResourceLimitsCombined:
         """Idle timeout should be detected before hard timeout or memory."""
         proc = self._make_mock_process()
         now = time.time()
-        kill_reason, _, _ = process._check_resource_limits(
+        kill_reason, _, _, _ = process._check_resource_limits(
             proc, check_start_time=now - 10, last_output_time=now - 400,
             idle_timeout=300, check_timeout=600, max_memory_mb=8192,
             last_memory_check=now, last_nudge_time=0.0,
@@ -610,7 +612,7 @@ class TestCheckResourceLimitsCombined:
         """Hard timeout should be detected when idle timeout hasn't triggered."""
         proc = self._make_mock_process()
         now = time.time()
-        kill_reason, _, _ = process._check_resource_limits(
+        kill_reason, _, _, _ = process._check_resource_limits(
             proc, check_start_time=now - 700, last_output_time=now,
             idle_timeout=300, check_timeout=600, max_memory_mb=0,
             last_memory_check=now, last_nudge_time=0.0,
@@ -621,8 +623,9 @@ class TestCheckResourceLimitsCombined:
         """Memory limit should be detected when timeouts haven't triggered."""
         proc = self._make_mock_process()
         now = time.time()
-        with mock.patch.object(process, "measure_session_rss_mb", return_value=10000.0):
-            kill_reason, _, _ = process._check_resource_limits(
+        with mock.patch.object(process, "measure_session_rss_mb", return_value=10000.0), \
+             mock.patch.object(process, "_log_per_pid_breakdown"):
+            kill_reason, _, _, _ = process._check_resource_limits(
                 proc, check_start_time=now, last_output_time=now,
                 idle_timeout=300, check_timeout=0, max_memory_mb=8192,
                 last_memory_check=now - 20, last_nudge_time=0.0,
@@ -634,7 +637,7 @@ class TestCheckResourceLimitsCombined:
         proc = self._make_mock_process()
         now = time.time()
         # idle_seconds = 250, threshold = 300 - 60 = 240, so nudge should fire
-        kill_reason, _, last_nudge = process._check_resource_limits(
+        kill_reason, _, last_nudge, _ = process._check_resource_limits(
             proc, check_start_time=now - 250, last_output_time=now - 250,
             idle_timeout=300, check_timeout=0, max_memory_mb=0,
             last_memory_check=now, last_nudge_time=0.0,
@@ -649,7 +652,7 @@ class TestCheckResourceLimitsCombined:
         now = time.time()
         last_output = now - 250
         # last_nudge_time > last_output_time means we already nudged
-        kill_reason, _, last_nudge = process._check_resource_limits(
+        kill_reason, _, last_nudge, _ = process._check_resource_limits(
             proc, check_start_time=now - 250, last_output_time=last_output,
             idle_timeout=300, check_timeout=0, max_memory_mb=0,
             last_memory_check=now, last_nudge_time=now - 10,  # nudged recently
@@ -776,7 +779,7 @@ class TestStreamDescendantAccumulation:
 
         # Set interval to 0 so scan triggers on every loop iteration.
         with mock.patch.object(process, "_MEMORY_CHECK_INTERVAL", 0), \
-             mock.patch.object(process, "_check_resource_limits", return_value=(None, 0.0, 0.0)), \
+             mock.patch.object(process, "_check_resource_limits", return_value=(None, 0.0, 0.0, 0.0)), \
              mock.patch.object(process, "find_all_descendant_pids", return_value=[200, 300]), \
              mock.patch("select.select", return_value=([], [], [])):
             process._stream_process_output(
@@ -794,7 +797,7 @@ class TestStreamDescendantAccumulation:
         mock_proc.poll.return_value = 0
         mock_proc.returncode = 0
 
-        with mock.patch.object(process, "_check_resource_limits", return_value=(None, 0.0, 0.0)), \
+        with mock.patch.object(process, "_check_resource_limits", return_value=(None, 0.0, 0.0, 0.0)), \
              mock.patch.object(process, "find_all_descendant_pids") as mock_find, \
              mock.patch("select.select", return_value=([], [], [])):
             process._stream_process_output(
@@ -803,3 +806,245 @@ class TestStreamDescendantAccumulation:
             )
 
         mock_find.assert_not_called()
+
+
+# =============================================================================
+# _log_per_pid_breakdown — forensic per-PID RSS logging
+# =============================================================================
+
+
+class TestLogPerPidBreakdown:
+    """Tests for _log_per_pid_breakdown() forensic logging."""
+
+    def test_logs_session_and_descendant_pids(self) -> None:
+        """Combines session PIDs and known descendants into a single snapshot."""
+        with mock.patch.object(process, "find_session_pids", return_value=[200, 300]) as mock_find, \
+             mock.patch.object(process, "snapshot_process_rss",
+                               return_value=[(200, 100.0, "node"), (300, 50.0, "python"), (400, 25.0, "sh")]) as mock_snap:
+            process._log_per_pid_breakdown(session_id=100, known_descendants={300, 400})
+        mock_find.assert_called_once_with(100)
+        # All unique PIDs minus our own should be queried
+        queried_pids = mock_snap.call_args[0][0]
+        assert {200, 300, 400} <= queried_pids
+
+    def test_excludes_own_pid(self) -> None:
+        """The current process is excluded from the snapshot."""
+        import os
+        my_pid = os.getpid()
+        with mock.patch.object(process, "find_session_pids", return_value=[my_pid, 200]), \
+             mock.patch.object(process, "snapshot_process_rss", return_value=[(200, 50.0, "node")]) as mock_snap:
+            process._log_per_pid_breakdown(session_id=100, known_descendants=None)
+        queried_pids = mock_snap.call_args[0][0]
+        assert my_pid not in queried_pids
+
+    def test_no_pids_skips_snapshot(self) -> None:
+        """When session has no PIDs and no known descendants, snapshot is not called."""
+        import os
+        with mock.patch.object(process, "find_session_pids", return_value=[os.getpid()]), \
+             mock.patch.object(process, "snapshot_process_rss") as mock_snap:
+            process._log_per_pid_breakdown(session_id=100, known_descendants=None)
+        mock_snap.assert_not_called()
+
+    def test_empty_snapshot_result_is_handled(self) -> None:
+        """When snapshot returns empty (all processes dead), no crash."""
+        with mock.patch.object(process, "find_session_pids", return_value=[200]), \
+             mock.patch.object(process, "snapshot_process_rss", return_value=[]):
+            # Should not raise
+            process._log_per_pid_breakdown(session_id=100, known_descendants={300})
+
+    def test_none_descendants_still_queries_session(self) -> None:
+        """When known_descendants is None, only session PIDs are queried."""
+        with mock.patch.object(process, "find_session_pids", return_value=[200]) as mock_find, \
+             mock.patch.object(process, "snapshot_process_rss",
+                               return_value=[(200, 50.0, "node")]) as mock_snap:
+            process._log_per_pid_breakdown(session_id=100, known_descendants=None)
+        mock_find.assert_called_once_with(100)
+        queried_pids = mock_snap.call_args[0][0]
+        assert 200 in queried_pids
+
+
+# =============================================================================
+# _check_memory_limit — memory growth trend warnings
+# =============================================================================
+
+
+class TestMemoryGrowthTrendWarnings:
+    """Tests for memory growth trend warnings at 50%/75% thresholds and doubling."""
+
+    def test_50_percent_threshold_triggers_breakdown(self) -> None:
+        """Crossing the 50% threshold triggers _log_per_pid_breakdown."""
+        now = time.time()
+        mock_proc = mock.MagicMock()
+        # prev_rss_mb=1800 (44% of 4096), current=2100 (51% of 4096) — no doubling
+        with mock.patch.object(process, "measure_session_rss_mb", return_value=2100.0), \
+             mock.patch.object(process, "_log_per_pid_breakdown") as mock_breakdown:
+            exceeded, _, _ = process._check_memory_limit(
+                session_id=123, max_memory_mb=4096,
+                check_start_time=now - 60, process=mock_proc,
+                last_memory_check=now - 20, prev_rss_mb=1800.0,
+            )
+        assert exceeded is False
+        mock_breakdown.assert_called_once()
+
+    def test_75_percent_threshold_triggers_breakdown(self) -> None:
+        """Crossing the 75% threshold triggers _log_per_pid_breakdown."""
+        now = time.time()
+        mock_proc = mock.MagicMock()
+        # prev_rss_mb=2000 (49% of 4096), current=3100 (76% of 4096)
+        with mock.patch.object(process, "measure_session_rss_mb", return_value=3100.0), \
+             mock.patch.object(process, "_log_per_pid_breakdown") as mock_breakdown:
+            exceeded, _, _ = process._check_memory_limit(
+                session_id=123, max_memory_mb=4096,
+                check_start_time=now - 60, process=mock_proc,
+                last_memory_check=now - 20, prev_rss_mb=2000.0,
+            )
+        assert exceeded is False
+        # Should be called twice: once for 50% and once for 75% crossing
+        assert mock_breakdown.call_count == 2
+
+    def test_doubling_triggers_breakdown(self) -> None:
+        """RSS doubling between measurements triggers _log_per_pid_breakdown."""
+        now = time.time()
+        mock_proc = mock.MagicMock()
+        # prev=500, current=1000 — exactly doubled (under both 50% and 75% of 4096)
+        with mock.patch.object(process, "measure_session_rss_mb", return_value=1000.0), \
+             mock.patch.object(process, "_log_per_pid_breakdown") as mock_breakdown:
+            exceeded, _, _ = process._check_memory_limit(
+                session_id=123, max_memory_mb=4096,
+                check_start_time=now - 60, process=mock_proc,
+                last_memory_check=now - 20, prev_rss_mb=500.0,
+            )
+        assert exceeded is False
+        mock_breakdown.assert_called_once()  # doubling
+
+    def test_no_warning_below_thresholds(self) -> None:
+        """No breakdown logged when staying below 50% with no doubling."""
+        now = time.time()
+        mock_proc = mock.MagicMock()
+        # prev=400 (10%), current=600 (15%) — below 50%, no doubling
+        with mock.patch.object(process, "measure_session_rss_mb", return_value=600.0), \
+             mock.patch.object(process, "_log_per_pid_breakdown") as mock_breakdown:
+            exceeded, _, _ = process._check_memory_limit(
+                session_id=123, max_memory_mb=4096,
+                check_start_time=now - 60, process=mock_proc,
+                last_memory_check=now - 20, prev_rss_mb=400.0,
+            )
+        assert exceeded is False
+        mock_breakdown.assert_not_called()
+
+    def test_prev_rss_zero_skips_doubling_check(self) -> None:
+        """When prev_rss_mb is 0 (first measurement), no doubling warning."""
+        now = time.time()
+        mock_proc = mock.MagicMock()
+        # prev=0, current=500 (12%) — below 50%, prev is 0 so no doubling
+        with mock.patch.object(process, "measure_session_rss_mb", return_value=500.0), \
+             mock.patch.object(process, "_log_per_pid_breakdown") as mock_breakdown:
+            exceeded, _, _ = process._check_memory_limit(
+                session_id=123, max_memory_mb=4096,
+                check_start_time=now - 60, process=mock_proc,
+                last_memory_check=now - 20, prev_rss_mb=0.0,
+            )
+        assert exceeded is False
+        mock_breakdown.assert_not_called()
+
+    def test_returns_current_rss_for_tracking(self) -> None:
+        """The third return value is the current RSS for trend tracking."""
+        now = time.time()
+        mock_proc = mock.MagicMock()
+        with mock.patch.object(process, "measure_session_rss_mb", return_value=1234.0):
+            _, _, current_rss = process._check_memory_limit(
+                session_id=123, max_memory_mb=4096,
+                check_start_time=now - 60, process=mock_proc,
+                last_memory_check=now - 20, prev_rss_mb=1000.0,
+            )
+        assert abs(current_rss - 1234.0) < 0.01
+
+    def test_over_limit_also_triggers_breakdown(self) -> None:
+        """When exceeding the memory limit, breakdown is logged before killing."""
+        now = time.time()
+        mock_proc = mock.MagicMock()
+        with mock.patch.object(process, "measure_session_rss_mb", return_value=5000.0), \
+             mock.patch.object(process, "_kill_process_group"), \
+             mock.patch.object(process, "_log_per_pid_breakdown") as mock_breakdown:
+            exceeded, _, _ = process._check_memory_limit(
+                session_id=123, max_memory_mb=4096,
+                check_start_time=now - 60, process=mock_proc,
+                last_memory_check=now - 20, prev_rss_mb=3000.0,
+            )
+        assert exceeded is True
+        # 50%, 75%, and limit-exceeded all trigger breakdown
+        assert mock_breakdown.call_count >= 1
+
+
+# =============================================================================
+# _check_memory_limit — escaped descendant RSS measurement
+# =============================================================================
+
+
+class TestCheckMemoryLimitEscapedDescendants:
+    """Tests for _check_memory_limit() including escaped-session descendant RSS."""
+
+    def test_includes_escaped_descendant_rss(self) -> None:
+        """Descendants that escaped the session are included in total RSS."""
+        now = time.time()
+        mock_proc = mock.MagicMock()
+        mock_proc.pid = 100
+        # Session RSS = 2000, escaped descendants contribute 1000 more
+        with mock.patch.object(process, "measure_session_rss_mb", return_value=2000.0), \
+             mock.patch.object(process, "find_all_descendant_pids", return_value=[200, 300]), \
+             mock.patch.object(process, "measure_pid_rss_mb", return_value=1000.0):
+            exceeded, _, current_rss = process._check_memory_limit(
+                session_id=100, max_memory_mb=4096,
+                check_start_time=now - 60, process=mock_proc,
+                last_memory_check=now - 20,
+                known_descendants={200, 300, 400},
+            )
+        # Total should be session (2000) + escaped (1000) = 3000
+        assert abs(current_rss - 3000.0) < 0.01
+        assert exceeded is False
+
+    def test_no_descendants_only_session_rss(self) -> None:
+        """Without known_descendants, only session RSS is measured."""
+        now = time.time()
+        mock_proc = mock.MagicMock()
+        mock_proc.pid = 100
+        with mock.patch.object(process, "measure_session_rss_mb", return_value=2000.0), \
+             mock.patch.object(process, "measure_pid_rss_mb") as mock_pid_rss:
+            exceeded, _, current_rss = process._check_memory_limit(
+                session_id=100, max_memory_mb=4096,
+                check_start_time=now - 60, process=mock_proc,
+                last_memory_check=now - 20,
+                known_descendants=None,
+            )
+        mock_pid_rss.assert_not_called()
+        assert abs(current_rss - 2000.0) < 0.01
+
+
+# =============================================================================
+# _kill_remaining_descendants — verify_pids_dead integration
+# =============================================================================
+
+
+class TestKillRemainingDescendantsVerification:
+    """Tests for _kill_remaining_descendants() calling verify_pids_dead."""
+
+    def test_verify_called_after_killing(self) -> None:
+        """After killing descendants, verify_pids_dead is called."""
+        from checkloop.monitoring import previous_descendant_pids
+        known = {200, 300}
+        with mock.patch.object(process, "kill_pids", return_value=2), \
+             mock.patch.object(process, "verify_pids_dead", return_value=[]) as mock_verify:
+            process._kill_remaining_descendants(known, root_pid=100)
+        mock_verify.assert_called_once()
+        verified_pids = mock_verify.call_args[0][0]
+        assert set(verified_pids) == {200, 300}
+        previous_descendant_pids.discard(200)
+        previous_descendant_pids.discard(300)
+
+    def test_verify_not_called_when_none_killed(self) -> None:
+        """When kill_pids returns 0, verify is not called."""
+        known = {200, 300}
+        with mock.patch.object(process, "kill_pids", return_value=0), \
+             mock.patch.object(process, "verify_pids_dead") as mock_verify:
+            process._kill_remaining_descendants(known, root_pid=100)
+        mock_verify.assert_not_called()

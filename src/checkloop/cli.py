@@ -78,15 +78,49 @@ def _configure_logging(args: argparse.Namespace) -> None:
     )
 
 
+_LOG_RETENTION = 3
+"""Number of previous log files to keep (e.g. .log.1, .log.2, .log.3)."""
+
+
+def _rotate_log_file(log_path: Path) -> None:
+    """Rotate previous log files so the last N runs are preserved.
+
+    Shifts ``.log.1`` → ``.log.2`` etc., then moves the current log to
+    ``.log.1``.  Oldest files beyond ``_LOG_RETENTION`` are deleted.
+    Errors are silently ignored — log rotation is best-effort.
+    """
+    # Shift existing rotated logs up by one.
+    for i in range(_LOG_RETENTION, 0, -1):
+        src = log_path.with_suffix(f".log.{i}")
+        dst = log_path.with_suffix(f".log.{i + 1}")
+        try:
+            if i == _LOG_RETENTION:
+                src.unlink(missing_ok=True)  # drop oldest
+            elif src.exists():
+                src.rename(dst)
+        except OSError:
+            pass
+    # Rotate current → .log.1
+    try:
+        if log_path.exists():
+            log_path.rename(log_path.with_suffix(".log.1"))
+    except OSError:
+        pass
+
+
 def _add_file_log_handler(workdir: str) -> None:
     """Add a DEBUG-level file handler that captures everything to a log file.
 
-    The log file is written to ``<workdir>/.checkloop-run.log`` and is
-    overwritten on each run so it always reflects the most recent session.
+    The log file is written to ``<workdir>/.checkloop-run.log``.  Previous
+    logs are rotated to ``.log.1``, ``.log.2``, etc. (up to
+    ``_LOG_RETENTION``) so that diagnostics from recent runs survive even
+    if the current run overwrites the main log.
+
     Permissions are restricted to owner-only (0600) because the log may
     contain prompt text, file paths, and other potentially sensitive data.
     """
     log_path = Path(workdir) / ".checkloop-run.log"
+    _rotate_log_file(log_path)
     try:
         fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         os.close(fd)

@@ -21,6 +21,7 @@ from typing import IO
 
 from checkloop.monitoring import (
     find_all_descendant_pids,
+    find_session_pids,
     kill_pids,
     kill_session_stragglers,
     log_memory_usage,
@@ -28,6 +29,8 @@ from checkloop.monitoring import (
     measure_session_rss_mb,
     previous_descendant_pids,
     previous_session_ids,
+    snapshot_process_rss,
+    verify_pids_dead,
 )
 from checkloop.streaming import process_jsonl_buffer
 from checkloop.terminal import (
@@ -279,6 +282,29 @@ def _check_hard_timeout(
     return False
 
 
+def _log_per_pid_breakdown(session_id: int, known_descendants: set[int] | None) -> None:
+    """Log per-PID RSS breakdown for forensic analysis.
+
+    Called when memory usage is notable (over 50% of limit or exceeded).
+    Uses a single ``ps`` call to snapshot every relevant process.
+    """
+    all_pids: set[int] = set()
+    session_member_pids = find_session_pids(session_id)
+    all_pids.update(session_member_pids)
+    if known_descendants:
+        all_pids.update(known_descendants)
+    all_pids.discard(os.getpid())
+    if not all_pids:
+        return
+    entries = snapshot_process_rss(all_pids)
+    if not entries:
+        return
+    entries.sort(key=lambda e: e[1], reverse=True)  # largest first
+    lines = [f"  pid={pid:>7d}  rss={rss:>7.0f}MB  cmd={cmd}" for pid, rss, cmd in entries]
+    logger.info("Per-PID RSS breakdown (session %d, %d processes):\n%s",
+                session_id, len(entries), "\n".join(lines))
+
+
 def _check_memory_limit(
     session_id: int,
     max_memory_mb: int,
@@ -286,22 +312,27 @@ def _check_memory_limit(
     process: subprocess.Popen[bytes],
     last_memory_check: float,
     known_descendants: set[int] | None = None,
-) -> tuple[bool, float]:
+    prev_rss_mb: float = 0.0,
+) -> tuple[bool, float, float]:
     """Check child tree RSS against the memory limit.
 
-    Returns ``(should_kill, last_check_time)``.  Only samples every
-    ``_MEMORY_CHECK_INTERVAL`` seconds to avoid excessive ``ps`` calls.
+    Returns ``(should_kill, last_check_time, current_rss_mb)``.  Only
+    samples every ``_MEMORY_CHECK_INTERVAL`` seconds to avoid excessive
+    ``ps`` calls.
 
     When *known_descendants* is provided, their RSS is measured separately
     and added to the session total.  This catches processes that called
     ``setsid()`` and escaped the original session — without this, they
     consume memory invisibly until the check ends.
+
+    *prev_rss_mb* is the RSS from the previous measurement, used to detect
+    rapid growth and log per-PID breakdowns at key thresholds.
     """
     if max_memory_mb <= 0:
-        return False, last_memory_check
+        return False, last_memory_check, 0.0
     now = time.time()
     if now - last_memory_check < _MEMORY_CHECK_INTERVAL:
-        return False, last_memory_check
+        return False, last_memory_check, prev_rss_mb
     session_rss = measure_session_rss_mb(session_id)
     # Measure descendants that escaped the session (called setsid()).
     # Filter out PIDs already counted by the session measurement to
@@ -314,16 +345,33 @@ def _check_memory_limit(
     rss_mb = session_rss + escaped_rss
     logger.debug("Session %d RSS: %.0f MB (session=%.0f, escaped=%.0f, limit: %d MB)",
                  session_id, rss_mb, session_rss, escaped_rss, max_memory_mb)
+
+    # --- Memory growth trend warnings ---
+    pct_of_limit = (rss_mb / max_memory_mb) * 100 if max_memory_mb > 0 else 0
+    prev_pct = (prev_rss_mb / max_memory_mb) * 100 if max_memory_mb > 0 else 0
+    # Warn when crossing 50% or 75% thresholds.
+    for threshold in (50, 75):
+        if prev_pct < threshold <= pct_of_limit:
+            logger.warning("Memory at %d%% of limit: %.0fMB / %dMB (session=%d)",
+                           int(pct_of_limit), rss_mb, max_memory_mb, session_id)
+            _log_per_pid_breakdown(session_id, known_descendants)
+    # Warn when RSS doubles between consecutive measurements.
+    if prev_rss_mb > 0 and rss_mb >= prev_rss_mb * 2:
+        logger.warning("Memory doubled: %.0fMB → %.0fMB (session=%d, limit=%dMB)",
+                       prev_rss_mb, rss_mb, session_id, max_memory_mb)
+        _log_per_pid_breakdown(session_id, known_descendants)
+
     if rss_mb > max_memory_mb:
         elapsed = format_duration(now - check_start_time)
         logger.warning("Memory limit exceeded: pid=%d, rss=%.0fMB (session=%.0f, escaped=%.0f), "
                        "limit=%dMB, elapsed=%s",
                        process.pid, rss_mb, session_rss, escaped_rss, max_memory_mb, elapsed)
+        _log_per_pid_breakdown(session_id, known_descendants)
         print_status(f"\nChild tree using {rss_mb:.0f}MB (limit: {max_memory_mb}MB) "
                      f"after {elapsed} — killing.", RED)
         _kill_process_group(process)
-        return True, now
-    return False, now
+        return True, now, rss_mb
+    return False, now, rss_mb
 
 
 def _flush_and_close_stdout(
@@ -351,11 +399,13 @@ def _check_resource_limits(
     last_memory_check: float,
     last_nudge_time: float,
     known_descendants: set[int] | None = None,
-) -> tuple[str | None, float, float]:
+    prev_rss_mb: float = 0.0,
+) -> tuple[str | None, float, float, float]:
     """Check all resource limits in one pass, sending nudges before timeout.
 
-    Returns ``(kill_reason, last_memory_check, last_nudge_time)``.  *kill_reason*
-    is one of the ``KILL_REASON_*`` constants if a limit was exceeded, or ``None``.
+    Returns ``(kill_reason, last_memory_check, last_nudge_time, prev_rss_mb)``.
+    *kill_reason* is one of the ``KILL_REASON_*`` constants if a limit was
+    exceeded, or ``None``.
 
     A nudge is sent to stdin when idle time approaches the timeout threshold
     (within ``_NUDGE_BEFORE_TIMEOUT`` seconds). This prompts Claude to produce
@@ -373,18 +423,18 @@ def _check_resource_limits(
             last_nudge_time = now
 
     if _check_idle_timeout(last_output_time, idle_timeout, check_start_time, process):
-        return KILL_REASON_IDLE, last_memory_check, last_nudge_time
+        return KILL_REASON_IDLE, last_memory_check, last_nudge_time, prev_rss_mb
     if _check_hard_timeout(check_start_time, check_timeout, process):
-        return KILL_REASON_TIMEOUT, last_memory_check, last_nudge_time
+        return KILL_REASON_TIMEOUT, last_memory_check, last_nudge_time, prev_rss_mb
     # process.pid == session ID because start_new_session=True makes the
     # subprocess the session leader (SID = its PID).
-    exceeded, last_memory_check = _check_memory_limit(
+    exceeded, last_memory_check, prev_rss_mb = _check_memory_limit(
         process.pid, max_memory_mb, check_start_time, process, last_memory_check,
-        known_descendants=known_descendants,
+        known_descendants=known_descendants, prev_rss_mb=prev_rss_mb,
     )
     if exceeded:
-        return KILL_REASON_MEMORY, last_memory_check, last_nudge_time
-    return None, last_memory_check, last_nudge_time
+        return KILL_REASON_MEMORY, last_memory_check, last_nudge_time, prev_rss_mb
+    return None, last_memory_check, last_nudge_time, prev_rss_mb
 
 
 def _stream_process_output(
@@ -424,6 +474,7 @@ def _stream_process_output(
     last_memory_check = check_start_time
     last_nudge_time = 0.0  # tracks when we last sent a nudge (0 = never)
     last_descendant_scan = check_start_time
+    prev_rss_mb = 0.0  # previous RSS measurement for growth trend detection
     output_buffer = bytearray()
     kill_reason: str | None = None
 
@@ -436,13 +487,23 @@ def _stream_process_output(
                 now = time.time()
                 if now - last_descendant_scan >= _MEMORY_CHECK_INTERVAL:
                     descendants = find_all_descendant_pids(process.pid)
+                    new_pids = set(descendants) - accumulated_descendant_pids
                     accumulated_descendant_pids.update(descendants)
                     last_descendant_scan = now
+                    # Log newly discovered descendants with their parent
+                    # relationships for process-tree forensics.
+                    if new_pids:
+                        snapshot = snapshot_process_rss(new_pids)
+                        if snapshot:
+                            lines = [f"  pid={pid:>7d}  rss={rss:>7.0f}MB  cmd={cmd}"
+                                     for pid, rss, cmd in snapshot]
+                            logger.info("New descendant(s) of pid %d: %d discovered\n%s",
+                                        process.pid, len(new_pids), "\n".join(lines))
 
-            kill_reason, last_memory_check, last_nudge_time = _check_resource_limits(
+            kill_reason, last_memory_check, last_nudge_time, prev_rss_mb = _check_resource_limits(
                 process, check_start_time, last_output_time, idle_timeout,
                 check_timeout, max_memory_mb, last_memory_check, last_nudge_time,
-                known_descendants=accumulated_descendant_pids,
+                known_descendants=accumulated_descendant_pids, prev_rss_mb=prev_rss_mb,
             )
             if kill_reason:
                 break
@@ -516,6 +577,7 @@ def _kill_remaining_descendants(all_known: set[int], root_pid: int) -> None:
     killed = kill_pids(targets)
     if killed:
         logger.info("Killed %d descendant(s) that escaped group/session cleanup", killed)
+        verify_pids_dead(targets)
     # Track survivors for follow-up sweeps.
     previous_descendant_pids.update(targets)
 

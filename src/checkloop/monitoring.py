@@ -87,6 +87,33 @@ def measure_session_rss_mb(session_id: int) -> float:
     return _sum_rss_from_ps("-s", str(session_id))
 
 
+def snapshot_process_rss(pids: set[int] | list[int]) -> list[tuple[int, float, str]]:
+    """Return ``(pid, rss_mb, command)`` for each live PID.
+
+    Uses a single ``ps`` call.  Dead PIDs are silently omitted.
+    Returns an empty list on failure or if *pids* is empty.
+    """
+    if not pids:
+        return []
+    pid_arg = ",".join(str(p) for p in pids)
+    result = _run_cmd_quiet(["ps", "-o", "pid=,rss=,comm=", "-p", pid_arg])
+    if result is None or result.returncode != 0 or not result.stdout.strip():
+        return []
+    entries: list[tuple[int, float, str]] = []
+    for line in result.stdout.strip().splitlines():
+        parts = line.split(None, 2)
+        if len(parts) < 2:
+            continue
+        try:
+            pid = int(parts[0])
+            rss_kb = int(parts[1])
+        except ValueError:
+            continue
+        comm = parts[2].strip() if len(parts) >= 3 else ""
+        entries.append((pid, rss_kb / _KB_PER_MB, comm))
+    return entries
+
+
 def measure_pid_rss_mb(pids: set[int]) -> float:
     """Return the total RSS (in MB) of the given PIDs.
 
@@ -169,6 +196,25 @@ def kill_pids(pids: list[int], sig: signal.Signals = signal.SIGKILL) -> int:
     return killed
 
 
+def verify_pids_dead(pids: list[int] | set[int]) -> list[int]:
+    """Return the subset of *pids* that are still alive.
+
+    Uses ``kill(pid, 0)`` (signal 0 = existence check, no signal sent).
+    """
+    survivors: list[int] = []
+    for pid in pids:
+        try:
+            os.kill(pid, 0)
+            survivors.append(pid)  # signal 0 succeeded — process is alive
+        except OSError:
+            pass  # process is dead — expected
+    if survivors:
+        snapshot = snapshot_process_rss(set(survivors))
+        detail = "; ".join(f"pid={pid} rss={rss:.0f}MB cmd={cmd}" for pid, rss, cmd in snapshot)
+        logger.warning("%d process(es) survived kill: %s", len(survivors), detail or survivors)
+    return survivors
+
+
 def _kill_orphaned_children(pids: list[int] | None = None) -> int:
     """Kill surviving child processes. Returns count killed.
 
@@ -201,14 +247,29 @@ and escaped both ``os.killpg()`` and session-based cleanup.
 def log_memory_usage(label: str) -> None:
     """Log current RSS and kill any surviving processes after each check.
 
+    Reports both checkloop's own RSS and the aggregate RSS across all
+    tracked sessions and descendants, so the "after check" snapshot shows
+    what the children left behind.
+
     This is a diagnostic/cleanup helper and must never crash the main check
     loop — all errors are caught and logged so the suite can continue.
     """
     try:
         rss_mb = _measure_current_rss_mb()
         child_pids = _find_child_pids()
-        logger.info("Memory [%s]: rss=%.0fMB, children=%d", label, rss_mb, len(child_pids))
-        print_status(f"  Memory: {rss_mb:.0f}MB RSS, {len(child_pids)} child processes", DIM)
+
+        # Measure residual RSS across tracked sessions and descendants.
+        session_rss = sum(measure_session_rss_mb(sid) for sid in previous_session_ids)
+        descendant_rss = measure_pid_rss_mb(previous_descendant_pids) if previous_descendant_pids else 0.0
+        residual_rss = session_rss + descendant_rss
+
+        logger.info("Memory [%s]: self=%.0fMB, residual=%.0fMB (sessions=%.0f, descendants=%.0f), "
+                     "children=%d, tracked_sessions=%d, tracked_descendants=%d",
+                     label, rss_mb, residual_rss, session_rss, descendant_rss,
+                     len(child_pids), len(previous_session_ids), len(previous_descendant_pids))
+        residual_str = f", {residual_rss:.0f}MB residual" if residual_rss > 0 else ""
+        print_status(f"  Memory: {rss_mb:.0f}MB RSS{residual_str}, {len(child_pids)} child processes", DIM)
+
         if child_pids:
             _warn_and_kill_orphan_processes(child_pids)
         # Also sweep for stragglers from previous sessions that escaped cleanup.
@@ -223,7 +284,7 @@ def kill_session_stragglers(session_id: int) -> int:
     When ``start_new_session=True`` is used, the subprocess becomes the session
     leader (SID = its PID).  Children that call ``setsid()`` or ``setpgid()``
     escape ``os.killpg()`` but remain in the original session.  This function
-    catches those stragglers.
+    catches those stragglers and verifies they actually died.
 
     Returns the number of processes successfully signalled.
     """
@@ -231,7 +292,10 @@ def kill_session_stragglers(session_id: int) -> int:
     if not stragglers:
         return 0
     logger.warning("Found %d straggler(s) in session %d: %s", len(stragglers), session_id, stragglers)
-    return kill_pids(stragglers)
+    killed = kill_pids(stragglers)
+    if killed:
+        verify_pids_dead(stragglers)
+    return killed
 
 
 def _warn_and_kill_orphan_processes(child_pids: list[int]) -> None:

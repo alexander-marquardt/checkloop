@@ -566,3 +566,202 @@ class TestCleanupAllSessionsDescendants:
         # kill_pids called for session stragglers and for descendants
         assert mock_kill.call_count == 2
         assert monitoring.previous_descendant_pids == set()
+
+
+# =============================================================================
+# snapshot_process_rss — per-PID RSS+command snapshots
+# =============================================================================
+
+
+class TestSnapshotProcessRss:
+    """Tests for snapshot_process_rss() per-PID forensic snapshots."""
+
+    def test_empty_pids_returns_empty(self) -> None:
+        assert monitoring.snapshot_process_rss(set()) == []
+        assert monitoring.snapshot_process_rss([]) == []
+
+    def test_parses_multi_process_output(self) -> None:
+        ps_output = "  1001  51200  /usr/bin/node\n  1002  10240  python3\n"
+        with mock.patch("subprocess.run", return_value=make_git_result(stdout=ps_output)):
+            result = monitoring.snapshot_process_rss({1001, 1002})
+        assert len(result) == 2
+        pids = {entry[0] for entry in result}
+        assert pids == {1001, 1002}
+        # RSS should be converted from KB to MB
+        for pid, rss_mb, cmd in result:
+            if pid == 1001:
+                assert abs(rss_mb - 51200 / 1024) < 0.01
+                assert cmd == "/usr/bin/node"
+            elif pid == 1002:
+                assert abs(rss_mb - 10240 / 1024) < 0.01
+                assert cmd == "python3"
+
+    def test_ps_failure_returns_empty(self) -> None:
+        with mock.patch("subprocess.run", return_value=make_git_result(returncode=1)):
+            result = monitoring.snapshot_process_rss({1001})
+        assert result == []
+
+    def test_ps_oserror_returns_empty(self) -> None:
+        with mock.patch("subprocess.run", side_effect=OSError("nope")):
+            result = monitoring.snapshot_process_rss({1001})
+        assert result == []
+
+    def test_malformed_lines_skipped(self) -> None:
+        """Lines with non-integer PIDs or insufficient columns are skipped."""
+        ps_output = "  abc  1024  node\n  1001  2048  python\n  short\n"
+        with mock.patch("subprocess.run", return_value=make_git_result(stdout=ps_output)):
+            result = monitoring.snapshot_process_rss({1001})
+        assert len(result) == 1
+        assert result[0][0] == 1001
+
+    def test_missing_command_column(self) -> None:
+        """When ps output has no command column, cmd should be empty string."""
+        ps_output = "  1001  2048\n"
+        with mock.patch("subprocess.run", return_value=make_git_result(stdout=ps_output)):
+            result = monitoring.snapshot_process_rss({1001})
+        assert len(result) == 1
+        assert result[0][2] == ""
+
+    def test_dead_pids_silently_omitted(self) -> None:
+        """When ps returns empty/failure for dead PIDs, result is empty."""
+        with mock.patch("subprocess.run", return_value=make_git_result(stdout="")):
+            result = monitoring.snapshot_process_rss({99999})
+        assert result == []
+
+
+# =============================================================================
+# verify_pids_dead — post-kill verification
+# =============================================================================
+
+
+class TestVerifyPidsDead:
+    """Tests for verify_pids_dead() kill verification."""
+
+    def test_all_dead_returns_empty(self) -> None:
+        """When all PIDs are dead, returns empty list."""
+        with mock.patch("os.kill", side_effect=OSError("No such process")):
+            result = monitoring.verify_pids_dead([100, 200, 300])
+        assert result == []
+
+    def test_survivors_returned(self) -> None:
+        """PIDs that are still alive are returned."""
+        def kill_side_effect(pid: int, sig: int) -> None:
+            if pid == 200:
+                return  # alive
+            raise OSError("No such process")
+
+        with mock.patch("os.kill", side_effect=kill_side_effect), \
+             mock.patch.object(monitoring, "snapshot_process_rss", return_value=[]):
+            result = monitoring.verify_pids_dead([100, 200, 300])
+        assert result == [200]
+
+    def test_survivors_logged_with_snapshot(self) -> None:
+        """Surviving PIDs trigger a snapshot_process_rss call for forensics."""
+        with mock.patch("os.kill"):  # all alive
+            with mock.patch.object(monitoring, "snapshot_process_rss",
+                                   return_value=[(100, 50.0, "node"), (200, 30.0, "python")]) as mock_snap:
+                result = monitoring.verify_pids_dead([100, 200])
+        assert set(result) == {100, 200}
+        mock_snap.assert_called_once()
+
+    def test_empty_pids_returns_empty(self) -> None:
+        result = monitoring.verify_pids_dead([])
+        assert result == []
+
+    def test_accepts_set_input(self) -> None:
+        with mock.patch("os.kill", side_effect=OSError("No such process")):
+            result = monitoring.verify_pids_dead({100, 200})
+        assert result == []
+
+
+# =============================================================================
+# measure_pid_rss_mb — arbitrary PID set measurement
+# =============================================================================
+
+
+class TestMeasurePidRssMb:
+    """Tests for measure_pid_rss_mb() arbitrary PID set measurement."""
+
+    def test_empty_set_returns_zero(self) -> None:
+        assert monitoring.measure_pid_rss_mb(set()) == 0.0
+
+    def test_sums_rss_for_pid_set(self) -> None:
+        with mock.patch("subprocess.run", return_value=make_git_result(stdout="10240\n20480\n")):
+            rss = monitoring.measure_pid_rss_mb({100, 200})
+        assert abs(rss - (10240 + 20480) / 1024) < 0.01
+
+    def test_ps_failure_returns_zero(self) -> None:
+        with mock.patch("subprocess.run", return_value=make_git_result(returncode=1)):
+            assert monitoring.measure_pid_rss_mb({100}) == 0.0
+
+
+# =============================================================================
+# log_memory_usage — residual RSS reporting
+# =============================================================================
+
+
+class TestLogMemoryUsageResidualRss:
+    """Tests for log_memory_usage() residual RSS measurement across sessions and descendants."""
+
+    def test_reports_session_and_descendant_rss(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Residual RSS from sessions and descendants appears in output."""
+        monitoring.previous_session_ids[:] = [100]
+        monitoring.previous_descendant_pids.update({200, 300})
+        with mock.patch.object(monitoring, "_measure_current_rss_mb", return_value=42.0), \
+             mock.patch.object(monitoring, "_find_child_pids", return_value=[]), \
+             mock.patch.object(monitoring, "measure_session_rss_mb", return_value=150.0), \
+             mock.patch.object(monitoring, "measure_pid_rss_mb", return_value=50.0):
+            monitoring.log_memory_usage("test-label")
+        out = capsys.readouterr().out
+        assert "42MB" in out
+        assert "200MB residual" in out  # 150 + 50
+        monitoring.previous_session_ids.clear()
+        monitoring.previous_descendant_pids.clear()
+
+    def test_no_residual_when_nothing_tracked(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """When no sessions or descendants are tracked, no residual is shown."""
+        monitoring.previous_session_ids[:] = []
+        monitoring.previous_descendant_pids.clear()
+        with mock.patch.object(monitoring, "_measure_current_rss_mb", return_value=42.0), \
+             mock.patch.object(monitoring, "_find_child_pids", return_value=[]):
+            monitoring.log_memory_usage("test-label")
+        out = capsys.readouterr().out
+        assert "42MB" in out
+        assert "residual" not in out
+
+    def test_zero_residual_not_shown(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """When residual RSS is 0, it's not displayed in output."""
+        monitoring.previous_session_ids[:] = [100]
+        monitoring.previous_descendant_pids.clear()
+        with mock.patch.object(monitoring, "_measure_current_rss_mb", return_value=42.0), \
+             mock.patch.object(monitoring, "_find_child_pids", return_value=[]), \
+             mock.patch.object(monitoring, "measure_session_rss_mb", return_value=0.0):
+            monitoring.log_memory_usage("test-label")
+        out = capsys.readouterr().out
+        assert "residual" not in out
+        monitoring.previous_session_ids.clear()
+
+
+# =============================================================================
+# kill_session_stragglers — verify_pids_dead integration
+# =============================================================================
+
+
+class TestKillSessionStragglersVerification:
+    """Tests for kill_session_stragglers() post-kill verification."""
+
+    def test_calls_verify_after_kill(self) -> None:
+        """After killing stragglers, verify_pids_dead is called to confirm."""
+        with mock.patch.object(monitoring, "find_session_pids", return_value=[111, 222]), \
+             mock.patch.object(monitoring, "kill_pids", return_value=2), \
+             mock.patch.object(monitoring, "verify_pids_dead", return_value=[]) as mock_verify:
+            monitoring.kill_session_stragglers(42)
+        mock_verify.assert_called_once_with([111, 222])
+
+    def test_no_verify_when_nothing_killed(self) -> None:
+        """When kill_pids returns 0 (all already dead), verify is not called."""
+        with mock.patch.object(monitoring, "find_session_pids", return_value=[111]), \
+             mock.patch.object(monitoring, "kill_pids", return_value=0), \
+             mock.patch.object(monitoring, "verify_pids_dead") as mock_verify:
+            monitoring.kill_session_stragglers(42)
+        mock_verify.assert_not_called()

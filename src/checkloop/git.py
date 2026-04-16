@@ -136,6 +136,7 @@ def get_uncommitted_diff(workdir: str) -> str:
 
 _CHECKLOOP_UNSTAGE_PATTERNS: list[str] = [
     ".checkloop-run.log",
+    ".checkloop-run.log.*",
     ".checkloop-checkpoint.json",
     ".checkloop-ckpt-*.tmp",
     ".checkloop-logs",
