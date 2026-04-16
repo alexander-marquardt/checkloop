@@ -176,16 +176,32 @@ def _register_cleanup_handlers() -> None:
     Ctrl+C, SIGTERM, or terminal close (SIGHUP).
     """
     atexit.register(cleanup_all_sessions)
+
+    def _exit_handler(signum: int, frame: types.FrameType | None) -> None:
+        # Avoid calling logger here — logging acquires locks internally,
+        # so calling it from a signal handler can deadlock if the signal
+        # interrupts the main thread while it holds a logging lock.
+        sys.exit(128 + signum)
+
+    def _sigint_handler(signum: int, frame: types.FrameType | None) -> None:
+        # For SIGINT (Ctrl+C), raise KeyboardInterrupt so it propagates
+        # through any blocking syscalls. This ensures select(), subprocess.run(),
+        # and other blocking operations are interrupted immediately.
+        raise KeyboardInterrupt
+
     for sig in (signal.SIGTERM, signal.SIGHUP):
-        def _signal_handler(signum: int, frame: types.FrameType | None) -> None:
-            # Avoid calling logger here — logging acquires locks internally,
-            # so calling it from a signal handler can deadlock if the signal
-            # interrupts the main thread while it holds a logging lock.
-            sys.exit(128 + signum)
         try:
-            signal.signal(sig, _signal_handler)
+            signal.signal(sig, _exit_handler)
         except OSError as exc:
             logger.warning("Could not register handler for %s: %s", sig.name, exc)
+
+    # Explicitly handle SIGINT to ensure KeyboardInterrupt is raised even
+    # during blocking C-level syscalls where Python's default handler might
+    # be deferred.
+    try:
+        signal.signal(signal.SIGINT, _sigint_handler)
+    except OSError as exc:
+        logger.warning("Could not register SIGINT handler: %s", exc)
 
 
 # --- Entry point --------------------------------------------------------------
