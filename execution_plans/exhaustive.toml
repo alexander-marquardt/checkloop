@@ -5,26 +5,32 @@ description = "All checks — includes edge cases, complexity, deps, logging, co
 [[checks]]
 id = "test-fix"
 model = "sonnet"
+idle_timeout = 300
 
 [[checks]]
 id = "readability"
 model = "sonnet"
+idle_timeout = 300
 
 [[checks]]
 id = "dry"
 model = "sonnet"
+idle_timeout = 300
 
 [[checks]]
 id = "tests"
 model = "sonnet"
+idle_timeout = 300
 
 [[checks]]
 id = "docs"
 model = "sonnet"
+idle_timeout = 300
 
 [[checks]]
 id = "docs-accuracy"
 model = "sonnet"
+idle_timeout = 300
 
 [[checks]]
 id = "security"
@@ -39,14 +45,17 @@ idle_timeout = 900
 [[checks]]
 id = "errors"
 model = "sonnet"
+idle_timeout = 300
 
 [[checks]]
 id = "types"
 model = "sonnet"
+idle_timeout = 300
 
 [[checks]]
 id = "derived-values"
 model = "opus"
+idle_timeout = 600
 
 [[checks]]
 id = "architecture-boundaries"
@@ -61,14 +70,17 @@ idle_timeout = 900
 [[checks]]
 id = "complexity"
 model = "sonnet"
+idle_timeout = 300
 
 [[checks]]
 id = "deps"
 model = "sonnet"
+idle_timeout = 300
 
 [[checks]]
 id = "logging"
 model = "sonnet"
+idle_timeout = 300
 
 [[checks]]
 id = "concurrency"
@@ -83,14 +95,17 @@ idle_timeout = 900
 [[checks]]
 id = "accessibility"
 model = "sonnet"
+idle_timeout = 300
 
 [[checks]]
 id = "api-design"
 model = "sonnet"
+idle_timeout = 300
 
 [[checks]]
 id = "cleanup-ai-slop"
 model = "sonnet"
+idle_timeout = 300
 
 [[checks]]
 id = "coherence"
@@ -100,3 +115,4 @@ idle_timeout = 900
 [[checks]]
 id = "test-validate"
 model = "sonnet"
+idle_timeout = 300
