@@ -5,26 +5,32 @@ description = "Basic plus docs, docs-accuracy, security, performance, error hand
 [[checks]]
 id = "test-fix"
 model = "sonnet"
+idle_timeout = 300
 
 [[checks]]
 id = "readability"
 model = "sonnet"
+idle_timeout = 300
 
 [[checks]]
 id = "dry"
 model = "sonnet"
+idle_timeout = 300
 
 [[checks]]
 id = "tests"
 model = "sonnet"
+idle_timeout = 300
 
 [[checks]]
 id = "docs"
 model = "sonnet"
+idle_timeout = 300
 
 [[checks]]
 id = "docs-accuracy"
 model = "sonnet"
+idle_timeout = 300
 
 [[checks]]
 id = "security"
@@ -39,14 +45,17 @@ idle_timeout = 900
 [[checks]]
 id = "errors"
 model = "sonnet"
+idle_timeout = 300
 
 [[checks]]
 id = "types"
 model = "sonnet"
+idle_timeout = 300
 
 [[checks]]
 id = "derived-values"
 model = "opus"
+idle_timeout = 600
 
 [[checks]]
 id = "architecture-boundaries"
@@ -61,3 +70,4 @@ idle_timeout = 900
 [[checks]]
 id = "test-validate"
 model = "sonnet"
+idle_timeout = 300
