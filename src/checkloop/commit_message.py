@@ -80,6 +80,7 @@ def _run_cmd(cmd: list[str], workdir: str) -> subprocess.CompletedProcess[str]:
             text=True,
             timeout=_COMMIT_MSG_TIMEOUT,
             env=SANITIZED_ENV,
+            start_new_session=True,  # prevent Ctrl+C from reaching this subprocess
         )
     except FileNotFoundError:
         shell = os.environ.get("SHELL", "/bin/sh")
@@ -92,4 +93,5 @@ def _run_cmd(cmd: list[str], workdir: str) -> subprocess.CompletedProcess[str]:
             text=True,
             timeout=_COMMIT_MSG_TIMEOUT,
             env=SANITIZED_ENV,
+            start_new_session=True,  # prevent Ctrl+C from reaching this subprocess
         )

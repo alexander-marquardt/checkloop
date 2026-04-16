@@ -143,6 +143,7 @@ def _generate_map(
             text=True,
             timeout=_GENERATION_TIMEOUT,
             env=SANITIZED_ENV,
+            start_new_session=True,  # prevent Ctrl+C from reaching this subprocess
         )
     except FileNotFoundError:
         shell = os.environ.get("SHELL", "/bin/sh")
@@ -156,6 +157,7 @@ def _generate_map(
                 text=True,
                 timeout=_GENERATION_TIMEOUT,
                 env=SANITIZED_ENV,
+                start_new_session=True,  # prevent Ctrl+C from reaching this subprocess
             )
         except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as exc:
             logger.warning("Project map generation failed (shell retry): %s", exc)
