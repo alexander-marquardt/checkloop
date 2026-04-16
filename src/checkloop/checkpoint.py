@@ -259,6 +259,10 @@ def prompt_resume(workdir: str, timeout: int = _DEFAULT_RESUME_TIMEOUT) -> bool:
 
     try:
         ready, _, _ = select.select([sys.stdin], [], [], timeout)
+    except InterruptedError:
+        # SIGINT (Ctrl+C) interrupted select — re-raise as KeyboardInterrupt
+        # so the suite-level handler can exit cleanly.
+        raise KeyboardInterrupt
     except (OSError, ValueError) as exc:
         logger.warning("select() failed during resume prompt: %s", exc)
         print()

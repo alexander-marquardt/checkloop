@@ -332,6 +332,16 @@ class TestPromptResumeSelectError:
                 result = checkpoint.prompt_resume(str(tmp_path))
         assert result is False
 
+    def test_select_interrupted_raises_keyboard_interrupt(self, tmp_path: Path) -> None:
+        """InterruptedError from select should propagate as KeyboardInterrupt."""
+        data = make_checkpoint_data(workdir=str(tmp_path))
+        checkpoint.save_checkpoint(str(tmp_path), data)
+        with mock.patch("sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = True
+            with mock.patch("select.select", side_effect=InterruptedError("SIGINT")):
+                with pytest.raises(KeyboardInterrupt):
+                    checkpoint.prompt_resume(str(tmp_path))
+
 
 # =============================================================================
 # save_checkpoint — unlink failure during cleanup
