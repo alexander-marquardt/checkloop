@@ -24,6 +24,7 @@ from checkloop.monitoring import (
     kill_pids,
     kill_session_stragglers,
     log_memory_usage,
+    measure_pid_rss_mb,
     measure_session_rss_mb,
     previous_descendant_pids,
     previous_session_ids,
@@ -284,23 +285,40 @@ def _check_memory_limit(
     check_start_time: float,
     process: subprocess.Popen[bytes],
     last_memory_check: float,
+    known_descendants: set[int] | None = None,
 ) -> tuple[bool, float]:
     """Check child tree RSS against the memory limit.
 
     Returns ``(should_kill, last_check_time)``.  Only samples every
     ``_MEMORY_CHECK_INTERVAL`` seconds to avoid excessive ``ps`` calls.
+
+    When *known_descendants* is provided, their RSS is measured separately
+    and added to the session total.  This catches processes that called
+    ``setsid()`` and escaped the original session — without this, they
+    consume memory invisibly until the check ends.
     """
     if max_memory_mb <= 0:
         return False, last_memory_check
     now = time.time()
     if now - last_memory_check < _MEMORY_CHECK_INTERVAL:
         return False, last_memory_check
-    rss_mb = measure_session_rss_mb(session_id)
-    logger.debug("Session %d RSS: %.0f MB (limit: %d MB)", session_id, rss_mb, max_memory_mb)
+    session_rss = measure_session_rss_mb(session_id)
+    # Measure descendants that escaped the session (called setsid()).
+    # Filter out PIDs already counted by the session measurement to
+    # avoid double-counting.
+    escaped_rss = 0.0
+    if known_descendants:
+        session_pids = set(find_all_descendant_pids(process.pid))
+        escaped_pids = known_descendants - session_pids - {process.pid}
+        escaped_rss = measure_pid_rss_mb(escaped_pids)
+    rss_mb = session_rss + escaped_rss
+    logger.debug("Session %d RSS: %.0f MB (session=%.0f, escaped=%.0f, limit: %d MB)",
+                 session_id, rss_mb, session_rss, escaped_rss, max_memory_mb)
     if rss_mb > max_memory_mb:
         elapsed = format_duration(now - check_start_time)
-        logger.warning("Memory limit exceeded: pid=%d, rss=%.0fMB, limit=%dMB, elapsed=%s",
-                       process.pid, rss_mb, max_memory_mb, elapsed)
+        logger.warning("Memory limit exceeded: pid=%d, rss=%.0fMB (session=%.0f, escaped=%.0f), "
+                       "limit=%dMB, elapsed=%s",
+                       process.pid, rss_mb, session_rss, escaped_rss, max_memory_mb, elapsed)
         print_status(f"\nChild tree using {rss_mb:.0f}MB (limit: {max_memory_mb}MB) "
                      f"after {elapsed} — killing.", RED)
         _kill_process_group(process)
@@ -332,6 +350,7 @@ def _check_resource_limits(
     max_memory_mb: int,
     last_memory_check: float,
     last_nudge_time: float,
+    known_descendants: set[int] | None = None,
 ) -> tuple[str | None, float, float]:
     """Check all resource limits in one pass, sending nudges before timeout.
 
@@ -361,6 +380,7 @@ def _check_resource_limits(
     # subprocess the session leader (SID = its PID).
     exceeded, last_memory_check = _check_memory_limit(
         process.pid, max_memory_mb, check_start_time, process, last_memory_check,
+        known_descendants=known_descendants,
     )
     if exceeded:
         return KILL_REASON_MEMORY, last_memory_check, last_nudge_time
@@ -409,21 +429,23 @@ def _stream_process_output(
 
     try:
         while True:
-            kill_reason, last_memory_check, last_nudge_time = _check_resource_limits(
-                process, check_start_time, last_output_time, idle_timeout,
-                check_timeout, max_memory_mb, last_memory_check, last_nudge_time,
-            )
-            if kill_reason:
-                break
-
-            # Periodic descendant tree scan — piggybacks on the same interval
-            # as memory checks to avoid excessive ps calls.
+            # Periodic descendant tree scan — runs before resource limit
+            # checks so that escaped-session PIDs are included in the
+            # memory measurement on the same cycle they are discovered.
             if accumulated_descendant_pids is not None:
                 now = time.time()
                 if now - last_descendant_scan >= _MEMORY_CHECK_INTERVAL:
                     descendants = find_all_descendant_pids(process.pid)
                     accumulated_descendant_pids.update(descendants)
                     last_descendant_scan = now
+
+            kill_reason, last_memory_check, last_nudge_time = _check_resource_limits(
+                process, check_start_time, last_output_time, idle_timeout,
+                check_timeout, max_memory_mb, last_memory_check, last_nudge_time,
+                known_descendants=accumulated_descendant_pids,
+            )
+            if kill_reason:
+                break
 
             try:
                 # 1s timeout lets us check idle timeout and process exit between reads

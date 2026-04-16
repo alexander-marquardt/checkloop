@@ -87,6 +87,18 @@ def measure_session_rss_mb(session_id: int) -> float:
     return _sum_rss_from_ps("-s", str(session_id))
 
 
+def measure_pid_rss_mb(pids: set[int]) -> float:
+    """Return the total RSS (in MB) of the given PIDs.
+
+    Queries all PIDs in a single ``ps`` call.  PIDs that no longer exist
+    are silently ignored (they contribute 0).  Returns 0.0 on failure or
+    if *pids* is empty.
+    """
+    if not pids:
+        return 0.0
+    return _sum_rss_from_ps("-p", ",".join(str(p) for p in pids))
+
+
 # --- Process discovery --------------------------------------------------------
 
 def _run_pgrep(*args: str) -> list[int]:
