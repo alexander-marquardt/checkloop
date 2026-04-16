@@ -91,11 +91,19 @@ def patch_suite_git(
         stack.enter_context(mock.patch.object(suite, "has_uncommitted_changes", return_value=False))
         if lines_changed is not None:
             change_pct = lines_changed / (total_tracked or 1000) * 100
+            # compute_change_stats returns (lines_added, lines_deleted, lines_changed, pct)
+            # Split lines_changed evenly between added and deleted for testing purposes.
+            lines_added = lines_changed // 2
+            lines_deleted = lines_changed - lines_added
             stack.enter_context(mock.patch.object(
-                suite, "compute_change_stats", return_value=(lines_changed, change_pct),
+                suite, "compute_change_stats", return_value=(lines_added, lines_deleted, lines_changed, change_pct),
             ))
             stack.enter_context(mock.patch.object(
-                check_runner, "compute_change_stats", return_value=(lines_changed, change_pct),
+                check_runner, "compute_change_stats", return_value=(lines_added, lines_deleted, lines_changed, change_pct),
+            ))
+            # Also patch compute_file_stats with reasonable defaults.
+            stack.enter_context(mock.patch.object(
+                check_runner, "compute_file_stats", return_value=(1, 0, 1),
             ))
         yield
 
