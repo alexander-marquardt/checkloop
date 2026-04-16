@@ -25,3 +25,4 @@ build/
 blog-post.md
 linkedin-post.md
 show-hn.md
+.checkloop-logs/
