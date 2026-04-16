@@ -68,6 +68,21 @@ DEFAULT_CHECK_TIMEOUT = 0
 A value of 0 disables the hard timeout entirely.
 """
 
+_NUDGE_BEFORE_TIMEOUT = 60
+"""Send a stdin nudge this many seconds before idle timeout would trigger.
+
+During extended thinking, Claude produces no output. Sending a nudge (escape
+followed by newline) can prompt it to emit a status update, resetting the
+idle timer and avoiding premature kills.
+"""
+
+_NUDGE_SEQUENCE = b"\x1b\n"
+"""Bytes sent to stdin as a nudge: ESC followed by newline.
+
+This sequence interrupts extended thinking and prompts Claude to produce
+output without disrupting the current operation.
+"""
+
 _READ_CHUNK_SIZE = 8192  # bytes per stdout read during streaming
 _DRAIN_CHUNK_SIZE = 65536  # bytes per read when draining after process exit
 _MAX_BUFFER_SIZE = 10 * 1024 * 1024  # 10 MB safety cap on JSONL output buffer
@@ -112,6 +127,9 @@ def _spawn_claude_process(
     ``_kill_process_group`` can terminate the claude process **and** any
     children it spawns (language servers, tool runners, etc.), preventing
     orphaned processes from accumulating memory across many checks.
+
+    Stdin is piped (not DEVNULL) so we can send nudges during extended
+    thinking periods to prompt Claude to produce output.
     """
     # Slice up to (not including) the -p flag so the prompt text never
     # appears in INFO-level logs.  The full prompt is logged at DEBUG level
@@ -122,7 +140,7 @@ def _spawn_claude_process(
         return subprocess.Popen(
             cmd,
             cwd=workdir,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             env=SANITIZED_ENV,
@@ -139,7 +157,7 @@ def _spawn_claude_process(
             return subprocess.Popen(
                 [shell, "-ic", shlex.join(cmd)],
                 cwd=workdir,
-                stdin=subprocess.DEVNULL,
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 env=SANITIZED_ENV,
@@ -190,6 +208,24 @@ def _drain_remaining_stdout(
     except OSError as exc:
         logger.debug("Failed to drain remaining stdout: %s", exc)
     return output_buffer
+
+
+def _send_nudge(process: subprocess.Popen[bytes], idle_seconds: float) -> bool:
+    """Send a nudge to stdin to prompt Claude to produce output.
+
+    Returns True if the nudge was sent successfully, False otherwise.
+    """
+    if process.stdin is None:
+        return False
+    try:
+        process.stdin.write(_NUDGE_SEQUENCE)
+        process.stdin.flush()
+        logger.info("Sent stdin nudge after %.0fs idle (pid=%d)", idle_seconds, process.pid)
+        print_status(f"\n[nudge after {int(idle_seconds)}s idle]", DIM)
+        return True
+    except (OSError, BrokenPipeError) as exc:
+        logger.debug("Failed to send nudge: %s", exc)
+        return False
 
 
 def _check_idle_timeout(
@@ -281,24 +317,40 @@ def _check_resource_limits(
     check_timeout: int,
     max_memory_mb: int,
     last_memory_check: float,
-) -> tuple[str | None, float]:
-    """Check all resource limits in one pass.
+    last_nudge_time: float,
+) -> tuple[str | None, float, float]:
+    """Check all resource limits in one pass, sending nudges before timeout.
 
-    Returns ``(kill_reason, last_memory_check)``.  *kill_reason* is one of
-    the ``KILL_REASON_*`` constants if a limit was exceeded, or ``None``.
+    Returns ``(kill_reason, last_memory_check, last_nudge_time)``.  *kill_reason*
+    is one of the ``KILL_REASON_*`` constants if a limit was exceeded, or ``None``.
+
+    A nudge is sent to stdin when idle time approaches the timeout threshold
+    (within ``_NUDGE_BEFORE_TIMEOUT`` seconds). This prompts Claude to produce
+    output during extended thinking, which resets the idle timer and avoids
+    premature kills.
     """
+    now = time.time()
+    idle_seconds = now - last_output_time
+    nudge_threshold = idle_timeout - _NUDGE_BEFORE_TIMEOUT
+
+    # Send a nudge if we're approaching idle timeout and haven't nudged recently.
+    # Only nudge once per idle period (last_nudge_time resets when output arrives).
+    if nudge_threshold > 0 and idle_seconds >= nudge_threshold and last_nudge_time < last_output_time:
+        if _send_nudge(process, idle_seconds):
+            last_nudge_time = now
+
     if _check_idle_timeout(last_output_time, idle_timeout, check_start_time, process):
-        return KILL_REASON_IDLE, last_memory_check
+        return KILL_REASON_IDLE, last_memory_check, last_nudge_time
     if _check_hard_timeout(check_start_time, check_timeout, process):
-        return KILL_REASON_TIMEOUT, last_memory_check
+        return KILL_REASON_TIMEOUT, last_memory_check, last_nudge_time
     # process.pid == session ID because start_new_session=True makes the
     # subprocess the session leader (SID = its PID).
     exceeded, last_memory_check = _check_memory_limit(
         process.pid, max_memory_mb, check_start_time, process, last_memory_check,
     )
     if exceeded:
-        return KILL_REASON_MEMORY, last_memory_check
-    return None, last_memory_check
+        return KILL_REASON_MEMORY, last_memory_check, last_nudge_time
+    return None, last_memory_check, last_nudge_time
 
 
 def _stream_process_output(
@@ -317,6 +369,9 @@ def _stream_process_output(
     if the hard *check_timeout* is exceeded, or if the child process tree
     exceeds *max_memory_mb* of RSS.
 
+    Before killing for idle timeout, sends a nudge (ESC + newline) to stdin
+    to prompt Claude to produce output during extended thinking periods.
+
     If *accumulated_descendant_pids* is provided, the process tree is
     periodically scanned (every ``_MEMORY_CHECK_INTERVAL`` seconds) and
     newly discovered descendant PIDs are added to the set.  This catches
@@ -333,15 +388,16 @@ def _stream_process_output(
     check_start_time = time.time()
     last_output_time = check_start_time  # idle timer starts from launch
     last_memory_check = check_start_time
+    last_nudge_time = 0.0  # tracks when we last sent a nudge (0 = never)
     last_descendant_scan = check_start_time
     output_buffer = bytearray()
     kill_reason: str | None = None
 
     try:
         while True:
-            kill_reason, last_memory_check = _check_resource_limits(
+            kill_reason, last_memory_check, last_nudge_time = _check_resource_limits(
                 process, check_start_time, last_output_time, idle_timeout,
-                check_timeout, max_memory_mb, last_memory_check,
+                check_timeout, max_memory_mb, last_memory_check, last_nudge_time,
             )
             if kill_reason:
                 break

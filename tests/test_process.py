@@ -126,7 +126,7 @@ class TestSpawnClaudeProcess:
             assert call_kwargs.kwargs["cwd"] == "/mydir"
             assert call_kwargs.kwargs["stdout"] == subprocess.PIPE
             assert call_kwargs.kwargs["stderr"] == subprocess.DEVNULL
-            assert call_kwargs.kwargs["stdin"] == subprocess.DEVNULL
+            assert call_kwargs.kwargs["stdin"] == subprocess.PIPE  # stdin piped for nudges
 
     def test_start_new_session(self) -> None:
         with mock.patch("subprocess.Popen") as mock_popen:
@@ -546,21 +546,22 @@ class TestCheckBufferOverflow:
 # =============================================================================
 
 class TestCheckResourceLimitsCombined:
-    """Tests for _check_resource_limits() which combines idle, hard timeout, and memory checks."""
+    """Tests for _check_resource_limits() which combines idle, hard timeout, memory checks, and nudges."""
 
     def _make_mock_process(self) -> mock.MagicMock:
         proc = mock.MagicMock()
         proc.pid = 12345
+        proc.stdin = mock.MagicMock()
         return proc
 
     def test_no_limits_exceeded(self) -> None:
         """When all limits are within bounds, returns None kill_reason."""
         proc = self._make_mock_process()
         now = time.time()
-        kill_reason, last_mem = process._check_resource_limits(
+        kill_reason, last_mem, last_nudge = process._check_resource_limits(
             proc, check_start_time=now, last_output_time=now,
             idle_timeout=300, check_timeout=0, max_memory_mb=0,
-            last_memory_check=now,
+            last_memory_check=now, last_nudge_time=0.0,
         )
         assert kill_reason is None
 
@@ -568,10 +569,10 @@ class TestCheckResourceLimitsCombined:
         """Idle timeout should be detected before hard timeout or memory."""
         proc = self._make_mock_process()
         now = time.time()
-        kill_reason, _ = process._check_resource_limits(
+        kill_reason, _, _ = process._check_resource_limits(
             proc, check_start_time=now - 10, last_output_time=now - 400,
             idle_timeout=300, check_timeout=600, max_memory_mb=8192,
-            last_memory_check=now,
+            last_memory_check=now, last_nudge_time=0.0,
         )
         assert kill_reason == process.KILL_REASON_IDLE
 
@@ -579,10 +580,10 @@ class TestCheckResourceLimitsCombined:
         """Hard timeout should be detected when idle timeout hasn't triggered."""
         proc = self._make_mock_process()
         now = time.time()
-        kill_reason, _ = process._check_resource_limits(
+        kill_reason, _, _ = process._check_resource_limits(
             proc, check_start_time=now - 700, last_output_time=now,
             idle_timeout=300, check_timeout=600, max_memory_mb=0,
-            last_memory_check=now,
+            last_memory_check=now, last_nudge_time=0.0,
         )
         assert kill_reason == process.KILL_REASON_TIMEOUT
 
@@ -591,12 +592,40 @@ class TestCheckResourceLimitsCombined:
         proc = self._make_mock_process()
         now = time.time()
         with mock.patch.object(process, "measure_session_rss_mb", return_value=10000.0):
-            kill_reason, _ = process._check_resource_limits(
+            kill_reason, _, _ = process._check_resource_limits(
                 proc, check_start_time=now, last_output_time=now,
                 idle_timeout=300, check_timeout=0, max_memory_mb=8192,
-                last_memory_check=now - 20,  # past the check interval
+                last_memory_check=now - 20, last_nudge_time=0.0,
             )
         assert kill_reason == process.KILL_REASON_MEMORY
+
+    def test_nudge_sent_before_idle_timeout(self) -> None:
+        """Nudge should be sent when approaching idle timeout."""
+        proc = self._make_mock_process()
+        now = time.time()
+        # idle_seconds = 250, threshold = 300 - 60 = 240, so nudge should fire
+        kill_reason, _, last_nudge = process._check_resource_limits(
+            proc, check_start_time=now - 250, last_output_time=now - 250,
+            idle_timeout=300, check_timeout=0, max_memory_mb=0,
+            last_memory_check=now, last_nudge_time=0.0,
+        )
+        assert kill_reason is None  # not yet timed out
+        assert last_nudge > 0  # nudge was sent
+        proc.stdin.write.assert_called_once()
+
+    def test_nudge_not_sent_when_already_nudged(self) -> None:
+        """Nudge should not be sent again if we already nudged this idle period."""
+        proc = self._make_mock_process()
+        now = time.time()
+        last_output = now - 250
+        # last_nudge_time > last_output_time means we already nudged
+        kill_reason, _, last_nudge = process._check_resource_limits(
+            proc, check_start_time=now - 250, last_output_time=last_output,
+            idle_timeout=300, check_timeout=0, max_memory_mb=0,
+            last_memory_check=now, last_nudge_time=now - 10,  # nudged recently
+        )
+        assert kill_reason is None
+        proc.stdin.write.assert_not_called()  # no duplicate nudge
 
 
 # =============================================================================
@@ -717,7 +746,7 @@ class TestStreamDescendantAccumulation:
 
         # Set interval to 0 so scan triggers on every loop iteration.
         with mock.patch.object(process, "_MEMORY_CHECK_INTERVAL", 0), \
-             mock.patch.object(process, "_check_resource_limits", return_value=(None, 0.0)), \
+             mock.patch.object(process, "_check_resource_limits", return_value=(None, 0.0, 0.0)), \
              mock.patch.object(process, "find_all_descendant_pids", return_value=[200, 300]), \
              mock.patch("select.select", return_value=([], [], [])):
             process._stream_process_output(
@@ -735,7 +764,7 @@ class TestStreamDescendantAccumulation:
         mock_proc.poll.return_value = 0
         mock_proc.returncode = 0
 
-        with mock.patch.object(process, "_check_resource_limits", return_value=(None, 0.0)), \
+        with mock.patch.object(process, "_check_resource_limits", return_value=(None, 0.0, 0.0)), \
              mock.patch.object(process, "find_all_descendant_pids") as mock_find, \
              mock.patch("select.select", return_value=([], [], [])):
             process._stream_process_output(
