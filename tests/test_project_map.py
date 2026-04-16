@@ -112,30 +112,30 @@ class TestEnsureProjectMap:
         assert result == "Cached map."
 
     def test_regenerates_when_fingerprint_differs(self, tmp_path: pytest.TempPathFactory) -> None:
-        project_map._save_map(str(tmp_path), "old_hash_", "Old map.")
+        project_map._save_map(str(tmp_path), "aa11bb22cc33dd44", "Old map.")
         with (
-            mock.patch.object(project_map, "_compute_file_tree_fingerprint", return_value="new_hash_"),
+            mock.patch.object(project_map, "_compute_file_tree_fingerprint", return_value="ee55ff66aa77bb88"),
             mock.patch.object(project_map, "_generate_map", return_value="New map."),
         ):
             result = ensure_project_map_wrapper(str(tmp_path))
         assert result == "New map."
         # Verify it was saved with the new fingerprint.
         fp, body = project_map._read_cached_map(str(tmp_path))
-        assert fp == "new_hash_"
+        assert fp == "ee55ff66aa77bb88"
         assert body == "New map."
 
     def test_generates_when_no_cache_exists(self, tmp_path: pytest.TempPathFactory) -> None:
         with (
-            mock.patch.object(project_map, "_compute_file_tree_fingerprint", return_value="fp123456"),
+            mock.patch.object(project_map, "_compute_file_tree_fingerprint", return_value="1234567890abcdef"),
             mock.patch.object(project_map, "_generate_map", return_value="Fresh map."),
         ):
             result = ensure_project_map_wrapper(str(tmp_path))
         assert result == "Fresh map."
 
     def test_returns_stale_cache_when_generation_fails(self, tmp_path: pytest.TempPathFactory) -> None:
-        project_map._save_map(str(tmp_path), "old_fp___", "Stale map.")
+        project_map._save_map(str(tmp_path), "ccddee0011223344", "Stale map.")
         with (
-            mock.patch.object(project_map, "_compute_file_tree_fingerprint", return_value="new_fp___"),
+            mock.patch.object(project_map, "_compute_file_tree_fingerprint", return_value="5566778899aabbcc"),
             mock.patch.object(project_map, "_generate_map", return_value=None),
         ):
             result = ensure_project_map_wrapper(str(tmp_path))
@@ -148,7 +148,7 @@ class TestEnsureProjectMap:
 
     def test_returns_empty_when_generation_fails_and_no_cache(self, tmp_path: pytest.TempPathFactory) -> None:
         with (
-            mock.patch.object(project_map, "_compute_file_tree_fingerprint", return_value="fp123456"),
+            mock.patch.object(project_map, "_compute_file_tree_fingerprint", return_value="1234567890abcdef"),
             mock.patch.object(project_map, "_generate_map", return_value=None),
         ):
             result = ensure_project_map_wrapper(str(tmp_path))
@@ -165,7 +165,7 @@ def ensure_project_map_wrapper(workdir: str) -> str:
 class TestLoadProjectMap:
 
     def test_loads_existing_map(self, tmp_path: pytest.TempPathFactory) -> None:
-        project_map._save_map(str(tmp_path), "fp_value_", "The map.")
+        project_map._save_map(str(tmp_path), "aabb112233445566", "The map.")
         assert project_map.load_project_map(str(tmp_path)) == "The map."
 
     def test_returns_empty_when_missing(self, tmp_path: pytest.TempPathFactory) -> None:
