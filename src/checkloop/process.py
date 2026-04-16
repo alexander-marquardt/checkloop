@@ -38,9 +38,11 @@ from checkloop.terminal import (
     GREEN,
     RED,
     YELLOW,
+    clear_inline_status,
     fatal,
     format_duration,
     print_status,
+    print_status_inline,
 )
 
 logger = logging.getLogger(__name__)
@@ -251,12 +253,16 @@ def _check_idle_timeout(
             # Log this and skip the idle kill — the work is still in progress.
             logger.info("Idle timeout would trigger, but %d descendant(s) still running: %s",
                         len(descendants), descendants[:5])  # Log first 5 PIDs
-            print_status(f"\n[{int(idle_seconds)}s idle, but {len(descendants)} subprocess(es) still running]", DIM)
+            elapsed = format_duration(now - check_start_time)
+            print_status_inline(
+                f"  [{elapsed}] waiting — {len(descendants)} subprocess(es) still running "
+                f"({int(idle_seconds)}s idle)", DIM)
             return False
 
         logger.warning("Idle timeout: pid=%d, idle=%.0fs, elapsed=%s",
                        process.pid, idle_seconds,
                        format_duration(now - check_start_time))
+        clear_inline_status()
         print_status(f"\nIdle for {idle_timeout}s — killing "
                      f"(ran {format_duration(now - check_start_time)}).", RED)
         _kill_process_group(process)
@@ -533,6 +539,8 @@ def _stream_process_output(
                 logger.debug("EOF on stdout (pid=%d)", process.pid)
                 break
 
+            # Clear any inline "waiting" status before printing new output.
+            clear_inline_status()
             last_output_time = time.time()
             if raw_log_file is not None:
                 raw_log_file.write(chunk)
@@ -543,6 +551,7 @@ def _stream_process_output(
             )
 
     finally:
+        clear_inline_status()
         _flush_and_close_stdout(stdout, output_buffer, check_start_time, debug)
 
     return check_start_time, kill_reason

@@ -46,6 +46,27 @@ def print_status(msg: str, colour: str = DIM) -> None:
     print(f"{colour}{msg}{RESET}")
 
 
+def print_status_inline(msg: str, colour: str = DIM) -> None:
+    """Print a status message that overwrites the current line.
+
+    Uses ``\\r`` to return to the start of the line and ANSI ``\\033[K`` to
+    clear any leftover characters from a previous longer message.  No
+    newline is emitted, so the next ``print`` or ``print_status_inline``
+    call will overwrite this line.
+
+    Call ``clear_inline_status()`` to erase the line before printing normal
+    output so it doesn't collide with the inline status.
+    """
+    sys.stdout.write(f"\r{colour}{msg}{RESET}\033[K")
+    sys.stdout.flush()
+
+
+def clear_inline_status() -> None:
+    """Erase any inline status message and return the cursor to column 0."""
+    sys.stdout.write("\r\033[K")
+    sys.stdout.flush()
+
+
 def format_duration(total_seconds: float) -> str:
     """Format elapsed seconds into a compact ``XmYYs`` or ``XhYYmZZs`` string."""
     if math.isnan(total_seconds) or math.isinf(total_seconds):
