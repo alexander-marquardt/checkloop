@@ -154,8 +154,9 @@ class TestCheckCycleConvergence:
         assert "converged" in capsys.readouterr().out.lower()
 
     def test_oscillation_warning(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # compute_change_stats returns (lines_added, lines_deleted, lines_changed, pct)
         with mock.patch.object(suite, "git_head_sha", return_value="def456"), \
-             mock.patch.object(suite, "compute_change_stats", return_value=(50, 5.0)):
+             mock.patch.object(suite, "compute_change_stats", return_value=(25, 25, 50, 5.0)):
             should_stop, pct = suite._check_cycle_convergence(
                 "/tmp", cycle=2, base_sha="abc123",
                 convergence_threshold=0.1, prev_change_pct=2.0,
@@ -165,8 +166,9 @@ class TestCheckCycleConvergence:
         assert "oscillation" in capsys.readouterr().out.lower()
 
     def test_not_converged(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # compute_change_stats returns (lines_added, lines_deleted, lines_changed, pct)
         with mock.patch.object(suite, "git_head_sha", return_value="def456"), \
-             mock.patch.object(suite, "compute_change_stats", return_value=(15, 1.5)):
+             mock.patch.object(suite, "compute_change_stats", return_value=(10, 5, 15, 1.5)):
             should_stop, pct = suite._check_cycle_convergence(
                 "/tmp", cycle=1, base_sha="abc123",
                 convergence_threshold=0.1, prev_change_pct=None,
@@ -176,7 +178,8 @@ class TestCheckCycleConvergence:
 
     def test_changes_below_threshold_converges(self, capsys: pytest.CaptureFixture[str]) -> None:
         with mock.patch.object(suite, "git_head_sha", return_value="new_sha"):
-            with mock.patch.object(suite, "compute_change_stats", return_value=(5, 0.05)):
+            # compute_change_stats returns (lines_added, lines_deleted, lines_changed, pct)
+            with mock.patch.object(suite, "compute_change_stats", return_value=(3, 2, 5, 0.05)):
                 converged, pct = suite._check_cycle_convergence(
                         "/tmp", 1, "old_sha", 0.1, None,
                     )
@@ -208,8 +211,9 @@ class TestConvergenceInSuite:
     def test_stops_early_when_converged(self, capsys: pytest.CaptureFixture[str]) -> None:
         selected_checks: list[CheckDef] = [make_check("readability", "Readability", "review code")]
         args = make_suite_args(dry_run=False)
+        # compute_change_stats returns (lines_added, lines_deleted, lines_changed, pct)
         with patch_suite_git(["sha1", "sha2", "sha2", "sha3"]), \
-             mock.patch.object(suite, "compute_change_stats", return_value=(1, 0.05)):
+             mock.patch.object(suite, "compute_change_stats", return_value=(1, 0, 1, 0.05)):
             suite._run_check_suite(selected_checks, 3, "/tmp", args, convergence_threshold=0.1)
         out = capsys.readouterr().out
         assert "Converged" in out
