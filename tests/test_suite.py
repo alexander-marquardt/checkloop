@@ -89,7 +89,9 @@ class TestRunCheckSuite:
         with patch_suite_git(["base", "sha1", "sha2"], lines_changed=42, total_tracked=5000):
             suite._run_check_suite(selected_checks, 1, "/tmp", args)
         out = capsys.readouterr().out
-        assert "42 lines changed" in out
+        # Output now shows breakdown: "42 lines (+21/-21)"
+        assert "42 lines" in out
+        assert "+21/-21" in out  # breakdown of added/deleted
         assert "0.84%" in out
 
     def test_no_change_stats_printed(self, capsys: pytest.CaptureFixture[str]) -> None:
