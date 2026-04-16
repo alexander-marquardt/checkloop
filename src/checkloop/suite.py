@@ -238,6 +238,7 @@ def _run_single_cycle(
     changed_this_cycle: set[str] = set(initial_changed or ())
     outcomes: list[CheckOutcome] = []
     check_models: dict[str, str] = getattr(args, "check_models", {})
+    check_idle_timeouts: dict[str, int] = getattr(args, "check_idle_timeouts", {})
     global_model: str | None = getattr(args, "model", None)
     for i, check in enumerate(active_checks[start_index:], start=start_index):
         # Only pause between checks, not before the first one we actually run.
@@ -249,7 +250,13 @@ def _run_single_cycle(
 
         # Per-check model from tier config, overridden by --model if specified.
         per_check_model = global_model or check_models.get(check["id"])
-        outcome = run_single_check(check, workdir, args, step_label, is_git=is_git, cycle=cycle, model=per_check_model)
+        # Per-check idle timeout override, falling back to global --idle-timeout.
+        per_check_idle_timeout = check_idle_timeouts.get(check["id"])
+        outcome = run_single_check(
+            check, workdir, args, step_label,
+            is_git=is_git, cycle=cycle, model=per_check_model,
+            idle_timeout_override=per_check_idle_timeout,
+        )
         outcomes.append(outcome)
         if outcome.made_changes:
             changed_this_cycle.add(check["id"])

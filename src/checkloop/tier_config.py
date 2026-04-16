@@ -19,6 +19,7 @@ class PlanCheckEntry:
 
     id: str
     model: str
+    idle_timeout: int | None = None  # Per-check idle timeout override (seconds)
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,10 @@ class PlanConfig:
     def model_map(self) -> dict[str, str]:
         """Return a mapping of check ID to model name."""
         return {entry.id: entry.model for entry in self.checks}
+
+    def idle_timeout_map(self) -> dict[str, int]:
+        """Return a mapping of check ID to idle timeout (only for checks with overrides)."""
+        return {entry.id: entry.idle_timeout for entry in self.checks if entry.idle_timeout is not None}
 
 
 # Pre-populated plan names, matching the TOML filenames in execution_plans/.
@@ -89,11 +94,14 @@ def _parse_plan_toml(data: dict[str, object]) -> PlanConfig:
             raise ValueError("Each [[checks]] entry must be a table")
         check_id = item.get("id")
         model = item.get("model", "sonnet")
+        idle_timeout = item.get("idle_timeout")
         if not isinstance(check_id, str) or not check_id:
             raise ValueError("Each [[checks]] entry must have a non-empty 'id'")
         if not isinstance(model, str) or not model:
             raise ValueError(f"Check '{check_id}' has invalid 'model' value")
-        entries.append(PlanCheckEntry(id=check_id, model=model))
+        if idle_timeout is not None and not isinstance(idle_timeout, int):
+            raise ValueError(f"Check '{check_id}' has invalid 'idle_timeout' value (must be integer)")
+        entries.append(PlanCheckEntry(id=check_id, model=model, idle_timeout=idle_timeout))
 
     return PlanConfig(name=name, description=description, checks=entries)
 

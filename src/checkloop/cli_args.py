@@ -325,8 +325,21 @@ def resolve_selected_checks(args: argparse.Namespace) -> list[CheckDef]:
             check_models[check_id] = exhaustive_models.get(check_id, "sonnet")
     args.check_models = check_models
 
+    # Per-check idle timeout overrides from plan files. Checks without an
+    # override use the global --idle-timeout value.
+    check_idle_timeouts: dict[str, int] = {}
+    if plan_config:
+        check_idle_timeouts = plan_config.idle_timeout_map()
+    exhaustive_timeouts = PLAN_CONFIGS["exhaustive"].idle_timeout_map()
+    for check_id in selected_ids:
+        if check_id not in check_idle_timeouts and check_id in exhaustive_timeouts:
+            check_idle_timeouts[check_id] = exhaustive_timeouts[check_id]
+    args.check_idle_timeouts = check_idle_timeouts
+
     logger.info("Selected %d checks: %s", len(selected), [check["id"] for check in selected])
     logger.info("Per-check models: %s", check_models)
+    if check_idle_timeouts:
+        logger.info("Per-check idle timeouts: %s", check_idle_timeouts)
     return selected
 
 

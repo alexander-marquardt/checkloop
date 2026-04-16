@@ -29,10 +29,12 @@ model = "sonnet"
 [[checks]]
 id = "security"
 model = "opus"
+idle_timeout = 900
 
 [[checks]]
 id = "perf"
 model = "opus"
+idle_timeout = 900
 
 [[checks]]
 id = "errors"
@@ -49,10 +51,12 @@ model = "opus"
 [[checks]]
 id = "architecture-boundaries"
 model = "opus"
+idle_timeout = 900
 
 [[checks]]
 id = "coherence"
 model = "opus"
+idle_timeout = 900
 
 [[checks]]
 id = "test-validate"

@@ -152,16 +152,18 @@ def _invoke_claude(
     args: argparse.Namespace,
     *,
     model: str | None = None,
+    idle_timeout_override: int | None = None,
     raw_log_file: IO[bytes] | None = None,
 ) -> CheckResult:
     effective_model = model or getattr(args, "model", None)
+    effective_idle_timeout = idle_timeout_override if idle_timeout_override is not None else args.idle_timeout
     claude_cmd = getattr(args, "claude_command", "claude")
     return run_claude(
         prompt,
         workdir,
         skip_permissions=args.dangerously_skip_permissions,
         dry_run=args.dry_run,
-        idle_timeout=args.idle_timeout,
+        idle_timeout=effective_idle_timeout,
         debug=args.debug,
         check_timeout=args.check_timeout,
         max_memory_mb=args.max_memory_mb,
@@ -252,6 +254,7 @@ def run_single_check(
     is_git: bool = False,
     cycle: int = 1,
     model: str | None = None,
+    idle_timeout_override: int | None = None,
 ) -> CheckOutcome:
     """Execute a single check.
 
@@ -265,6 +268,11 @@ def run_single_check(
     When *model* is provided, it overrides the CLI ``--model`` flag for
     this specific check.  This is used by the per-check model assignment
     from tier configuration files.
+
+    When *idle_timeout_override* is provided, it overrides the CLI
+    ``--idle-timeout`` flag for this specific check.  This allows checks
+    that require extended thinking (security, concurrency) to have longer
+    timeouts without affecting other checks.
 
     Returns a ``CheckOutcome`` with full details for the post-run summary.
     """
@@ -292,7 +300,10 @@ def run_single_check(
         raw_log = None
 
     try:
-        result = _invoke_claude(prompt, workdir, args, model=model, raw_log_file=raw_log)
+        result = _invoke_claude(
+            prompt, workdir, args,
+            model=model, idle_timeout_override=idle_timeout_override, raw_log_file=raw_log,
+        )
     except Exception as exc:
         logger.error("Check '%s' raised an unexpected exception: %s", check["id"], exc, exc_info=True)
         print_status(f"Check '{check['id']}' failed with error: {exc}. Continuing...", YELLOW)

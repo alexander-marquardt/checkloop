@@ -29,10 +29,12 @@ model = "sonnet"
 [[checks]]
 id = "security"
 model = "opus"
+idle_timeout = 900
 
 [[checks]]
 id = "perf"
 model = "opus"
+idle_timeout = 900
 
 [[checks]]
 id = "errors"
@@ -49,10 +51,12 @@ model = "opus"
 [[checks]]
 id = "architecture-boundaries"
 model = "opus"
+idle_timeout = 900
 
 [[checks]]
 id = "edge-cases"
 model = "opus"
+idle_timeout = 900
 
 [[checks]]
 id = "complexity"
@@ -69,10 +73,12 @@ model = "sonnet"
 [[checks]]
 id = "concurrency"
 model = "opus"
+idle_timeout = 900
 
 [[checks]]
 id = "concurrency-testing"
 model = "opus"
+idle_timeout = 900
 
 [[checks]]
 id = "accessibility"
@@ -89,6 +95,7 @@ model = "sonnet"
 [[checks]]
 id = "coherence"
 model = "opus"
+idle_timeout = 900
 
 [[checks]]
 id = "test-validate"
