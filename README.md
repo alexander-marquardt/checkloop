@@ -198,6 +198,14 @@ A single "review everything" prompt overwhelms the model. Dimension-specific che
 
 Each check builds on the work of the previous ones.
 
+### Large codebases
+
+Incremental, focused checks are especially important for large codebases. Claude has a finite context window, and a project with thousands of files can't fit all at once. Asking it to "review everything" forces it to read hundreds of files before making a single edit — filling context with code it may never need while leaving no room for the actual work.
+
+Each checkloop check operates incrementally: read a handful of related files, make focused edits, commit, move on. The check-specific prompts guide Claude toward this pattern rather than attempting a full codebase scan. A readability check might read one module, improve its naming, and move to the next — instead of cataloguing every variable name in the project before touching anything. This keeps context available for reasoning and editing rather than exhausting it on upfront indexing.
+
+The result is that checkloop scales to projects that would otherwise stall a single-pass review. A 50K-line codebase that times out when you ask Claude to "review it all" becomes manageable when broken into focused, incremental passes.
+
 ## Checkpoint & Resume
 
 If `checkloop` is interrupted (Ctrl+C, crash, terminal close), it saves a checkpoint after each completed check. On the next run with the same check selection, it detects the incomplete run and offers to resume:
