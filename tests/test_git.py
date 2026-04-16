@@ -108,58 +108,64 @@ class TestGitCommitAll:
 
 
 class TestParseShortstat:
-    """Tests for _parse_shortstat() diff output parsing."""
+    """Tests for _parse_shortstat() diff output parsing.
+
+    _parse_shortstat returns (insertions, deletions) tuple.
+    """
 
     def test_insertions_and_deletions(self) -> None:
         text = " 3 files changed, 20 insertions(+), 10 deletions(-)"
-        assert git._parse_shortstat(text) == 30
+        assert git._parse_shortstat(text) == (20, 10)
 
     def test_insertions_only(self) -> None:
         text = " 1 file changed, 5 insertions(+)"
-        assert git._parse_shortstat(text) == 5
+        assert git._parse_shortstat(text) == (5, 0)
 
     def test_deletions_only(self) -> None:
         text = " 2 files changed, 8 deletions(-)"
-        assert git._parse_shortstat(text) == 8
+        assert git._parse_shortstat(text) == (0, 8)
 
     def test_empty_string(self) -> None:
-        assert git._parse_shortstat("") == 0
+        assert git._parse_shortstat("") == (0, 0)
 
     def test_no_match(self) -> None:
-        assert git._parse_shortstat("nothing here") == 0
+        assert git._parse_shortstat("nothing here") == (0, 0)
 
     def test_zero_insertions_and_deletions(self) -> None:
-        assert git._parse_shortstat(" 1 file changed, 0 insertions(+), 0 deletions(-)") == 0
+        assert git._parse_shortstat(" 1 file changed, 0 insertions(+), 0 deletions(-)") == (0, 0)
 
     def test_whitespace_only(self) -> None:
-        assert git._parse_shortstat("   \n\t  ") == 0
+        assert git._parse_shortstat("   \n\t  ") == (0, 0)
 
     def test_only_files_changed(self) -> None:
-        assert git._parse_shortstat(" 3 files changed") == 0
+        assert git._parse_shortstat(" 3 files changed") == (0, 0)
 
     def test_large_numbers(self) -> None:
-        assert git._parse_shortstat(" 1 file changed, 999999 insertions(+), 888888 deletions(-)") == 1888887
+        assert git._parse_shortstat(" 1 file changed, 999999 insertions(+), 888888 deletions(-)") == (999999, 888888)
 
     def test_singular_insertion(self) -> None:
-        assert git._parse_shortstat(" 1 file changed, 1 insertion(+)") == 1
+        assert git._parse_shortstat(" 1 file changed, 1 insertion(+)") == (1, 0)
 
     def test_singular_deletion(self) -> None:
-        assert git._parse_shortstat(" 1 file changed, 1 deletion(-)") == 1
+        assert git._parse_shortstat(" 1 file changed, 1 deletion(-)") == (0, 1)
 
 
 class TestCountLinesChanged:
-    """Tests for _count_lines_changed()."""
+    """Tests for _count_lines_changed().
+
+    _count_lines_changed returns (insertions, deletions, total) tuple.
+    """
 
     def test_empty_base_sha_returns_zero(self) -> None:
         result = git._count_lines_changed("/tmp", "")
-        assert result == 0
+        assert result == (0, 0, 0)
 
     def test_valid_sha_with_empty_target(self) -> None:
         with mock.patch.object(git, "_git_run", return_value=make_git_result(
             stdout=" 1 file changed, 3 insertions(+)"
         )) as mock_git:
             result = git._count_lines_changed("/tmp", "abc123", target="")
-        assert result == 3
+        assert result == (3, 0, 3)
         call_args = mock_git.call_args[0]
         assert "abc123" in call_args
         assert "" not in call_args[2:]
@@ -169,12 +175,12 @@ class TestCountLinesChanged:
             returncode=128, stderr="fatal: bad revision"
         )):
             result = git._count_lines_changed("/tmp", "badref")
-        assert result == 0
+        assert result == (0, 0, 0)
 
     def test_git_diff_oserror(self) -> None:
         with mock.patch.object(git, "_git_run", side_effect=OSError("no git")):
             result = git._count_lines_changed("/tmp", "abc123")
-        assert result == 0
+        assert result == (0, 0, 0)
 
     def test_whitespace_only_base_sha_proceeds(self) -> None:
         """Whitespace-only SHA is truthy, so git is called (and likely fails)."""
@@ -182,7 +188,7 @@ class TestCountLinesChanged:
             returncode=128, stderr="fatal: bad revision"
         )):
             result = git._count_lines_changed("/tmp", "   ")
-        assert result == 0
+        assert result == (0, 0, 0)
 
 
 class TestParseShortstatEdgeCases:
@@ -191,26 +197,26 @@ class TestParseShortstatEdgeCases:
     def test_multiple_insertion_matches_uses_first(self) -> None:
         """If text somehow has multiple insertion matches, first is used."""
         text = " 1 file changed, 5 insertions(+), 10 insertions(+)"
-        assert git._parse_shortstat(text) == 5
+        assert git._parse_shortstat(text) == (5, 0)
 
     def test_very_large_insertion_count(self) -> None:
         """Ensure parsing handles very large numbers without overflow."""
         text = f" 1 file changed, {2**31} insertions(+)"
-        assert git._parse_shortstat(text) == 2**31
+        assert git._parse_shortstat(text) == (2**31, 0)
 
     def test_negative_number_before_insertion(self) -> None:
         """\\d+ matches digits after the minus sign (git never outputs negatives)."""
-        assert git._parse_shortstat(" 1 file changed, -5 insertions(+)") == 5
+        assert git._parse_shortstat(" 1 file changed, -5 insertions(+)") == (5, 0)
 
     def test_decimal_number_partial_match(self) -> None:
         """'1.5 insertions' — regex matches '5' as the digits before ' insertion'."""
         result = git._parse_shortstat(" 1 file changed, 1.5 insertions(+)")
-        assert result == 5
+        assert result == (5, 0)
 
     def test_no_space_before_insertion(self) -> None:
         """Without a space before 'insertion', the regex might not match."""
         result = git._parse_shortstat(" 1 file changed,5 insertions(+)")
-        assert result == 5
+        assert result == (5, 0)
 
 
 class TestParseShortstatLocalized:
@@ -224,18 +230,18 @@ class TestParseShortstatLocalized:
     def test_german_locale_returns_zero_without_fix(self) -> None:
         """German git output uses 'Einfügungen' and 'Löschung', not matched by regex."""
         german = " 3 Dateien geändert, 20 Einfügungen(+), 10 Löschungen(-)"
-        assert git._parse_shortstat(german) == 0
+        assert git._parse_shortstat(german) == (0, 0)
 
     def test_french_locale_returns_zero_without_fix(self) -> None:
         """French git output uses 'insertions' (matches!) but 'suppressions' (doesn't)."""
         french = " 3 fichiers modifiés, 20 insertions(+), 10 suppressions(-)"
         # 'insertions' matches the English regex, but 'suppressions' does not
-        assert git._parse_shortstat(french) == 20  # only insertions matched
+        assert git._parse_shortstat(french) == (20, 0)  # only insertions matched
 
     def test_japanese_locale_returns_zero_without_fix(self) -> None:
         """Japanese git output uses completely different characters."""
         japanese = " 3個のファイル変更, 20行追加(+), 10行削除(-)"
-        assert git._parse_shortstat(japanese) == 0
+        assert git._parse_shortstat(japanese) == (0, 0)
 
 
 class TestGitRunLocaleEnv:
