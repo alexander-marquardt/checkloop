@@ -13,7 +13,10 @@ from tests.helpers import make_git_result
 
 
 class TestComputeChangeStats:
-    """Tests for compute_change_stats() convergence metric."""
+    """Tests for compute_change_stats() convergence metric.
+
+    compute_change_stats returns (lines_added, lines_deleted, lines_changed, pct).
+    """
 
     def test_calculates_lines_and_percentage(self) -> None:
         resolved = str(Path("/tmp").resolve())
@@ -26,21 +29,27 @@ class TestComputeChangeStats:
             file_content = b"line\n" * 1000
             mock_open = mock.mock_open(read_data=file_content)
             with mock.patch("builtins.open", mock_open):
-                lines, pct = git.compute_change_stats("/tmp", "abc123")
+                added, deleted, lines, pct = git.compute_change_stats("/tmp", "abc123")
+                assert added == 10
+                assert deleted == 5
                 assert lines == 15
                 assert 0 < pct < 100
         git._total_lines_cache.pop(resolved, None)
 
     def test_zero_when_no_changes(self) -> None:
         with mock.patch("subprocess.run", return_value=make_git_result()):
-            lines, pct = git.compute_change_stats("/tmp", "abc123")
+            added, deleted, lines, pct = git.compute_change_stats("/tmp", "abc123")
+            assert added == 0
+            assert deleted == 0
             assert lines == 0
             assert pct == 0.0
 
     def test_failed_git_diff_returns_zero(self) -> None:
         with mock.patch.object(git, "_git_run") as mock_git:
             mock_git.return_value = mock.Mock(returncode=1, stderr="error")
-            lines, pct = git.compute_change_stats("/tmp", "abc123")
+            added, deleted, lines, pct = git.compute_change_stats("/tmp", "abc123")
+            assert added == 0
+            assert deleted == 0
             assert lines == 0
             assert pct == 0.0
 
@@ -49,22 +58,28 @@ class TestComputeChangeStatsEdgeCases:
     """Edge case tests for compute_change_stats()."""
 
     def test_zero_lines_changed(self) -> None:
-        with mock.patch.object(git, "_count_lines_changed", return_value=0):
-            lines, pct = git.compute_change_stats("/tmp", "abc123")
+        with mock.patch.object(git, "_count_lines_changed", return_value=(0, 0, 0)):
+            added, deleted, lines, pct = git.compute_change_stats("/tmp", "abc123")
+        assert added == 0
+        assert deleted == 0
         assert lines == 0
         assert pct == 0.0
 
     def test_all_lines_changed(self) -> None:
-        with mock.patch.object(git, "_count_lines_changed", return_value=1000):
+        with mock.patch.object(git, "_count_lines_changed", return_value=(500, 500, 1000)):
             with mock.patch.object(git, "_cached_total_tracked_lines", return_value=1000):
-                lines, pct = git.compute_change_stats("/tmp", "abc123")
+                added, deleted, lines, pct = git.compute_change_stats("/tmp", "abc123")
+        assert added == 500
+        assert deleted == 500
         assert lines == 1000
         assert pct == 100.0
 
     def test_exception_returns_zero(self) -> None:
-        """When _count_lines_changed raises, compute_change_stats returns (0, 0.0)."""
+        """When _count_lines_changed raises, compute_change_stats returns all zeros."""
         with mock.patch.object(git, "_count_lines_changed", side_effect=RuntimeError("git broke")):
-            lines, pct = git.compute_change_stats("/tmp", "abc123")
+            added, deleted, lines, pct = git.compute_change_stats("/tmp", "abc123")
+        assert added == 0
+        assert deleted == 0
         assert lines == 0
         assert pct == 0.0
 
@@ -288,17 +303,21 @@ class TestComputeChangeStatsBoundary:
 
     def test_single_line_changed_in_large_repo(self) -> None:
         """One line changed in a 100k-line repo should give a very small percentage."""
-        with mock.patch.object(git, "_count_lines_changed", return_value=1):
+        with mock.patch.object(git, "_count_lines_changed", return_value=(1, 0, 1)):
             with mock.patch.object(git, "_cached_total_tracked_lines", return_value=100000):
-                lines, pct = git.compute_change_stats("/tmp", "abc123")
+                added, deleted, lines, pct = git.compute_change_stats("/tmp", "abc123")
+        assert added == 1
+        assert deleted == 0
         assert lines == 1
         assert abs(pct - 0.001) < 0.0001
 
     def test_more_lines_changed_than_total(self) -> None:
         """Lines changed can exceed total (e.g., rewrite entire file plus add new lines)."""
-        with mock.patch.object(git, "_count_lines_changed", return_value=2000):
+        with mock.patch.object(git, "_count_lines_changed", return_value=(1500, 500, 2000)):
             with mock.patch.object(git, "_cached_total_tracked_lines", return_value=1000):
-                lines, pct = git.compute_change_stats("/tmp", "abc123")
+                added, deleted, lines, pct = git.compute_change_stats("/tmp", "abc123")
+        assert added == 1500
+        assert deleted == 500
         assert lines == 2000
         assert pct == 200.0
 
@@ -309,7 +328,10 @@ class TestComputeChangeStatsBoundary:
 
 
 class TestCountLinesChangedEdgeCases:
-    """Additional edge cases for _count_lines_changed."""
+    """Additional edge cases for _count_lines_changed.
+
+    _count_lines_changed returns (insertions, deletions, total) tuple.
+    """
 
     def test_target_default_is_head(self) -> None:
         """Default target is 'HEAD' — verify it's appended to the diff command."""
@@ -317,6 +339,7 @@ class TestCountLinesChangedEdgeCases:
             returncode=0, stdout=" 1 file changed, 5 insertions(+)",
         )) as mock_run:
             result = git._count_lines_changed("/tmp", "abc123")
+        assert result == (5, 0, 5)
         args = mock_run.call_args[0]
         assert "HEAD" in args
 
@@ -325,7 +348,8 @@ class TestCountLinesChangedEdgeCases:
         with mock.patch.object(git, "_git_run", return_value=mock.MagicMock(
             returncode=0, stdout=" 1 file changed, 3 insertions(+)",
         )) as mock_run:
-            git._count_lines_changed("/tmp", "abc123", target="")
+            result = git._count_lines_changed("/tmp", "abc123", target="")
+        assert result == (3, 0, 3)
         args = mock_run.call_args[0]
         assert "HEAD" not in args[2:]
 
