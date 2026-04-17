@@ -94,6 +94,8 @@ _DRAIN_CHUNK_SIZE = 65536  # bytes per read when draining after process exit
 _MAX_BUFFER_SIZE = 10 * 1024 * 1024  # 10 MB safety cap on JSONL output buffer
 _PROCESS_WAIT_TIMEOUT = 5
 _MEMORY_CHECK_INTERVAL = 10
+_QUIET_STATUS_INTERVAL = 15  # show "still working" status after this many seconds of silence
+_QUIET_STATUS_REFRESH = 10  # update the status line every N seconds while quiet
 
 # Perf: build once instead of copying os.environ on every subprocess spawn.
 # Strips CLAUDECODE env var whose presence causes nested claude processes
@@ -232,6 +234,33 @@ def _send_nudge(process: subprocess.Popen[bytes], idle_seconds: float) -> bool:
     except (OSError, BrokenPipeError) as exc:
         logger.debug("Failed to send nudge: %s", exc)
         return False
+
+
+def _describe_active_work(root_pid: int) -> str:
+    """Summarise what descendant processes are running, for user-facing status.
+
+    Returns a short description like "running pytest" or "running pytest, node"
+    based on the leaf commands in the process tree.  Falls back to a process
+    count if command names can't be determined.
+    """
+    descendants = find_all_descendant_pids(root_pid)
+    if not descendants:
+        return "working"
+    snapshot = snapshot_process_rss(set(descendants))
+    if not snapshot:
+        return f"{len(descendants)} subprocess(es) active"
+    # Extract recognisable tool names from command basenames, ignoring
+    # shells and wrappers that aren't informative to the user.
+    _IGNORE = {"zsh", "bash", "sh", "tail", "head", "cat", "tee", "uv", "node", "claude"}
+    tools: list[str] = []
+    for _pid, _rss, cmd in snapshot:
+        basename = cmd.rsplit("/", 1)[-1].split()[0] if cmd else ""
+        if basename and basename not in _IGNORE:
+            tools.append(basename)
+    if tools:
+        unique = list(dict.fromkeys(tools))[:3]
+        return "running " + ", ".join(unique)
+    return f"{len(descendants)} subprocess(es) active"
 
 
 def _check_idle_timeout(
@@ -480,6 +509,7 @@ def _stream_process_output(
     last_memory_check = check_start_time
     last_nudge_time = 0.0  # tracks when we last sent a nudge (0 = never)
     last_descendant_scan = check_start_time
+    last_quiet_status = 0.0  # when we last showed a "still working" inline status
     prev_rss_mb = 0.0  # previous RSS measurement for growth trend detection
     output_buffer = bytearray()
     kill_reason: str | None = None
@@ -532,6 +562,18 @@ def _stream_process_output(
                         stdout, output_buffer, check_start_time, debug,
                     )
                     break
+
+                now = time.time()
+                quiet_seconds = now - last_output_time
+                if quiet_seconds >= _QUIET_STATUS_INTERVAL and now - last_quiet_status >= _QUIET_STATUS_REFRESH:
+                    elapsed = format_duration(now - check_start_time)
+                    activity = _describe_active_work(process.pid)
+                    print_status_inline(
+                        f"  [{elapsed}] {activity} ({int(quiet_seconds)}s since last output)",
+                        DIM,
+                    )
+                    last_quiet_status = now
+
                 continue
 
             chunk = _read_stdout_chunk(stdout)
