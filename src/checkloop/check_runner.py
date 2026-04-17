@@ -209,7 +209,7 @@ def _run_memory_fix(
             logger.info("Memory-fix follow-up completed successfully")
             print_status("Memory-fix check completed.", GREEN)
 
-        if is_git:
+        if is_git and not args.dry_run:
             _commit_with_generated_message(workdir, args, "Fix excessive memory usage in test suite")
             print_status("  Committed memory-fix changes.", GREEN)
     except Exception as exc:
@@ -337,7 +337,7 @@ def run_single_check(
                        check["id"], result.exit_code, result.kill_reason)
         print_status(f"Check '{check['id']}' exited with code {result.exit_code}. Continuing...", YELLOW)
 
-    if is_git:
+    if is_git and not args.dry_run:
         _commit_with_generated_message(workdir, args, f"Apply {check['id']} check improvements")
     made_changes, lines_changed, change_pct = _report_check_changes(workdir, check["id"], sha_before)
     elapsed = time.time() - check_start
