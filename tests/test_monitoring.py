@@ -192,30 +192,40 @@ class TestKillPidsEdgeCases:
 
 
 class TestMeasureSessionRssMb:
-    """Tests for measure_session_rss_mb() child tree memory measurement."""
+    """Tests for measure_session_rss_mb() child tree memory measurement.
 
-    def test_sums_multiple_processes(self) -> None:
-        with mock.patch("subprocess.run", return_value=make_git_result(stdout="10240\n20480\n5120\n")):
-            rss = monitoring.measure_session_rss_mb(12345)
-        assert abs(rss - (10240 + 20480 + 5120) / 1024) < 0.01
+    The implementation walks the ppid chain (portable on macOS + Linux) and
+    sums RSS across the session-leader PID and every descendant.
+    """
 
-    def test_empty_session_returns_zero(self) -> None:
-        with mock.patch("subprocess.run", return_value=make_git_result(returncode=1)):
-            assert monitoring.measure_session_rss_mb(12345) == 0.0
+    def test_sums_tree_rss_including_root(self) -> None:
+        with mock.patch.object(monitoring, "find_all_descendant_pids", return_value=[200, 300]), \
+             mock.patch.object(monitoring, "measure_pid_rss_mb", return_value=36.0) as mock_rss:
+            rss = monitoring.measure_session_rss_mb(100)
+        assert rss == 36.0
+        # Root is included alongside descendants (minus self).
+        called_pids = mock_rss.call_args[0][0]
+        assert 100 in called_pids and 200 in called_pids and 300 in called_pids
 
-    def test_oserror_returns_zero(self) -> None:
-        with mock.patch("subprocess.run", side_effect=OSError("nope")):
-            assert monitoring.measure_session_rss_mb(12345) == 0.0
+    def test_excludes_own_pid(self) -> None:
+        my_pid = os.getpid()
+        with mock.patch.object(monitoring, "find_all_descendant_pids", return_value=[my_pid, 200]), \
+             mock.patch.object(monitoring, "measure_pid_rss_mb", return_value=5.0) as mock_rss:
+            monitoring.measure_session_rss_mb(100)
+        called_pids = mock_rss.call_args[0][0]
+        assert my_pid not in called_pids
 
-    def test_non_numeric_lines_skipped(self) -> None:
-        with mock.patch("subprocess.run", return_value=make_git_result(stdout="10240\nnot_a_number\n20480\n")):
-            rss = monitoring.measure_session_rss_mb(12345)
-        assert abs(rss - (10240 + 20480) / 1024) < 0.01
+    def test_empty_tree_falls_back_to_root(self) -> None:
+        with mock.patch.object(monitoring, "find_all_descendant_pids", return_value=[]), \
+             mock.patch.object(monitoring, "measure_pid_rss_mb", return_value=12.0) as mock_rss:
+            rss = monitoring.measure_session_rss_mb(100)
+        assert rss == 12.0
+        assert mock_rss.call_args[0][0] == {100}
 
-    def test_single_process(self) -> None:
-        with mock.patch("subprocess.run", return_value=make_git_result(stdout="  51200  \n")):
-            rss = monitoring.measure_session_rss_mb(99)
-        assert abs(rss - 51200 / 1024) < 0.01
+    def test_propagates_measure_failure(self) -> None:
+        with mock.patch.object(monitoring, "find_all_descendant_pids", return_value=[200]), \
+             mock.patch.object(monitoring, "measure_pid_rss_mb", return_value=0.0):
+            assert monitoring.measure_session_rss_mb(100) == 0.0
 
 
 class TestFindSessionPidsEdgeCases:
@@ -223,14 +233,14 @@ class TestFindSessionPidsEdgeCases:
 
     def test_excludes_own_pid(self) -> None:
         my_pid = os.getpid()
-        with mock.patch.object(monitoring, "_run_pgrep", return_value=[my_pid, 999]):
+        with mock.patch.object(monitoring, "find_all_descendant_pids", return_value=[my_pid, 999]):
             result = monitoring.find_session_pids(42)
         assert my_pid not in result
         assert result == [999]
 
     def test_only_own_pid_returns_empty(self) -> None:
         my_pid = os.getpid()
-        with mock.patch.object(monitoring, "_run_pgrep", return_value=[my_pid]):
+        with mock.patch.object(monitoring, "find_all_descendant_pids", return_value=[my_pid]):
             result = monitoring.find_session_pids(42)
         assert result == []
 
@@ -512,6 +522,31 @@ class TestFindAllDescendantPids:
         with mock.patch("subprocess.run", return_value=make_git_result(stdout=ps_out)):
             result = monitoring.find_all_descendant_pids(100)
         assert set(result) == {200, 300}
+
+    def test_refuses_pid_zero(self) -> None:
+        """Walking from PID 0 (kernel) would return the whole system; refuse."""
+        with mock.patch("subprocess.run") as mock_run:
+            result = monitoring.find_all_descendant_pids(0)
+        assert result == []
+        mock_run.assert_not_called()
+
+    def test_refuses_pid_one(self) -> None:
+        """Walking from PID 1 (launchd/init) would kill the user's session; refuse.
+
+        Regression guard: on 2026-04-17 a test passed pid=1 through a
+        fallback path that SIGKILL'd the entire login session.
+        """
+        with mock.patch("subprocess.run") as mock_run:
+            result = monitoring.find_all_descendant_pids(1)
+        assert result == []
+        mock_run.assert_not_called()
+
+    def test_refuses_own_pid(self) -> None:
+        """Walking from our own PID would return our own children; refuse."""
+        with mock.patch("subprocess.run") as mock_run:
+            result = monitoring.find_all_descendant_pids(os.getpid())
+        assert result == []
+        mock_run.assert_not_called()
 
 
 class TestSweepPreviousSessionsDescendants:

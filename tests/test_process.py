@@ -349,10 +349,17 @@ class TestKillProcessGroup:
                 assert signal.SIGKILL in signals_sent
 
     def test_handles_already_dead_process(self) -> None:
+        # pid=1 (launchd/init) was used here historically — but the fallback
+        # path calls kill_session_stragglers(pid) which ppid-walks the tree,
+        # and walking from pid=1 returns every user process.  Mock the
+        # straggler kill so the test verifies the getpgid-failed path
+        # without touching the real process tree.
         mock_proc = mock.MagicMock()
-        mock_proc.pid = 1
-        with mock.patch("os.getpgid", side_effect=OSError("No such process")):
+        mock_proc.pid = 99999
+        with mock.patch("os.getpgid", side_effect=OSError("No such process")), \
+             mock.patch.object(process, "kill_session_stragglers") as mock_kill:
             process._kill_process_group(mock_proc)
+            mock_kill.assert_called_once_with(99999)
 
     def test_sigkill_oserror_handled(self) -> None:
         mock_proc = mock.MagicMock()
