@@ -197,11 +197,18 @@ def _collect_sample() -> dict[str, object]:
     except Exception as exc:  # pragma: no cover — defensive
         sample["parent_err"] = str(exc)
 
+    # Walk the FULL descendant tree rather than just direct children.
+    # checkloop's only direct child is usually ``claude``; the interesting
+    # processes (python, pytest, grep, etc.) are grandchildren that claude
+    # spawns.  Using the recursive walk ensures they show up in telemetry —
+    # previously every sample showed only ``claude`` and stalls were
+    # invisible in post-mortem data.  Field names are kept for backward
+    # compatibility with already-written JSONL files.
     try:
-        child_pids = monitoring._find_child_pids()
-        sample["child_count"] = len(child_pids)
-        if child_pids:
-            entries = monitoring.snapshot_process_rss(set(child_pids))
+        descendant_pids = monitoring.find_all_descendant_pids(os.getpid())
+        sample["child_count"] = len(descendant_pids)
+        if descendant_pids:
+            entries = monitoring.snapshot_process_rss(set(descendant_pids))
             sample["children_rss_mb"] = round(sum(rss for _, rss, _ in entries), 1)
             top = sorted(entries, key=lambda e: -e[1])[:_TOP_CHILDREN_LIMIT]
             sample["top_children"] = [
