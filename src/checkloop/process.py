@@ -244,19 +244,38 @@ def _send_nudge(process: subprocess.Popen[bytes], idle_seconds: float) -> bool:
         return False
 
 
-def _describe_active_work(root_pid: int) -> str:
+@dataclass
+class ActiveWorkSnapshot:
+    """Descendant-tree summary shown during quiet periods.
+
+    ``total_rss_mb``, ``top_name`` and ``top_rss_mb`` are populated from the
+    same ``ps`` snapshot already used to pick a description, so enriching the
+    status line costs nothing extra beyond string formatting.
+    """
+
+    description: str
+    descendant_count: int
+    total_rss_mb: float
+    top_name: str
+    top_rss_mb: float
+
+
+def _describe_active_work(root_pid: int) -> ActiveWorkSnapshot:
     """Summarise what descendant processes are running, for user-facing status.
 
-    Returns a short description like "running pytest" or "running pytest, node"
-    based on the leaf commands in the process tree.  Falls back to a process
-    count if command names can't be determined.
+    Returns an ``ActiveWorkSnapshot`` with a short description ("running pytest")
+    plus RSS totals and the single largest process in the tree.  Falls back
+    gracefully when the tree is empty or ``ps`` returned nothing.
     """
     descendants = find_all_descendant_pids(root_pid)
     if not descendants:
-        return "working"
+        return ActiveWorkSnapshot("working", 0, 0.0, "", 0.0)
     snapshot = snapshot_process_rss(set(descendants))
     if not snapshot:
-        return f"{len(descendants)} subprocess(es) active"
+        return ActiveWorkSnapshot(
+            f"{len(descendants)} subprocess(es) active",
+            len(descendants), 0.0, "", 0.0,
+        )
     # Extract recognisable tool names from command basenames, ignoring
     # shells and wrappers that aren't informative to the user.
     _IGNORE = {"zsh", "bash", "sh", "tail", "head", "cat", "tee", "uv", "node", "claude"}
@@ -267,8 +286,36 @@ def _describe_active_work(root_pid: int) -> str:
             tools.append(basename)
     if tools:
         unique = list(dict.fromkeys(tools))[:3]
-        return "running " + ", ".join(unique)
-    return f"{len(descendants)} subprocess(es) active"
+        description = "running " + ", ".join(unique)
+    else:
+        description = f"{len(descendants)} subprocess(es) active"
+
+    total_rss = sum(rss for _, rss, _ in snapshot)
+    top_pid, top_rss, top_cmd = max(snapshot, key=lambda e: e[1])
+    top_name = top_cmd.rsplit("/", 1)[-1].split()[0] if top_cmd else f"pid{top_pid}"
+    return ActiveWorkSnapshot(
+        description, len(descendants), round(total_rss, 0), top_name, round(top_rss, 0),
+    )
+
+
+def _format_quiet_status(
+    elapsed_label: str,
+    snapshot: ActiveWorkSnapshot,
+    quiet_seconds: int,
+    free_mb: float | None,
+) -> str:
+    """Render the one-line quiet-period status shown during long silences."""
+    parts: list[str] = [f"[{elapsed_label}] {snapshot.description}", f"{quiet_seconds}s silent"]
+    if snapshot.total_rss_mb > 0:
+        tree = f"tree {snapshot.total_rss_mb:.0f}MB"
+        # Only add the "top" breakdown when there's more than one process —
+        # otherwise the single child's RSS already equals the total.
+        if snapshot.descendant_count > 1 and snapshot.top_name:
+            tree += f" (top {snapshot.top_name}:{snapshot.top_rss_mb:.0f}MB)"
+        parts.append(tree)
+    if free_mb is not None:
+        parts.append(f"host free {free_mb:.0f}MB")
+    return "  " + " · ".join(parts)
 
 
 def _check_idle_timeout(
@@ -638,9 +685,14 @@ def _stream_process_output(
                 quiet_seconds = now - last_output_time
                 if quiet_seconds >= _QUIET_STATUS_INTERVAL and now - last_quiet_status >= _QUIET_STATUS_REFRESH:
                     elapsed = format_duration(now - check_start_time)
-                    activity = _describe_active_work(process.pid)
+                    work = _describe_active_work(process.pid)
+                    # Lazy import avoids a module-load cycle with telemetry.
+                    # Reading system free memory is only a handful of cheap
+                    # subprocess calls every 10s, so the overhead is negligible.
+                    from checkloop.telemetry import get_system_free_mb
+                    free_mb = get_system_free_mb()
                     print_status_inline(
-                        f"  [{elapsed}] {activity} ({int(quiet_seconds)}s since last output)",
+                        _format_quiet_status(elapsed, work, int(quiet_seconds), free_mb),
                         DIM,
                     )
                     last_quiet_status = now
