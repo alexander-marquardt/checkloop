@@ -72,33 +72,35 @@ class TestCheckIdleTimeout:
     def test_not_expired(self) -> None:
         mock_proc = mock.MagicMock()
         with mock.patch("time.time", return_value=100.0):
-            result = process._check_idle_timeout(
+            killed, sample = process._check_idle_timeout(
                 last_output_time=90.0, idle_timeout=120,
-                check_start_time=80.0, process=mock_proc,
+                check_start_time=80.0, process=mock_proc, last_cpu_sample=None,
             )
-        assert result is False
+        assert killed is False
+        assert sample is None
 
     def test_exactly_at_threshold_does_not_trigger(self) -> None:
         """Idle timeout uses strict > comparison, so exactly at threshold doesn't trigger."""
         mock_proc = mock.MagicMock()
         with mock.patch("time.time", return_value=220.0):
-            result = process._check_idle_timeout(
+            killed, _ = process._check_idle_timeout(
                 last_output_time=100.0, idle_timeout=120,
-                check_start_time=80.0, process=mock_proc,
+                check_start_time=80.0, process=mock_proc, last_cpu_sample=None,
             )
-        assert result is False
+        assert killed is False
 
     def test_one_second_over_threshold(self) -> None:
         mock_proc = mock.MagicMock()
         mock_proc.pid = 12345
         with mock.patch("time.time", return_value=221.0), \
              mock.patch.object(process, "_kill_process_group"), \
-             mock.patch.object(process, "find_all_descendant_pids", return_value=[]):
-            result = process._check_idle_timeout(
+             mock.patch.object(process, "find_all_descendant_pids", return_value=[]), \
+             mock.patch.object(process, "measure_tree_cpu_seconds", return_value=None):
+            killed, _ = process._check_idle_timeout(
                 last_output_time=100.0, idle_timeout=120,
-                check_start_time=80.0, process=mock_proc,
+                check_start_time=80.0, process=mock_proc, last_cpu_sample=None,
             )
-        assert result is True
+        assert killed is True
 
     def test_descendants_running_prevents_kill(self) -> None:
         """When idle timeout triggers but descendants are running, don't kill."""
@@ -107,11 +109,11 @@ class TestCheckIdleTimeout:
         with mock.patch("time.time", return_value=221.0), \
              mock.patch.object(process, "_kill_process_group") as mock_kill, \
              mock.patch.object(process, "find_all_descendant_pids", return_value=[200, 201]):
-            result = process._check_idle_timeout(
+            killed, _ = process._check_idle_timeout(
                 last_output_time=100.0, idle_timeout=120,
-                check_start_time=80.0, process=mock_proc,
+                check_start_time=80.0, process=mock_proc, last_cpu_sample=None,
             )
-        assert result is False  # Should NOT kill
+        assert killed is False  # Should NOT kill
         mock_kill.assert_not_called()
 
     def test_no_descendants_allows_kill(self) -> None:
@@ -120,12 +122,86 @@ class TestCheckIdleTimeout:
         mock_proc.pid = 12345
         with mock.patch("time.time", return_value=221.0), \
              mock.patch.object(process, "_kill_process_group") as mock_kill, \
-             mock.patch.object(process, "find_all_descendant_pids", return_value=[]):
-            result = process._check_idle_timeout(
+             mock.patch.object(process, "find_all_descendant_pids", return_value=[]), \
+             mock.patch.object(process, "measure_tree_cpu_seconds", return_value=None):
+            killed, _ = process._check_idle_timeout(
+                last_output_time=100.0, idle_timeout=120,
+                check_start_time=80.0, process=mock_proc, last_cpu_sample=None,
+            )
+        assert killed is True  # Should kill
+        mock_kill.assert_called_once()
+
+    def test_cpu_active_extends_idle_window(self) -> None:
+        """When no descendants but tree is CPU-active, extend the idle window."""
+        mock_proc = mock.MagicMock()
+        mock_proc.pid = 12345
+        # wall delta: 221 - 100 = 121s; cpu delta: 50 - 20 = 30s → busy_ratio ≈ 0.25
+        with mock.patch("time.time", return_value=221.0), \
+             mock.patch.object(process, "_kill_process_group") as mock_kill, \
+             mock.patch.object(process, "find_all_descendant_pids", return_value=[]), \
+             mock.patch.object(process, "measure_tree_cpu_seconds", return_value=50.0):
+            killed, sample = process._check_idle_timeout(
                 last_output_time=100.0, idle_timeout=120,
                 check_start_time=80.0, process=mock_proc,
+                last_cpu_sample=(100.0, 20.0),
             )
-        assert result is True  # Should kill
+        assert killed is False  # CPU-active — no kill
+        mock_kill.assert_not_called()
+        assert sample == (221.0, 50.0)
+
+    def test_cpu_idle_kills_as_normal(self) -> None:
+        """When tree has negligible CPU activity, the kill proceeds."""
+        mock_proc = mock.MagicMock()
+        mock_proc.pid = 12345
+        # wall delta 121s, cpu delta 0.1s → busy_ratio ≈ 0.0008, below floor
+        with mock.patch("time.time", return_value=221.0), \
+             mock.patch.object(process, "_kill_process_group") as mock_kill, \
+             mock.patch.object(process, "find_all_descendant_pids", return_value=[]), \
+             mock.patch.object(process, "measure_tree_cpu_seconds", return_value=20.1):
+            killed, _ = process._check_idle_timeout(
+                last_output_time=100.0, idle_timeout=120,
+                check_start_time=80.0, process=mock_proc,
+                last_cpu_sample=(100.0, 20.0),
+            )
+        assert killed is True
+        mock_kill.assert_called_once()
+
+    def test_hard_cap_kills_even_with_busy_tree(self) -> None:
+        """Past _CPU_GRACE_MULTIPLIER * idle_timeout, kill regardless of CPU."""
+        mock_proc = mock.MagicMock()
+        mock_proc.pid = 12345
+        # idle_seconds = 301 > 2 * 120 = 240 → past hard cap
+        with mock.patch("time.time", return_value=401.0), \
+             mock.patch.object(process, "_kill_process_group") as mock_kill, \
+             mock.patch.object(process, "find_all_descendant_pids", return_value=[]), \
+             mock.patch.object(process, "measure_tree_cpu_seconds", return_value=200.0):
+            killed, _ = process._check_idle_timeout(
+                last_output_time=100.0, idle_timeout=120,
+                check_start_time=80.0, process=mock_proc,
+                last_cpu_sample=(100.0, 20.0),
+            )
+        assert killed is True
+        mock_kill.assert_called_once()
+
+    def test_hard_cap_kills_even_with_descendants(self) -> None:
+        """Past the hard cap, descendant-forgiveness no longer suppresses the kill.
+
+        Pre-existing behaviour let stale descendants suppress idle kill forever;
+        readability-stall post-mortem (2026-04-17) showed 16 min of silence
+        because a lingering descendant kept the check returning False.
+        """
+        mock_proc = mock.MagicMock()
+        mock_proc.pid = 12345
+        with mock.patch("time.time", return_value=401.0), \
+             mock.patch.object(process, "_kill_process_group") as mock_kill, \
+             mock.patch.object(process, "find_all_descendant_pids", return_value=[999]), \
+             mock.patch.object(process, "measure_tree_cpu_seconds", return_value=None):
+            killed, _ = process._check_idle_timeout(
+                last_output_time=100.0, idle_timeout=120,
+                check_start_time=80.0, process=mock_proc,
+                last_cpu_sample=None,
+            )
+        assert killed is True
         mock_kill.assert_called_once()
 
 
@@ -461,7 +537,7 @@ class TestStreamProcessOutputKillReasons:
         mock_proc.stdout = io.BytesIO(b"")
         mock_proc.pid = 123
 
-        with mock.patch.object(process, "_check_idle_timeout", return_value=False), \
+        with mock.patch.object(process, "_check_idle_timeout", return_value=(False, None)), \
              mock.patch.object(process, "_check_hard_timeout", return_value=True), \
              mock.patch.object(process, "_check_memory_limit", return_value=(False, time.time(), 0.0)):
             _, kill_reason = process._stream_process_output(
@@ -476,7 +552,7 @@ class TestStreamProcessOutputKillReasons:
         mock_proc.stdout = io.BytesIO(b"")
         mock_proc.pid = 123
 
-        with mock.patch.object(process, "_check_idle_timeout", return_value=False), \
+        with mock.patch.object(process, "_check_idle_timeout", return_value=(False, None)), \
              mock.patch.object(process, "_check_hard_timeout", return_value=False), \
              mock.patch.object(process, "_check_memory_limit", return_value=(True, time.time(), 5000.0)):
             _, kill_reason = process._stream_process_output(
@@ -597,7 +673,7 @@ class TestCheckResourceLimitsCombined:
         """When all limits are within bounds, returns None kill_reason."""
         proc = self._make_mock_process()
         now = time.time()
-        kill_reason, last_mem, last_nudge, _ = process._check_resource_limits(
+        kill_reason, last_mem, last_nudge, *_ = process._check_resource_limits(
             proc, check_start_time=now, last_output_time=now,
             idle_timeout=300, check_timeout=0, max_memory_mb=0,
             last_memory_check=now, last_nudge_time=0.0,
@@ -608,18 +684,21 @@ class TestCheckResourceLimitsCombined:
         """Idle timeout should be detected before hard timeout or memory."""
         proc = self._make_mock_process()
         now = time.time()
-        kill_reason, _, _, _ = process._check_resource_limits(
-            proc, check_start_time=now - 10, last_output_time=now - 400,
-            idle_timeout=300, check_timeout=600, max_memory_mb=8192,
-            last_memory_check=now, last_nudge_time=0.0,
-        )
+        with mock.patch.object(process, "find_all_descendant_pids", return_value=[]), \
+             mock.patch.object(process, "measure_tree_cpu_seconds", return_value=None), \
+             mock.patch.object(process, "_kill_process_group"):
+            kill_reason, *_ = process._check_resource_limits(
+                proc, check_start_time=now - 10, last_output_time=now - 400,
+                idle_timeout=300, check_timeout=600, max_memory_mb=8192,
+                last_memory_check=now, last_nudge_time=0.0,
+            )
         assert kill_reason == process.KILL_REASON_IDLE
 
     def test_hard_timeout_when_not_idle(self) -> None:
         """Hard timeout should be detected when idle timeout hasn't triggered."""
         proc = self._make_mock_process()
         now = time.time()
-        kill_reason, _, _, _ = process._check_resource_limits(
+        kill_reason, *_ = process._check_resource_limits(
             proc, check_start_time=now - 700, last_output_time=now,
             idle_timeout=300, check_timeout=600, max_memory_mb=0,
             last_memory_check=now, last_nudge_time=0.0,
@@ -632,7 +711,7 @@ class TestCheckResourceLimitsCombined:
         now = time.time()
         with mock.patch.object(process, "measure_session_rss_mb", return_value=10000.0), \
              mock.patch.object(process, "_log_per_pid_breakdown"):
-            kill_reason, _, _, _ = process._check_resource_limits(
+            kill_reason, *_ = process._check_resource_limits(
                 proc, check_start_time=now, last_output_time=now,
                 idle_timeout=300, check_timeout=0, max_memory_mb=8192,
                 last_memory_check=now - 20, last_nudge_time=0.0,
@@ -644,7 +723,7 @@ class TestCheckResourceLimitsCombined:
         proc = self._make_mock_process()
         now = time.time()
         # idle_seconds = 250, threshold = 300 - 60 = 240, so nudge should fire
-        kill_reason, _, last_nudge, _ = process._check_resource_limits(
+        kill_reason, _, last_nudge, *_ = process._check_resource_limits(
             proc, check_start_time=now - 250, last_output_time=now - 250,
             idle_timeout=300, check_timeout=0, max_memory_mb=0,
             last_memory_check=now, last_nudge_time=0.0,
@@ -659,7 +738,7 @@ class TestCheckResourceLimitsCombined:
         now = time.time()
         last_output = now - 250
         # last_nudge_time > last_output_time means we already nudged
-        kill_reason, _, last_nudge, _ = process._check_resource_limits(
+        kill_reason, _, last_nudge, *_ = process._check_resource_limits(
             proc, check_start_time=now - 250, last_output_time=last_output,
             idle_timeout=300, check_timeout=0, max_memory_mb=0,
             last_memory_check=now, last_nudge_time=now - 10,  # nudged recently
@@ -786,7 +865,7 @@ class TestStreamDescendantAccumulation:
 
         # Set interval to 0 so scan triggers on every loop iteration.
         with mock.patch.object(process, "_MEMORY_CHECK_INTERVAL", 0), \
-             mock.patch.object(process, "_check_resource_limits", return_value=(None, 0.0, 0.0, 0.0)), \
+             mock.patch.object(process, "_check_resource_limits", return_value=(None, 0.0, 0.0, 0.0, None)), \
              mock.patch.object(process, "find_all_descendant_pids", return_value=[200, 300]), \
              mock.patch("select.select", return_value=([], [], [])):
             process._stream_process_output(
@@ -804,7 +883,7 @@ class TestStreamDescendantAccumulation:
         mock_proc.poll.return_value = 0
         mock_proc.returncode = 0
 
-        with mock.patch.object(process, "_check_resource_limits", return_value=(None, 0.0, 0.0, 0.0)), \
+        with mock.patch.object(process, "_check_resource_limits", return_value=(None, 0.0, 0.0, 0.0, None)), \
              mock.patch.object(process, "find_all_descendant_pids") as mock_find, \
              mock.patch("select.select", return_value=([], [], [])):
             process._stream_process_output(
