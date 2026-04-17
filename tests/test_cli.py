@@ -174,12 +174,13 @@ class TestMainUnexpectedException:
                 cli.main()
 
 
+@pytest.mark.uses_real_log_handler
 class TestAddFileLogHandlerOSError:
     """Test _add_file_log_handler when FileHandler creation fails."""
 
-    def test_oserror_returns_without_adding_handler(self) -> None:
+    def test_oserror_returns_without_adding_handler(self, tmp_path: Path) -> None:
         with mock.patch("logging.FileHandler", side_effect=OSError("disk full")):
-            cli._add_file_log_handler("/tmp")
+            cli._add_file_log_handler(str(tmp_path))
         # No crash and no handler added — verified by no exception.
 
 
@@ -479,6 +480,7 @@ class TestRotateLogFile:
             cli._rotate_log_file(log_path)
 
 
+@pytest.mark.uses_real_log_handler
 class TestAddFileLogHandlerRotation:
     """Tests for _add_file_log_handler integrating with log rotation."""
 

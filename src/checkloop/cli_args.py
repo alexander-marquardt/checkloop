@@ -37,6 +37,7 @@ from checkloop.process import (
     DEFAULT_CHECK_TIMEOUT,
     DEFAULT_IDLE_TIMEOUT,
     DEFAULT_MAX_MEMORY_MB,
+    DEFAULT_SYSTEM_FREE_FLOOR_MB,
 )
 from checkloop.terminal import BOLD, RED, RESET, RULE_WIDTH, YELLOW, fatal, print_status
 
@@ -166,6 +167,16 @@ def build_argument_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--system-free-floor-mb", type=int, default=DEFAULT_SYSTEM_FREE_FLOOR_MB,
+        metavar="MB",
+        help=(
+            f"Kill the running check if host-wide free memory drops below MB "
+            f"(default: {DEFAULT_SYSTEM_FREE_FLOOR_MB}). This is a safety net "
+            "for swap-thrash stalls that can require a hard reboot. "
+            "Set to 0 to disable."
+        ),
+    )
+    parser.add_argument(
         "--model", "-m", default=None, metavar="MODEL",
         help=(
             "Claude model override for ALL checks. Accepts aliases (e.g. 'sonnet', 'opus') "
@@ -205,6 +216,7 @@ def print_run_summary(
     convergence_threshold: float = 0.0,
     max_memory_mb: int = 0,
     check_timeout: int = 0,
+    system_free_floor_mb: int = 0,
 ) -> None:
     print(f"\n{BOLD}checkloop{RESET}")
     print(f"  Directory    : {workdir}")
@@ -216,6 +228,8 @@ def print_run_summary(
         print(f"  Check timeout: {check_timeout}s (hard wall-clock limit)")
     if max_memory_mb > 0:
         print(f"  Memory limit : {max_memory_mb}MB per check (child tree RSS)")
+    if system_free_floor_mb > 0:
+        print(f"  Sys-mem floor: kill check if host free mem < {system_free_floor_mb}MB")
     if convergence_threshold > 0:
         print(f"  Convergence  : stop when < {convergence_threshold}% of lines change")
     if dry_run:
@@ -250,6 +264,8 @@ def validate_arguments(args: argparse.Namespace) -> None:
         fatal("--max-memory-mb cannot be negative")
     if args.check_timeout < 0:
         fatal("--check-timeout cannot be negative")
+    if args.system_free_floor_mb < 0:
+        fatal("--system-free-floor-mb cannot be negative")
 
 
 def resolve_changed_files_prefix(args: argparse.Namespace, workdir: str) -> str:
