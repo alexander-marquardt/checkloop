@@ -53,6 +53,7 @@ logger = logging.getLogger(__name__)
 KILL_REASON_MEMORY = "memory_limit"
 KILL_REASON_TIMEOUT = "check_timeout"
 KILL_REASON_IDLE = "idle_timeout"
+KILL_REASON_SYSTEM_PRESSURE = "system_memory_pressure"
 
 
 @dataclass
@@ -67,6 +68,13 @@ DEFAULT_IDLE_TIMEOUT = 300
 
 DEFAULT_MAX_MEMORY_MB = 8192
 """Max child-tree RSS in MB before killing (default for *max_memory_mb*)."""
+
+DEFAULT_SYSTEM_FREE_FLOOR_MB = 500
+"""System-wide free-memory floor (MB).  When the host has less than this much
+free memory, a running check is killed with ``KILL_REASON_SYSTEM_PRESSURE``
+to avoid a swap-thrash stall that would require a hard reboot.  Set to 0 to
+disable pressure-kill entirely (e.g. on machines with lots of RAM or when
+the telemetry reading is unreliable)."""
 
 DEFAULT_CHECK_TIMEOUT = 0
 """Hard wall-clock timeout per check in seconds (default for *check_timeout*).
@@ -236,19 +244,38 @@ def _send_nudge(process: subprocess.Popen[bytes], idle_seconds: float) -> bool:
         return False
 
 
-def _describe_active_work(root_pid: int) -> str:
+@dataclass
+class ActiveWorkSnapshot:
+    """Descendant-tree summary shown during quiet periods.
+
+    ``total_rss_mb``, ``top_name`` and ``top_rss_mb`` are populated from the
+    same ``ps`` snapshot already used to pick a description, so enriching the
+    status line costs nothing extra beyond string formatting.
+    """
+
+    description: str
+    descendant_count: int
+    total_rss_mb: float
+    top_name: str
+    top_rss_mb: float
+
+
+def _describe_active_work(root_pid: int) -> ActiveWorkSnapshot:
     """Summarise what descendant processes are running, for user-facing status.
 
-    Returns a short description like "running pytest" or "running pytest, node"
-    based on the leaf commands in the process tree.  Falls back to a process
-    count if command names can't be determined.
+    Returns an ``ActiveWorkSnapshot`` with a short description ("running pytest")
+    plus RSS totals and the single largest process in the tree.  Falls back
+    gracefully when the tree is empty or ``ps`` returned nothing.
     """
     descendants = find_all_descendant_pids(root_pid)
     if not descendants:
-        return "working"
+        return ActiveWorkSnapshot("working", 0, 0.0, "", 0.0)
     snapshot = snapshot_process_rss(set(descendants))
     if not snapshot:
-        return f"{len(descendants)} subprocess(es) active"
+        return ActiveWorkSnapshot(
+            f"{len(descendants)} subprocess(es) active",
+            len(descendants), 0.0, "", 0.0,
+        )
     # Extract recognisable tool names from command basenames, ignoring
     # shells and wrappers that aren't informative to the user.
     _IGNORE = {"zsh", "bash", "sh", "tail", "head", "cat", "tee", "uv", "node", "claude"}
@@ -259,8 +286,36 @@ def _describe_active_work(root_pid: int) -> str:
             tools.append(basename)
     if tools:
         unique = list(dict.fromkeys(tools))[:3]
-        return "running " + ", ".join(unique)
-    return f"{len(descendants)} subprocess(es) active"
+        description = "running " + ", ".join(unique)
+    else:
+        description = f"{len(descendants)} subprocess(es) active"
+
+    total_rss = sum(rss for _, rss, _ in snapshot)
+    top_pid, top_rss, top_cmd = max(snapshot, key=lambda e: e[1])
+    top_name = top_cmd.rsplit("/", 1)[-1].split()[0] if top_cmd else f"pid{top_pid}"
+    return ActiveWorkSnapshot(
+        description, len(descendants), round(total_rss, 0), top_name, round(top_rss, 0),
+    )
+
+
+def _format_quiet_status(
+    elapsed_label: str,
+    snapshot: ActiveWorkSnapshot,
+    quiet_seconds: int,
+    free_mb: float | None,
+) -> str:
+    """Render the one-line quiet-period status shown during long silences."""
+    parts: list[str] = [f"[{elapsed_label}] {snapshot.description}", f"{quiet_seconds}s silent"]
+    if snapshot.total_rss_mb > 0:
+        tree = f"tree {snapshot.total_rss_mb:.0f}MB"
+        # Only add the "top" breakdown when there's more than one process —
+        # otherwise the single child's RSS already equals the total.
+        if snapshot.descendant_count > 1 and snapshot.top_name:
+            tree += f" (top {snapshot.top_name}:{snapshot.top_rss_mb:.0f}MB)"
+        parts.append(tree)
+    if free_mb is not None:
+        parts.append(f"host free {free_mb:.0f}MB")
+    return "  " + " · ".join(parts)
 
 
 def _check_idle_timeout(
@@ -424,6 +479,47 @@ def _flush_and_close_stdout(
         logger.debug("Failed to close stdout pipe: %s", exc)
 
 
+def _check_system_pressure(
+    floor_mb: int,
+    process: subprocess.Popen[bytes],
+    check_start_time: float,
+) -> bool:
+    """Return True if system free memory is below *floor_mb* (and kill the check).
+
+    A separate safety net on top of the per-check memory limit: a check may
+    stay under its own RSS cap while sibling processes on the host push free
+    memory to zero, triggering the OS's swap/compressed-memory subsystem and
+    stalling the whole machine.  When free memory drops below the floor, we
+    kill the child tree early with a distinct reason so the post-run summary
+    and telemetry both show *why*.
+
+    Returns ``False`` when *floor_mb* is 0 (disabled) or when the free-memory
+    reading is unavailable — we'd rather keep running than kill spuriously on
+    platforms where ``vm_stat``/``/proc/meminfo`` fail.
+    """
+    if floor_mb <= 0:
+        return False
+    # Local import so process.py has no module-load dependency on telemetry
+    # (avoids import cycles and keeps startup lean).
+    from checkloop.telemetry import get_system_free_mb
+    free_mb = get_system_free_mb()
+    if free_mb is None:
+        return False
+    if free_mb >= floor_mb:
+        return False
+    elapsed = format_duration(time.time() - check_start_time)
+    logger.warning(
+        "System memory pressure: free=%.0fMB < floor=%dMB, killing check pid=%d after %s",
+        free_mb, floor_mb, process.pid, elapsed,
+    )
+    print_status(
+        f"\nSystem free memory at {free_mb:.0f}MB (floor: {floor_mb}MB) "
+        f"after {elapsed} — killing to avoid stall.", RED,
+    )
+    _kill_process_group(process)
+    return True
+
+
 def _check_resource_limits(
     process: subprocess.Popen[bytes],
     check_start_time: float,
@@ -435,6 +531,7 @@ def _check_resource_limits(
     last_nudge_time: float,
     known_descendants: set[int] | None = None,
     prev_rss_mb: float = 0.0,
+    system_free_floor_mb: int = 0,
 ) -> tuple[str | None, float, float, float]:
     """Check all resource limits in one pass, sending nudges before timeout.
 
@@ -463,12 +560,31 @@ def _check_resource_limits(
         return KILL_REASON_TIMEOUT, last_memory_check, last_nudge_time, prev_rss_mb
     # process.pid == session ID because start_new_session=True makes the
     # subprocess the session leader (SID = its PID).
+    last_mem_before = last_memory_check
     exceeded, last_memory_check, prev_rss_mb = _check_memory_limit(
         process.pid, max_memory_mb, check_start_time, process, last_memory_check,
         known_descendants=known_descendants, prev_rss_mb=prev_rss_mb,
     )
     if exceeded:
         return KILL_REASON_MEMORY, last_memory_check, last_nudge_time, prev_rss_mb
+    # Piggy-back the system-pressure check on the per-check memory sampling
+    # cadence so vm_stat/meminfo reads happen at most once every
+    # _MEMORY_CHECK_INTERVAL.  When max_memory_mb == 0 the memory check is a
+    # no-op and last_memory_check doesn't advance, so also gate on elapsed
+    # time directly to keep pressure-kill working with memory limits disabled.
+    mem_ran = last_memory_check != last_mem_before
+    pressure_interval_elapsed = now - last_mem_before >= _MEMORY_CHECK_INTERVAL
+    if (mem_ran or pressure_interval_elapsed) and _check_system_pressure(
+        system_free_floor_mb, process, check_start_time,
+    ):
+        if not mem_ran:
+            last_memory_check = now
+        return KILL_REASON_SYSTEM_PRESSURE, last_memory_check, last_nudge_time, prev_rss_mb
+    if not mem_ran and pressure_interval_elapsed:
+        # Advance the timer even if pressure didn't trip, so we don't spin
+        # on get_system_free_mb() every loop iteration when memory limits
+        # are disabled.
+        last_memory_check = now
     return None, last_memory_check, last_nudge_time, prev_rss_mb
 
 
@@ -481,6 +597,7 @@ def _stream_process_output(
     max_memory_mb: int = 0,
     accumulated_descendant_pids: set[int] | None = None,
     raw_log_file: IO[bytes] | None = None,
+    system_free_floor_mb: int = 0,
 ) -> tuple[float, str | None]:
     """Stream and display JSONL output from the Claude process.
 
@@ -540,6 +657,7 @@ def _stream_process_output(
                 process, check_start_time, last_output_time, idle_timeout,
                 check_timeout, max_memory_mb, last_memory_check, last_nudge_time,
                 known_descendants=accumulated_descendant_pids, prev_rss_mb=prev_rss_mb,
+                system_free_floor_mb=system_free_floor_mb,
             )
             if kill_reason:
                 break
@@ -567,9 +685,14 @@ def _stream_process_output(
                 quiet_seconds = now - last_output_time
                 if quiet_seconds >= _QUIET_STATUS_INTERVAL and now - last_quiet_status >= _QUIET_STATUS_REFRESH:
                     elapsed = format_duration(now - check_start_time)
-                    activity = _describe_active_work(process.pid)
+                    work = _describe_active_work(process.pid)
+                    # Lazy import avoids a module-load cycle with telemetry.
+                    # Reading system free memory is only a handful of cheap
+                    # subprocess calls every 10s, so the overhead is negligible.
+                    from checkloop.telemetry import get_system_free_mb
+                    free_mb = get_system_free_mb()
                     print_status_inline(
-                        f"  [{elapsed}] {activity} ({int(quiet_seconds)}s since last output)",
+                        _format_quiet_status(elapsed, work, int(quiet_seconds), free_mb),
                         DIM,
                     )
                     last_quiet_status = now
@@ -695,6 +818,7 @@ def run_claude(
     idle_timeout: int = DEFAULT_IDLE_TIMEOUT,
     check_timeout: int = DEFAULT_CHECK_TIMEOUT,
     max_memory_mb: int = DEFAULT_MAX_MEMORY_MB,
+    system_free_floor_mb: int = DEFAULT_SYSTEM_FREE_FLOOR_MB,
     model: str | None = None,
     claude_command: str = DEFAULT_CLAUDE_COMMAND,
     raw_log_file: IO[bytes] | None = None,
@@ -744,6 +868,7 @@ def run_claude(
         cmd, workdir,
         idle_timeout=idle_timeout, debug=debug,
         check_timeout=check_timeout, max_memory_mb=max_memory_mb,
+        system_free_floor_mb=system_free_floor_mb,
         raw_log_file=raw_log_file,
     )
 
@@ -756,6 +881,7 @@ def _execute_claude_process(
     debug: bool,
     check_timeout: int = 0,
     max_memory_mb: int = 0,
+    system_free_floor_mb: int = 0,
     raw_log_file: IO[bytes] | None = None,
 ) -> CheckResult:
     """Spawn the Claude subprocess, stream its output, and clean up on exit.
@@ -780,6 +906,7 @@ def _execute_claude_process(
             max_memory_mb=max_memory_mb,
             accumulated_descendant_pids=known_descendants,
             raw_log_file=raw_log_file,
+            system_free_floor_mb=system_free_floor_mb,
         )
 
         try:

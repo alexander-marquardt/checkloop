@@ -23,6 +23,7 @@ SHARED_ARG_DEFAULTS: dict[str, Any] = dict(
     idle_timeout=process.DEFAULT_IDLE_TIMEOUT,
     check_timeout=process.DEFAULT_CHECK_TIMEOUT,
     max_memory_mb=process.DEFAULT_MAX_MEMORY_MB,
+    system_free_floor_mb=process.DEFAULT_SYSTEM_FREE_FLOOR_MB,
     cycles=1,
     convergence_threshold=DEFAULT_CONVERGENCE_THRESHOLD,
     verbose=False,

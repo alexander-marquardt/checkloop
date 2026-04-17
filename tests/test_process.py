@@ -1048,3 +1048,103 @@ class TestKillRemainingDescendantsVerification:
              mock.patch.object(process, "verify_pids_dead") as mock_verify:
             process._kill_remaining_descendants(known, root_pid=100)
         mock_verify.assert_not_called()
+
+
+class TestDescribeActiveWork:
+    """Tests for _describe_active_work returning rich ActiveWorkSnapshot data."""
+
+    def test_empty_tree_returns_working(self) -> None:
+        with mock.patch.object(process, "find_all_descendant_pids", return_value=[]):
+            snap = process._describe_active_work(root_pid=1234)
+        assert snap.description == "working"
+        assert snap.descendant_count == 0
+        assert snap.total_rss_mb == 0.0
+
+    def test_snapshot_empty_falls_back_to_count(self) -> None:
+        """If ps returns nothing, we still report the descendant count."""
+        with mock.patch.object(process, "find_all_descendant_pids", return_value=[1, 2, 3]), \
+             mock.patch.object(process, "snapshot_process_rss", return_value=[]):
+            snap = process._describe_active_work(root_pid=1234)
+        assert snap.description == "3 subprocess(es) active"
+        assert snap.descendant_count == 3
+        assert snap.total_rss_mb == 0.0
+
+    def test_populates_rss_totals_and_top_process(self) -> None:
+        """Total RSS sums all children; top is the single largest process."""
+        pids = [100, 101, 102]
+        snapshot = [
+            (100, 200.0, "/usr/bin/python3 -m pytest"),
+            (101, 50.0, "/usr/local/bin/node"),
+            (102, 800.0, "/usr/bin/python3 -m pytest test_heavy.py"),
+        ]
+        with mock.patch.object(process, "find_all_descendant_pids", return_value=pids), \
+             mock.patch.object(process, "snapshot_process_rss", return_value=snapshot):
+            snap = process._describe_active_work(root_pid=1234)
+        assert snap.descendant_count == 3
+        assert snap.total_rss_mb == 1050.0
+        assert snap.top_name == "python3"
+        assert snap.top_rss_mb == 800.0
+        # 'node' is in the IGNORE set, so the description picks up python3 only.
+        assert "python3" in snap.description
+
+    def test_ignores_shells_for_description_but_counts_rss(self) -> None:
+        """Shells don't show in the description, but their RSS is still counted."""
+        pids = [100]
+        snapshot = [(100, 5.0, "/bin/zsh")]
+        with mock.patch.object(process, "find_all_descendant_pids", return_value=pids), \
+             mock.patch.object(process, "snapshot_process_rss", return_value=snapshot):
+            snap = process._describe_active_work(root_pid=1234)
+        # Description falls back to generic count when only ignored tools present.
+        assert snap.description == "1 subprocess(es) active"
+        assert snap.total_rss_mb == 5.0
+        assert snap.top_name == "zsh"
+
+
+class TestFormatQuietStatus:
+    """Tests for the quiet-period inline status formatter."""
+
+    def test_includes_tree_rss_and_free_memory(self) -> None:
+        work = process.ActiveWorkSnapshot(
+            description="running pytest",
+            descendant_count=3, total_rss_mb=1200.0,
+            top_name="python", top_rss_mb=800.0,
+        )
+        line = process._format_quiet_status("10m29s", work, quiet_seconds=199, free_mb=4123.0)
+        assert "[10m29s]" in line
+        assert "running pytest" in line
+        assert "199s silent" in line
+        assert "tree 1200MB" in line
+        assert "top python:800MB" in line
+        assert "host free 4123MB" in line
+
+    def test_omits_top_when_single_process(self) -> None:
+        """A single child makes 'top X:YMB' redundant (it equals the tree total)."""
+        work = process.ActiveWorkSnapshot(
+            description="running pytest",
+            descendant_count=1, total_rss_mb=800.0,
+            top_name="python", top_rss_mb=800.0,
+        )
+        line = process._format_quiet_status("1m00s", work, quiet_seconds=30, free_mb=4000.0)
+        assert "tree 800MB" in line
+        assert "top python" not in line
+
+    def test_omits_free_memory_when_unavailable(self) -> None:
+        """When vm_stat/meminfo fails, we render the line without host memory."""
+        work = process.ActiveWorkSnapshot(
+            description="running pytest",
+            descendant_count=2, total_rss_mb=500.0,
+            top_name="python", top_rss_mb=300.0,
+        )
+        line = process._format_quiet_status("1m00s", work, quiet_seconds=30, free_mb=None)
+        assert "host free" not in line
+        assert "tree 500MB" in line
+
+    def test_omits_tree_when_empty(self) -> None:
+        """When there are no measured children, don't show a zero-MB tree."""
+        work = process.ActiveWorkSnapshot(
+            description="working", descendant_count=0,
+            total_rss_mb=0.0, top_name="", top_rss_mb=0.0,
+        )
+        line = process._format_quiet_status("0m30s", work, quiet_seconds=20, free_mb=5000.0)
+        assert "tree" not in line
+        assert "host free 5000MB" in line

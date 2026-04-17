@@ -32,6 +32,7 @@ from checkloop.git import (
     git_head_sha,
     has_uncommitted_changes,
 )
+from checkloop import telemetry
 from checkloop.process import KILL_REASON_MEMORY, CheckResult, run_claude
 from checkloop.terminal import (
     CYAN,
@@ -171,6 +172,7 @@ def _invoke_claude(
         debug=args.debug,
         check_timeout=args.check_timeout,
         max_memory_mb=args.max_memory_mb,
+        system_free_floor_mb=getattr(args, "system_free_floor_mb", 0),
         model=effective_model,
         claude_command=claude_cmd,
         raw_log_file=raw_log_file,
@@ -297,12 +299,21 @@ def run_single_check(
     model_label = f", model={model}" if model else ""
     logger.info("Check started: id=%s, label=%s, step=%s%s", check["id"], check["label"], step_label, model_label)
     print_banner(f"{step_label} {check['label']}", CYAN, timestamp=True)
+    telemetry.set_current_label(f"check:{check['id']}:cycle{cycle}")
+    telemetry.record_event(
+        "check_start",
+        check_id=check["id"],
+        cycle=cycle,
+        model=model or "",
+    )
 
     prompt = _build_check_prompt(check, args)
 
     if looks_dangerous(prompt):
         logger.warning("Skipping check '%s' — dangerous keywords detected in prompt", check["id"])
         print_status(f"Skipping '{check['id']}' — dangerous keywords detected.", YELLOW)
+        telemetry.record_event("check_skipped", check_id=check["id"], cycle=cycle, reason="dangerous_prompt")
+        telemetry.set_current_label("between-checks")
         return _make_outcome(check, cycle, check_start, exit_code=-1, kill_reason="dangerous_prompt")
 
     sha_before = git_head_sha(workdir) if is_git else None
@@ -343,6 +354,17 @@ def run_single_check(
     elapsed = time.time() - check_start
     logger.info("Check '%s' completed: made_changes=%s, lines_changed=%s, duration=%.1fs",
                 check["id"], made_changes, lines_changed, elapsed)
+    telemetry.record_event(
+        "check_end",
+        check_id=check["id"],
+        cycle=cycle,
+        exit_code=result.exit_code,
+        kill_reason=result.kill_reason or "",
+        duration_s=round(elapsed, 2),
+        made_changes=made_changes,
+        lines_changed=lines_changed,
+    )
+    telemetry.set_current_label("between-checks")
     return _make_outcome(
         check, cycle, check_start,
         exit_code=result.exit_code, kill_reason=result.kill_reason,

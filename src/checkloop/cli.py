@@ -44,6 +44,7 @@ from checkloop.cli_args import (
     validate_arguments,
     warn_if_mypy_unavailable,
 )
+from checkloop import telemetry
 from checkloop.monitoring import cleanup_all_sessions
 from checkloop.suite import run_suite_with_error_handling
 from checkloop.terminal import YELLOW, fatal, print_status
@@ -209,6 +210,9 @@ def _register_cleanup_handlers() -> None:
     Ensures child processes are terminated on normal exit, sys.exit(),
     Ctrl+C, SIGTERM, or terminal close (SIGHUP).
     """
+    # Stop telemetry before cleanup_all_sessions — the sampler thread reads
+    # the session/descendant lists that cleanup_all_sessions clears.
+    atexit.register(lambda: telemetry.stop(event="atexit"))
     atexit.register(cleanup_all_sessions)
 
     def _exit_handler(signum: int, frame: types.FrameType | None) -> None:
@@ -248,6 +252,7 @@ def main() -> None:
     workdir = resolve_working_directory(args.dir)
     _add_file_log_handler(workdir)
     logger.info("checkloop started: run_id=%s, workdir=%s", _RUN_ID, workdir)
+    telemetry.start(workdir, _RUN_ID)
     validate_arguments(args)
 
     args.changed_files_prefix = resolve_changed_files_prefix(args, workdir)
@@ -264,6 +269,7 @@ def main() -> None:
         args.idle_timeout, args.dry_run,
         convergence_threshold=convergence_threshold,
         max_memory_mb=args.max_memory_mb, check_timeout=args.check_timeout,
+        system_free_floor_mb=args.system_free_floor_mb,
     )
     warn_if_mypy_unavailable(workdir)
 
@@ -281,10 +287,13 @@ def main() -> None:
     if not args.dry_run and not args.no_resume:
         resume_from = _try_resume_from_checkpoint(workdir, selected_checks)
 
-    run_suite_with_error_handling(
-        selected_checks, num_cycles, workdir, args,
-        convergence_threshold, resume_from=resume_from,
-    )
+    try:
+        run_suite_with_error_handling(
+            selected_checks, num_cycles, workdir, args,
+            convergence_threshold, resume_from=resume_from,
+        )
+    finally:
+        telemetry.stop()
     logger.info("checkloop finished (run_id=%s)", _RUN_ID)
 
 
