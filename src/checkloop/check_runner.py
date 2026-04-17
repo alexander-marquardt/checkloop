@@ -20,6 +20,7 @@ from checkloop.checks import (
     COMMIT_MESSAGE_INSTRUCTIONS,
     CheckDef,
     FULL_CODEBASE_SCOPE,
+    HIDE_AI_ATTRIBUTION,
     looks_dangerous,
 )
 from checkloop.commit_message import generate_commit_message
@@ -140,7 +141,10 @@ def _build_check_prompt(check: CheckDef, args: argparse.Namespace) -> str:
         f"\n\nHere is an overview of this project's structure:\n\n{project_map}\n\n"
         if project_map else ""
     )
-    prompt = scope_prefix + map_section + check["prompt"] + COMMIT_MESSAGE_INSTRUCTIONS
+    commit_suffix = COMMIT_MESSAGE_INSTRUCTIONS
+    if not getattr(args, "allow_ai_attribution", False):
+        commit_suffix += HIDE_AI_ATTRIBUTION
+    prompt = scope_prefix + map_section + check["prompt"] + commit_suffix
     return prompt
 
 
@@ -192,7 +196,10 @@ def _run_memory_fix(
     logger.info("Running memory-fix follow-up after OOM kill (limit=%dMB)", args.max_memory_mb)
     print_banner("Memory fix — investigating excessive memory usage", YELLOW)
     try:
-        fix_prompt = _MEMORY_FIX_PROMPT.format(rss_limit=args.max_memory_mb) + COMMIT_MESSAGE_INSTRUCTIONS
+        commit_suffix = COMMIT_MESSAGE_INSTRUCTIONS
+        if not getattr(args, "allow_ai_attribution", False):
+            commit_suffix += HIDE_AI_ATTRIBUTION
+        fix_prompt = _MEMORY_FIX_PROMPT.format(rss_limit=args.max_memory_mb) + commit_suffix
 
         fix_result = _invoke_claude(fix_prompt, workdir, args)
         if fix_result.exit_code != 0:

@@ -267,6 +267,9 @@ uv run checkloop --cycles 5 --convergence-threshold 0.5
 --claude-command CMD   Name or path of the Claude CLI executable to invoke
                        (default: 'claude'). Useful when multiple Claude
                        installations exist, e.g. 'claude-bedrock'.
+--allow-ai-attribution Allow AI tool mentions and Co-Authored-By trailers
+                       in commit messages. By default, commit messages omit
+                       any reference to AI tools.
 ```
 
 ## How It Works
@@ -296,6 +299,16 @@ Each check operates on the code left by the previous check, so improvements comp
 | `_stream_process_output()` | Streams and parses JSONL from the Claude subprocess |
 | `_check_cycle_convergence()` | Checks if the loop should stop based on change percentage |
 | `_kill_process_group()` | Terminates a subprocess and all its children |
+
+## AI Attribution in Commit Messages
+
+By default, checkloop instructs Claude to **omit** AI references (tool names, Co-Authored-By trailers) from commit messages. To allow AI attribution, pass `--allow-ai-attribution`:
+
+```bash
+uv run checkloop --dir ~/my-project --allow-ai-attribution
+```
+
+When enabled, Claude may include Co-Authored-By trailers and mention AI tools in commit messages.
 
 ## Environment Variables
 
@@ -416,7 +429,7 @@ The project has no runtime dependencies — only `pytest` and `mypy` in the dev 
 5. Ensure all tests pass.
 6. Open a pull request with a clear description of your changes.
 
-Commit messages should be 2–3 sentences, describe *what* changed and *why*, and avoid mentioning specific tools used to make the changes.
+Commit messages should be 2–3 sentences and describe *what* changed and *why*. By default, commit messages omit AI references — use `--allow-ai-attribution` to include them (see [AI Attribution in Commit Messages](#ai-attribution-in-commit-messages)).
 
 ## License
 

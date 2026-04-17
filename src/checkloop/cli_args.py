@@ -181,6 +181,13 @@ def build_argument_parser() -> argparse.ArgumentParser:
             "exist, e.g. 'claude-bedrock'."
         ),
     )
+    parser.add_argument(
+        "--allow-ai-attribution", action="store_true",
+        help=(
+            "Allow AI tool mentions and Co-Authored-By trailers in commit messages. "
+            "By default, commit messages omit any reference to AI tools."
+        ),
+    )
 
     return parser
 
