@@ -14,6 +14,8 @@ import resource
 import signal
 import subprocess
 import sys
+import time
+from pathlib import Path
 
 from checkloop.terminal import DIM, YELLOW, print_status
 
@@ -78,13 +80,20 @@ def _measure_current_rss_mb() -> float:
 
 
 def measure_session_rss_mb(session_id: int) -> float:
-    """Return the total RSS (in MB) of all processes in a session.
+    """Return the total RSS (in MB) of the process tree rooted at *session_id*.
 
-    Uses ``ps -o rss= -s <session_id>`` to sum the RSS of every process
-    in the session.  Returns 0.0 if the session has no processes or if
-    the measurement fails.
+    Walks the ppid chain from *session_id* and sums RSS across the root plus
+    every descendant.  Name is historical — we used to call ``ps -s <sid>``,
+    but BSD ps on macOS rejects ``-s`` and silently returned 0, which
+    disabled the per-check memory kill.  Because checkloop launches
+    subprocesses with ``start_new_session=True``, the session-leader PID
+    equals the subprocess PID, so the ppid-walk covers the same set of
+    processes on both Linux and macOS.
     """
-    return _sum_rss_from_ps("-s", str(session_id))
+    pids = set(find_all_descendant_pids(session_id))
+    pids.add(session_id)
+    pids.discard(os.getpid())
+    return measure_pid_rss_mb(pids)
 
 
 def snapshot_process_rss(pids: set[int] | list[int]) -> list[tuple[int, float, str]]:
@@ -140,9 +149,15 @@ def _find_child_pids() -> list[int]:
 
 
 def find_session_pids(session_id: int) -> list[int]:
-    """Return PIDs of all processes in the given session, excluding ourselves."""
+    """Return PIDs of all processes in the given session, excluding ourselves.
+
+    Uses the ppid walk rather than ``pgrep -s`` because BSD pgrep on macOS
+    does not support ``-s``.  See ``measure_session_rss_mb`` for the same
+    rationale — session-leader PID equals subprocess PID under
+    ``start_new_session=True``, so the ppid walk yields the same members.
+    """
     my_pid = os.getpid()
-    return [pid for pid in _run_pgrep("-s", str(session_id)) if pid != my_pid]
+    return [pid for pid in find_all_descendant_pids(session_id) if pid != my_pid]
 
 
 def find_all_descendant_pids(root_pid: int) -> list[int]:
@@ -153,6 +168,17 @@ def find_all_descendant_pids(root_pid: int) -> list[int]:
     sessions or process groups (e.g. via ``setsid()``) and would escape
     ``os.killpg()`` and ``pgrep -s``.
     """
+    # Walking from PID 0 (kernel) or PID 1 (launchd/init) returns nearly
+    # every process on the system — and if the caller then signals the
+    # result, it SIGKILLs the user's whole login session (terminal,
+    # editors, this process).  This happened on 2026-04-17 when a test
+    # passed pid=1 through a fallback path.  Refuse both cases loudly.
+    if root_pid <= 1:
+        logger.warning("Refusing to walk descendants from reserved PID %d", root_pid)
+        return []
+    if root_pid == os.getpid():
+        logger.warning("Refusing to walk descendants from own PID %d", root_pid)
+        return []
     result = _run_cmd_quiet(["ps", "-eo", "pid=,ppid="])
     if result is None or result.returncode != 0:
         return []
@@ -333,6 +359,41 @@ def _sweep_previous_sessions() -> None:
         previous_descendant_pids.clear()
 
 
+_CLEANUP_DEBUG_LOG = Path.home() / ".checkloop" / "cleanup-debug.log"
+"""Append-only forensic log for cleanup_all_sessions.
+
+Written synchronously before cleanup runs so that even if the process is
+killed mid-cleanup (OOM, terminal death, signal race), there's a durable
+record of exactly which PIDs were about to be targeted.  Kept outside the
+project tree so it survives repo resets.
+"""
+
+
+def _write_cleanup_snapshot() -> None:
+    """Append a pre-cleanup snapshot to the forensic log.
+
+    Records this process's PID and the tracked session IDs / descendant PIDs
+    so that if cleanup dies mid-flight (OOM, signal race) we still know what
+    state it inherited.  Deliberately does not call ``find_session_pids`` or
+    any ``ps``-based helper — the goal is a fast, side-effect-free snapshot
+    of *state*, not a re-derivation of kill targets.  Silently swallows all
+    errors: diagnostic instrumentation must never prevent cleanup.
+    """
+    try:
+        _CLEANUP_DEBUG_LOG.parent.mkdir(parents=True, exist_ok=True)
+        ts = time.strftime("%Y-%m-%dT%H:%M:%S")
+        entry = (
+            f"[{ts}] cleanup_all_sessions starting "
+            f"(pid={os.getpid()}, ppid={os.getppid()}, "
+            f"sessions={list(previous_session_ids)}, "
+            f"descendants={sorted(previous_descendant_pids)})\n"
+        )
+        with _CLEANUP_DEBUG_LOG.open("a") as f:
+            f.write(entry)
+    except Exception:
+        pass  # Never let diagnostic logging break cleanup.
+
+
 def cleanup_all_sessions() -> None:
     """Kill all processes from every tracked session.
 
@@ -343,6 +404,7 @@ def cleanup_all_sessions() -> None:
     Each session is cleaned up independently so that a failure in one does
     not prevent cleanup of the others.
     """
+    _write_cleanup_snapshot()
     if previous_session_ids:
         logger.info("Cleaning up %d tracked session(s): %s", len(previous_session_ids), previous_session_ids)
     for sid in previous_session_ids:

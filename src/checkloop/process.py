@@ -372,12 +372,10 @@ def _check_hard_timeout(
     return False
 
 
-def _log_per_pid_breakdown(session_id: int, known_descendants: set[int] | None) -> None:
-    """Log per-PID RSS breakdown for forensic analysis.
-
-    Called when memory usage is notable (over 50% of limit or exceeded).
-    Uses a single ``ps`` call to snapshot every relevant process.
-    """
+def _collect_pid_breakdown(
+    session_id: int, known_descendants: set[int] | None,
+) -> list[tuple[int, float, str]]:
+    """Return ``(pid, rss_mb, cmd)`` for every tracked descendant, largest first."""
     all_pids: set[int] = set()
     session_member_pids = find_session_pids(session_id)
     all_pids.update(session_member_pids)
@@ -385,14 +383,33 @@ def _log_per_pid_breakdown(session_id: int, known_descendants: set[int] | None) 
         all_pids.update(known_descendants)
     all_pids.discard(os.getpid())
     if not all_pids:
-        return
+        return []
     entries = snapshot_process_rss(all_pids)
+    entries.sort(key=lambda e: e[1], reverse=True)
+    return entries
+
+
+def _log_per_pid_breakdown(session_id: int, known_descendants: set[int] | None) -> None:
+    """Log per-PID RSS breakdown for forensic analysis."""
+    entries = _collect_pid_breakdown(session_id, known_descendants)
     if not entries:
         return
-    entries.sort(key=lambda e: e[1], reverse=True)  # largest first
     lines = [f"  pid={pid:>7d}  rss={rss:>7.0f}MB  cmd={cmd}" for pid, rss, cmd in entries]
     logger.info("Per-PID RSS breakdown (session %d, %d processes):\n%s",
                 session_id, len(entries), "\n".join(lines))
+
+
+def _format_top_offender(entries: list[tuple[int, float, str]]) -> str | None:
+    """Build a one-line alert naming the single largest process in the tree.
+
+    Returned to the operator alongside the kill reason so a leaking test can
+    be identified immediately without grepping run logs.
+    """
+    if not entries:
+        return None
+    pid, rss, cmd = entries[0]
+    cmd_short = cmd if len(cmd) <= 120 else cmd[:117] + "..."
+    return f"  → top offender: pid={pid} rss={rss:.0f}MB cmd={cmd_short}"
 
 
 def _check_memory_limit(
@@ -456,9 +473,16 @@ def _check_memory_limit(
         logger.warning("Memory limit exceeded: pid=%d, rss=%.0fMB (session=%.0f, escaped=%.0f), "
                        "limit=%dMB, elapsed=%s",
                        process.pid, rss_mb, session_rss, escaped_rss, max_memory_mb, elapsed)
-        _log_per_pid_breakdown(session_id, known_descendants)
+        entries = _collect_pid_breakdown(session_id, known_descendants)
+        if entries:
+            lines = [f"  pid={pid:>7d}  rss={rss:>7.0f}MB  cmd={cmd}" for pid, rss, cmd in entries]
+            logger.info("Per-PID RSS breakdown (session %d, %d processes):\n%s",
+                        session_id, len(entries), "\n".join(lines))
         print_status(f"\nChild tree using {rss_mb:.0f}MB (limit: {max_memory_mb}MB) "
                      f"after {elapsed} — killing.", RED)
+        top_line = _format_top_offender(entries)
+        if top_line:
+            print_status(top_line, RED)
         _kill_process_group(process)
         return True, now, rss_mb
     return False, now, rss_mb
@@ -516,6 +540,10 @@ def _check_system_pressure(
         f"\nSystem free memory at {free_mb:.0f}MB (floor: {floor_mb}MB) "
         f"after {elapsed} — killing to avoid stall.", RED,
     )
+    entries = _collect_pid_breakdown(process.pid, known_descendants=None)
+    top_line = _format_top_offender(entries)
+    if top_line:
+        print_status(top_line, RED)
     _kill_process_group(process)
     return True
 
