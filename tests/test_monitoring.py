@@ -541,12 +541,15 @@ class TestFindAllDescendantPids:
         assert result == []
         mock_run.assert_not_called()
 
-    def test_refuses_own_pid(self) -> None:
-        """Walking from our own PID would return our own children; refuse."""
-        with mock.patch("subprocess.run") as mock_run:
-            result = monitoring.find_all_descendant_pids(os.getpid())
-        assert result == []
-        mock_run.assert_not_called()
+    def test_allows_own_pid(self) -> None:
+        """Walking from our own PID is legitimate — telemetry samples the
+        full descendant tree that way.  Guard only applies to PID <= 1.
+        """
+        my_pid = os.getpid()
+        ps_out = self._make_ps_output([(my_pid, 1), (9876, my_pid)])
+        with mock.patch("subprocess.run", return_value=make_git_result(stdout=ps_out)):
+            result = monitoring.find_all_descendant_pids(my_pid)
+        assert 9876 in result
 
 
 class TestSweepPreviousSessionsDescendants:

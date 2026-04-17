@@ -172,12 +172,12 @@ def find_all_descendant_pids(root_pid: int) -> list[int]:
     # every process on the system — and if the caller then signals the
     # result, it SIGKILLs the user's whole login session (terminal,
     # editors, this process).  This happened on 2026-04-17 when a test
-    # passed pid=1 through a fallback path.  Refuse both cases loudly.
+    # passed pid=1 through a fallback path.  Refuse loudly.
+    #
+    # Walking from our own PID is legitimate (telemetry samples the full
+    # descendant tree that way), so it is NOT blocked here.
     if root_pid <= 1:
         logger.warning("Refusing to walk descendants from reserved PID %d", root_pid)
-        return []
-    if root_pid == os.getpid():
-        logger.warning("Refusing to walk descendants from own PID %d", root_pid)
         return []
     result = _run_cmd_quiet(["ps", "-eo", "pid=,ppid="])
     if result is None or result.returncode != 0:
