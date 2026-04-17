@@ -246,6 +246,11 @@ uv run checkloop --cycles 5 --convergence-threshold 0.5
                        Unlike --idle-timeout, kills even actively-running checks.
 --max-memory-mb MB     Kill a check if its child process tree exceeds this RSS
                        (default: 8192). Set to 0 to disable.
+--system-free-floor-mb MB
+                       Kill the running check if host-wide free memory drops
+                       below MB (default: 500). Safety net for swap-thrash
+                       stalls that can require a hard reboot. Set to 0 to
+                       disable.
 --dry-run              Preview without running
 --no-resume            Ignore any existing checkpoint and start fresh
 --verbose, -v          Show operational events, timing, and memory info
@@ -281,11 +286,12 @@ uv run checkloop --cycles 5 --convergence-threshold 0.5
 3. **Check execution** — For each check, builds a focused prompt (with commit-message rules appended) and invokes `claude -p <prompt> --output-format stream-json --verbose` as a subprocess.
 4. **Real-time streaming** — Streams JSONL output from the subprocess, displaying tool-use events (file reads, edits, shell commands) and assistant messages with elapsed-time prefixes.
 5. **Idle timeout** — If Claude produces no output for N seconds (default 300), the process group is killed and the next check begins.
-6. **Hard timeout & memory limit** — Optional hard wall-clock timeout (`--check-timeout`) kills checks regardless of output. Memory monitoring (`--max-memory-mb`, default 8192) samples child tree RSS every 10 seconds and kills the process group if it exceeds the limit.
+6. **Hard timeout & memory limit** — Optional hard wall-clock timeout (`--check-timeout`) kills checks regardless of output. Memory monitoring (`--max-memory-mb`, default 8192) samples child tree RSS every 10 seconds and kills the process group if it exceeds the limit. A separate host-wide floor (`--system-free-floor-mb`, default 500) kills the running check if free system memory drops below MB — a safety net for swap-thrash stalls. When a kill fires, a "top offender" line names the single largest process (pid, RSS, command) so you can see what went wrong without re-reading the full log.
 7. **Checkpointing** — After each check, saves progress to `.checkloop-checkpoint.json`. If interrupted, the next run offers to resume from where it left off.
 8. **Per-check change detection** — After each check, compares the git HEAD before/after to report how many lines changed. All checks run every cycle so that cascading improvements are never missed.
 9. **Convergence detection** — After each full cycle, measures what percentage of total tracked lines were modified. If below the threshold, the loop exits early. Per-check commits are preserved individually for easier debugging.
-10. **Process cleanup** — Each Claude subprocess runs in its own process group (`setsid`). On completion or timeout, the entire group is killed (SIGTERM, then SIGKILL) to prevent orphaned child processes from leaking memory. An atexit handler sweeps all tracked sessions on program exit.
+10. **Process cleanup** — Each Claude subprocess runs in its own process group (`setsid`). On completion or timeout, the entire group is killed (SIGTERM, then SIGKILL) to prevent orphaned child processes from leaking memory. An atexit handler sweeps all tracked sessions on program exit. A pre-cleanup state snapshot is appended to `~/.checkloop/cleanup-debug.log` so post-mortem debugging survives a terminal death.
+11. **Telemetry** — A background sampler writes one JSONL line every ~3 seconds to `.checkloop-telemetry/telemetry-YYYY-MM-DD.jsonl` with parent RSS, child-tree RSS, top 5 processes, system free memory, swap, and the active check label. The file survives crashes and OOM kills, so timelines are available even when the terminal dies. See [Observability](#observability).
 
 Each check operates on the code left by the previous check, so improvements compound: a readability check renames variables, then the DRY check can spot the newly-visible duplication, and so on.
 
@@ -322,6 +328,57 @@ No other environment variables or config files are required. All configuration i
 ## Log File
 
 Every run writes a DEBUG-level log to `.checkloop-run.log` in the target project directory. The log captures detailed operational data — prompt text, subprocess timing, memory measurements, and error traces — useful for post-run debugging. It is overwritten on each run and created with owner-only permissions (0600) since it may contain sensitive content. The file is excluded from git staging by default.
+
+## Observability
+
+Long autonomous runs fail in ways that are hard to diagnose after the fact: the process tree balloons, the terminal dies, or a check hangs for an hour on a single test. `checkloop` writes three out-of-band signals that survive those failures.
+
+### Telemetry JSONL
+
+A background thread samples the process tree every ~3 seconds and appends one JSON line per sample to `.checkloop-telemetry/telemetry-YYYY-MM-DD.jsonl` in the target project directory. Each sample includes:
+
+- `parent_rss_mb`, `children_rss_mb` — checkloop itself and the total of its descendants (recursive walk, so grandchildren like `pytest` / `python` / `grep` are included)
+- `top_children` — up to the top 5 processes by RSS, with `pid`, `rss_mb`, and `cmd`
+- `system_free_mb`, `swap_used_mb` — host-level memory pressure signals
+- `label` — which check was active at that moment (e.g. `cycle 1 · security`)
+- `run_id`, `iso`, `t` — correlation and timing
+
+Because the file is flushed + fsynced on every write and lives outside `.checkloop-run.log` (which rotates per-run), telemetry **survives crashes, OOM kills, and reboots**. To inspect a stall or kill after the fact:
+
+```bash
+# Last 20 samples
+tail -20 .checkloop-telemetry/telemetry-2026-04-17.jsonl | jq .
+
+# Timeline of child tree RSS and top offender
+jq -r '[.iso, .children_rss_mb, (.top_children[0] // {}) | .cmd] | @tsv' \
+  .checkloop-telemetry/telemetry-2026-04-17.jsonl
+```
+
+Retention is automatic: files older than 14 days are pruned, and if the directory exceeds 200 MB the oldest files drop until it's back under budget. The directory is git-ignored by default.
+
+### Top-offender alert
+
+When a memory-limit or system-pressure kill fires, checkloop emits a one-line alert naming the single largest process in the tree at the moment of the kill:
+
+```
+  → top offender: pid=54321 rss=6821MB cmd=node /opt/claude/.../claude-code
+```
+
+This is the first thing to look at when a kill is unexpected — it's usually one runaway language server or test worker rather than the whole tree.
+
+### Cleanup debug log
+
+On process-tree cleanup (check end, timeout, kill, or program exit), a state snapshot is appended to `~/.checkloop/cleanup-debug.log`:
+
+```
+2026-04-17T08:10:37  pid=29897 ppid=29880 sessions=[29897] descendants=[29910, 29914, 29918]
+```
+
+This lives in `$HOME`, not the project, so it survives `rm -rf` of a workdir and outlives any single run. Use it to reconstruct what the process tree looked like at the moment things went wrong — essential when the terminal itself died and the in-memory log is gone.
+
+### Inline quiet status
+
+When Claude runs a subprocess silently (a long `pytest`, a large `grep`, a build), the idle display after ~15 s shows tree RSS, the current top process, and host free memory alongside the elapsed time — so a silent but healthy run is visibly distinct from a stalled one.
 
 ## Requirements
 
@@ -411,7 +468,8 @@ The project has no runtime dependencies — only `pytest` and `mypy` in the dev 
 | Checks hang waiting for permission prompts | You must use `--dangerously-skip-permissions` — checkloop cannot relay interactive prompts |
 | "CLAUDECODE" conflict when running inside a Claude session | checkloop automatically strips this variable; no action needed |
 | Convergence detection not working | Ensure the project directory is a git repo (`git init` if needed) |
-| High memory usage over many checks | checkloop kills orphaned child processes between checks and enforces an 8GB RSS limit by default. Adjust with `--max-memory-mb` or use `--verbose` to monitor RSS |
+| High memory usage over many checks | checkloop kills orphaned child processes between checks and enforces an 8GB RSS limit by default. Adjust with `--max-memory-mb`, raise the host-wide floor with `--system-free-floor-mb`, or use `--verbose` to monitor RSS. For post-mortem, inspect `.checkloop-telemetry/telemetry-*.jsonl` — see [Observability](#observability) |
+| A check hung or was killed and you want to know why | Check the `top offender` line in `.checkloop-run.log`, then walk the timeline in `.checkloop-telemetry/telemetry-*.jsonl`. If the terminal itself died, `~/.checkloop/cleanup-debug.log` has the last process-tree snapshot |
 | Idle timeout kills a check too early | Increase with `--idle-timeout 600` (or higher) |
 | A check runs too long | Use `--check-timeout 3600` for a hard 1-hour wall-clock limit per check |
 | Want to start fresh after an interrupted run | Use `--no-resume` to skip the checkpoint prompt |
