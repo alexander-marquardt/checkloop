@@ -135,6 +135,64 @@ def measure_pid_rss_mb(pids: set[int]) -> float:
     return _sum_rss_from_ps("-p", ",".join(str(p) for p in pids))
 
 
+def _parse_cputime(raw: str) -> float | None:
+    """Parse a ``ps -o time=`` value into cumulative CPU seconds.
+
+    Accepts ``MM:SS``, ``MM:SS.FF``, ``HH:MM:SS``, or ``DD-HH:MM:SS`` — the
+    formats emitted by BSD ps (macOS) and procps (Linux).  Returns None on
+    anything unrecognised so callers can decide how to treat missing data.
+    """
+    s = raw.strip()
+    if not s:
+        return None
+    days = 0.0
+    if "-" in s:
+        day_str, s = s.split("-", 1)
+        try:
+            days = float(day_str)
+        except ValueError:
+            return None
+    parts = s.split(":")
+    try:
+        nums = [float(p) for p in parts]
+    except ValueError:
+        return None
+    if len(nums) == 2:
+        hours, minutes, seconds = 0.0, nums[0], nums[1]
+    elif len(nums) == 3:
+        hours, minutes, seconds = nums
+    else:
+        return None
+    return days * 86400 + hours * 3600 + minutes * 60 + seconds
+
+
+def measure_tree_cpu_seconds(root_pid: int) -> float | None:
+    """Return cumulative CPU seconds across the process tree rooted at *root_pid*.
+
+    Uses ``ps -o time=`` for the root plus every descendant, in a single
+    ``ps`` call.  Returns None if ``ps`` fails or emits no parseable rows —
+    callers should treat None as "no signal", not "zero work".  Dead PIDs
+    are silently dropped by ``ps``.
+    """
+    pids = set(find_all_descendant_pids(root_pid))
+    pids.add(root_pid)
+    pids.discard(os.getpid())
+    if not pids:
+        return None
+    pid_arg = ",".join(str(p) for p in pids)
+    result = _run_cmd_quiet(["ps", "-o", "time=", "-p", pid_arg])
+    if result is None or result.returncode != 0 or not result.stdout.strip():
+        return None
+    total = 0.0
+    saw_any = False
+    for line in result.stdout.splitlines():
+        parsed = _parse_cputime(line)
+        if parsed is not None:
+            total += parsed
+            saw_any = True
+    return total if saw_any else None
+
+
 # --- Process discovery --------------------------------------------------------
 
 def _run_pgrep(*args: str) -> list[int]:

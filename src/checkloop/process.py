@@ -27,6 +27,7 @@ from checkloop.monitoring import (
     log_memory_usage,
     measure_pid_rss_mb,
     measure_session_rss_mb,
+    measure_tree_cpu_seconds,
     previous_descendant_pids,
     previous_session_ids,
     snapshot_process_rss,
@@ -318,40 +319,100 @@ def _format_quiet_status(
     return "  " + " · ".join(parts)
 
 
+_CPU_ACTIVITY_BUSY_RATIO = 0.05
+"""Minimum CPU-seconds-per-wall-second to treat the tree as 'still working'.
+~0.05 is roughly 5% of one core — enough to distinguish a real thinking/parsing
+loop from a fully idle process.  Tuned conservatively so noise doesn't rescue
+a genuinely stuck run."""
+
+_CPU_GRACE_MULTIPLIER = 2
+"""Hard cap on idle-timeout forgiveness.  If idle_seconds exceeds
+``idle_timeout * _CPU_GRACE_MULTIPLIER``, kill regardless of CPU activity —
+a process can burn CPU indefinitely in a loop without making real progress,
+so the grace window must be bounded."""
+
+
 def _check_idle_timeout(
     last_output_time: float,
     idle_timeout: int,
     check_start_time: float,
     process: subprocess.Popen[bytes],
-) -> bool:
+    last_cpu_sample: tuple[float, float] | None,
+) -> tuple[bool, tuple[float, float] | None]:
+    """Return ``(should_kill, updated_cpu_sample)``.
+
+    When idle exceeds the timeout, consult two forgiveness signals before
+    killing:
+
+    1. **Descendants alive** — Claude may be waiting on a long-running
+       subprocess (pytest, grep, language server).  Skip the kill.
+    2. **Tree CPU activity** — even with no descendants, Claude itself may
+       be in an extended-thinking turn that produces no stream output but
+       does burn CPU.  If the tree has done meaningful CPU work since the
+       last sample, extend the window up to ``_CPU_GRACE_MULTIPLIER`` times
+       the configured idle_timeout.
+
+    Both guards are capped at ``_CPU_GRACE_MULTIPLIER * idle_timeout`` so a
+    stuck-but-busy-looking process eventually dies.
+    """
     now = time.time()
     idle_seconds = now - last_output_time
-    if idle_seconds > idle_timeout:
-        # Before killing, check if there are active descendant processes.
-        # If Claude is waiting for subprocesses (like pytest), that's not
-        # truly idle — it's waiting for results. Only kill if Claude AND
-        # all its children have been silent.
-        descendants = find_all_descendant_pids(process.pid)
-        if descendants:
-            # There are still child processes running (e.g., test suites).
-            # Log this and skip the idle kill — the work is still in progress.
-            logger.info("Idle timeout would trigger, but %d descendant(s) still running: %s",
-                        len(descendants), descendants[:5])  # Log first 5 PIDs
-            elapsed = format_duration(now - check_start_time)
-            print_status_inline(
-                f"  [{elapsed}] waiting — {len(descendants)} subprocess(es) still running "
-                f"({int(idle_seconds)}s idle)", DIM)
-            return False
+    if idle_seconds <= idle_timeout:
+        return False, last_cpu_sample
 
-        logger.warning("Idle timeout: pid=%d, idle=%.0fs, elapsed=%s",
-                       process.pid, idle_seconds,
-                       format_duration(now - check_start_time))
-        clear_inline_status()
-        print_status(f"\nIdle for {idle_timeout}s — killing "
-                     f"(ran {format_duration(now - check_start_time)}).", RED)
-        _kill_process_group(process)
-        return True
-    return False
+    hard_cap = idle_timeout * _CPU_GRACE_MULTIPLIER
+
+    # Descendant forgiveness — unchanged, but capped so a permanently-hung
+    # child (e.g. a zombie language server) can no longer suppress the kill
+    # forever as it did pre-cap (readability stall: 16m of silence while a
+    # stale descendant kept the idle check returning False).
+    descendants = find_all_descendant_pids(process.pid)
+    if descendants and idle_seconds < hard_cap:
+        logger.info("Idle timeout would trigger, but %d descendant(s) still running: %s",
+                    len(descendants), descendants[:5])
+        elapsed = format_duration(now - check_start_time)
+        print_status_inline(
+            f"  [{elapsed}] waiting — {len(descendants)} subprocess(es) still running "
+            f"({int(idle_seconds)}s idle)", DIM)
+        return False, last_cpu_sample
+
+    # No descendants (or past the hard cap with descendants) — check CPU
+    # activity before killing.  A high busy-ratio means Claude is genuinely
+    # working even though the JSONL stream has gone silent, so extend the
+    # window up to the hard cap.
+    cpu_now = measure_tree_cpu_seconds(process.pid)
+    updated_sample = (now, cpu_now) if cpu_now is not None else last_cpu_sample
+
+    if (
+        not descendants
+        and cpu_now is not None
+        and last_cpu_sample is not None
+        and idle_seconds < hard_cap
+    ):
+        prev_wall, prev_cpu = last_cpu_sample
+        dwall = now - prev_wall
+        if dwall >= 5.0:
+            busy_ratio = max(0.0, cpu_now - prev_cpu) / dwall
+            if busy_ratio >= _CPU_ACTIVITY_BUSY_RATIO:
+                logger.info(
+                    "Idle timeout would trigger, but tree is CPU-active "
+                    "(busy_ratio=%.2f over %.0fs): extending idle window",
+                    busy_ratio, dwall,
+                )
+                elapsed = format_duration(now - check_start_time)
+                print_status_inline(
+                    f"  [{elapsed}] working — CPU {busy_ratio * 100:.0f}% "
+                    f"({int(idle_seconds)}s idle, stream silent)", DIM)
+                return False, updated_sample
+
+    logger.warning("Idle timeout: pid=%d, idle=%.0fs, elapsed=%s",
+                   process.pid, idle_seconds,
+                   format_duration(now - check_start_time))
+    clear_inline_status()
+    print_status(f"\nIdle for {idle_timeout}s — killing "
+                 f"(ran {format_duration(now - check_start_time)}).", RED)
+    _kill_process_group(process)
+    return True, updated_sample
 
 
 def _check_hard_timeout(
@@ -557,15 +618,16 @@ def _check_resource_limits(
     max_memory_mb: int,
     last_memory_check: float,
     last_nudge_time: float,
+    last_cpu_sample: tuple[float, float] | None = None,
     known_descendants: set[int] | None = None,
     prev_rss_mb: float = 0.0,
     system_free_floor_mb: int = 0,
-) -> tuple[str | None, float, float, float]:
+) -> tuple[str | None, float, float, float, tuple[float, float] | None]:
     """Check all resource limits in one pass, sending nudges before timeout.
 
-    Returns ``(kill_reason, last_memory_check, last_nudge_time, prev_rss_mb)``.
-    *kill_reason* is one of the ``KILL_REASON_*`` constants if a limit was
-    exceeded, or ``None``.
+    Returns ``(kill_reason, last_memory_check, last_nudge_time, prev_rss_mb,
+    last_cpu_sample)``.  *kill_reason* is one of the ``KILL_REASON_*``
+    constants if a limit was exceeded, or ``None``.
 
     A nudge is sent to stdin when idle time approaches the timeout threshold
     (within ``_NUDGE_BEFORE_TIMEOUT`` seconds). This prompts Claude to produce
@@ -582,10 +644,13 @@ def _check_resource_limits(
         if _send_nudge(process, idle_seconds):
             last_nudge_time = now
 
-    if _check_idle_timeout(last_output_time, idle_timeout, check_start_time, process):
-        return KILL_REASON_IDLE, last_memory_check, last_nudge_time, prev_rss_mb
+    idle_killed, last_cpu_sample = _check_idle_timeout(
+        last_output_time, idle_timeout, check_start_time, process, last_cpu_sample,
+    )
+    if idle_killed:
+        return KILL_REASON_IDLE, last_memory_check, last_nudge_time, prev_rss_mb, last_cpu_sample
     if _check_hard_timeout(check_start_time, check_timeout, process):
-        return KILL_REASON_TIMEOUT, last_memory_check, last_nudge_time, prev_rss_mb
+        return KILL_REASON_TIMEOUT, last_memory_check, last_nudge_time, prev_rss_mb, last_cpu_sample
     # process.pid == session ID because start_new_session=True makes the
     # subprocess the session leader (SID = its PID).
     last_mem_before = last_memory_check
@@ -594,7 +659,7 @@ def _check_resource_limits(
         known_descendants=known_descendants, prev_rss_mb=prev_rss_mb,
     )
     if exceeded:
-        return KILL_REASON_MEMORY, last_memory_check, last_nudge_time, prev_rss_mb
+        return KILL_REASON_MEMORY, last_memory_check, last_nudge_time, prev_rss_mb, last_cpu_sample
     # Piggy-back the system-pressure check on the per-check memory sampling
     # cadence so vm_stat/meminfo reads happen at most once every
     # _MEMORY_CHECK_INTERVAL.  When max_memory_mb == 0 the memory check is a
@@ -607,13 +672,19 @@ def _check_resource_limits(
     ):
         if not mem_ran:
             last_memory_check = now
-        return KILL_REASON_SYSTEM_PRESSURE, last_memory_check, last_nudge_time, prev_rss_mb
+        return KILL_REASON_SYSTEM_PRESSURE, last_memory_check, last_nudge_time, prev_rss_mb, last_cpu_sample
     if not mem_ran and pressure_interval_elapsed:
         # Advance the timer even if pressure didn't trip, so we don't spin
         # on get_system_free_mb() every loop iteration when memory limits
         # are disabled.
         last_memory_check = now
-    return None, last_memory_check, last_nudge_time, prev_rss_mb
+    # Refresh CPU baseline on the same cadence as memory sampling so the idle
+    # check has a recent-enough baseline to compute a meaningful busy ratio.
+    if mem_ran or pressure_interval_elapsed:
+        cpu_seconds = measure_tree_cpu_seconds(process.pid)
+        if cpu_seconds is not None:
+            last_cpu_sample = (now, cpu_seconds)
+    return None, last_memory_check, last_nudge_time, prev_rss_mb, last_cpu_sample
 
 
 def _stream_process_output(
@@ -656,6 +727,7 @@ def _stream_process_output(
     last_descendant_scan = check_start_time
     last_quiet_status = 0.0  # when we last showed a "still working" inline status
     prev_rss_mb = 0.0  # previous RSS measurement for growth trend detection
+    last_cpu_sample: tuple[float, float] | None = None  # (wall_time, cumulative CPU seconds)
     output_buffer = bytearray()
     kill_reason: str | None = None
 
@@ -681,9 +753,11 @@ def _stream_process_output(
                             logger.info("New descendant(s) of pid %d: %d discovered\n%s",
                                         process.pid, len(new_pids), "\n".join(lines))
 
-            kill_reason, last_memory_check, last_nudge_time, prev_rss_mb = _check_resource_limits(
+            (kill_reason, last_memory_check, last_nudge_time,
+             prev_rss_mb, last_cpu_sample) = _check_resource_limits(
                 process, check_start_time, last_output_time, idle_timeout,
                 check_timeout, max_memory_mb, last_memory_check, last_nudge_time,
+                last_cpu_sample,
                 known_descendants=accumulated_descendant_pids, prev_rss_mb=prev_rss_mb,
                 system_free_floor_mb=system_free_floor_mb,
             )

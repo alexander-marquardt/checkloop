@@ -199,6 +199,10 @@ COMMIT_MESSAGE_INSTRUCTIONS: str = _load_prompt_template("commit_message_instruc
 HIDE_AI_ATTRIBUTION: str = _load_prompt_template("hide_ai_attribution.md")
 """Extra commit-message rules that suppress AI mentions. Appended only when --allow-ai-attribution is not set."""
 
+PROGRESS_ANNOUNCEMENT: str = _load_prompt_template("progress_announcement.md")
+"""Instruction asking Claude to briefly announce long-running actions before starting them,
+so the idle-timeout watchdog can distinguish productive silence from a genuine stall."""
+
 
 # --- Dangerous-prompt guard ---------------------------------------------------
 # Safety net: reject check prompts that contain destructive keywords.
