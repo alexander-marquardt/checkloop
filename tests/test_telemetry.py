@@ -230,7 +230,7 @@ class TestCollectSample:
     def test_core_fields_always_present(self) -> None:
         with mock.patch.object(telemetry.monitoring, "_measure_current_rss_mb",
                                return_value=42.0), \
-             mock.patch.object(telemetry.monitoring, "_find_child_pids",
+             mock.patch.object(telemetry.monitoring, "find_all_descendant_pids",
                                return_value=[]), \
              mock.patch.object(telemetry, "read_system_memory",
                                return_value={"system_free_mb": 1000.0}):
@@ -250,7 +250,7 @@ class TestCollectSample:
         """A broken RSS measurement must not blow up the sampler."""
         with mock.patch.object(telemetry.monitoring, "_measure_current_rss_mb",
                                side_effect=RuntimeError("ps blew up")), \
-             mock.patch.object(telemetry.monitoring, "_find_child_pids",
+             mock.patch.object(telemetry.monitoring, "find_all_descendant_pids",
                                return_value=[]), \
              mock.patch.object(telemetry, "read_system_memory",
                                return_value={}):
@@ -268,7 +268,7 @@ class TestCollectSample:
         snapshot = [(1000 + i, float(i), f"cmd{i}") for i in range(20)]
         with mock.patch.object(telemetry.monitoring, "_measure_current_rss_mb",
                                return_value=1.0), \
-             mock.patch.object(telemetry.monitoring, "_find_child_pids",
+             mock.patch.object(telemetry.monitoring, "find_all_descendant_pids",
                                return_value=many_pids), \
              mock.patch.object(telemetry.monitoring, "snapshot_process_rss",
                                return_value=snapshot), \
@@ -283,6 +283,37 @@ class TestCollectSample:
         rss_values = [entry["rss_mb"] for entry in top]
         assert rss_values == sorted(rss_values, reverse=True)
         assert rss_values[0] == 19.0
+
+    def test_captures_grandchildren_not_just_direct_children(self) -> None:
+        """Regression: checkloop's only direct child is ``claude``; the
+        processes that actually do work (python, pytest, grep) are
+        grandchildren that ``claude`` spawns.  The sampler must use the
+        recursive descendant walk so they show up in telemetry —
+        otherwise every sample would show only ``claude``."""
+        descendant_pids = [1001, 1002, 1003]  # claude + 2 grandchildren
+        snapshot = [
+            (1001, 200.0, "/usr/local/bin/claude"),
+            (1002, 800.0, "/usr/bin/python3 -m pytest"),
+            (1003, 5.0, "/usr/bin/grep -E summary"),
+        ]
+        with mock.patch.object(telemetry.monitoring, "_measure_current_rss_mb",
+                               return_value=50.0), \
+             mock.patch.object(telemetry.monitoring, "find_all_descendant_pids",
+                               return_value=descendant_pids) as mock_descendants, \
+             mock.patch.object(telemetry.monitoring, "snapshot_process_rss",
+                               return_value=snapshot), \
+             mock.patch.object(telemetry, "read_system_memory",
+                               return_value={}):
+            sample = telemetry._collect_sample()
+
+        # The recursive walker is what we must call — not the direct-children
+        # helper that missed every grandchild in the first production run.
+        mock_descendants.assert_called_once_with(os.getpid())
+        assert sample["child_count"] == 3
+        assert sample["children_rss_mb"] == pytest.approx(1005.0)
+        top_cmds = [entry["cmd"] for entry in sample["top_children"]]
+        assert any("python3" in c for c in top_cmds)
+        assert any("grep" in c for c in top_cmds)
 
 
 # ---------------------------------------------------------------------------
@@ -422,7 +453,7 @@ class TestSetCurrentLabel:
         telemetry.set_current_label("check:readability:cycle1")
         with mock.patch.object(telemetry.monitoring, "_measure_current_rss_mb",
                                return_value=1.0), \
-             mock.patch.object(telemetry.monitoring, "_find_child_pids",
+             mock.patch.object(telemetry.monitoring, "find_all_descendant_pids",
                                return_value=[]), \
              mock.patch.object(telemetry, "read_system_memory",
                                return_value={}):
