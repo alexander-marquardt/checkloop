@@ -18,6 +18,8 @@ build/
 .checkloop-run.log.*
 .checkloop-ckpt-*.tmp
 .checkloop-telemetry/
+.checkloop-recommendations.md
+.checkloop-project-map.md
 .pytest-trace.log
 
 # Secrets / environment files

@@ -33,8 +33,12 @@ uv run checkloop --dir ~/my-project
 # Use the thorough plan for deeper checks
 uv run checkloop --dir ~/my-project --plan thorough
 
-# Exhaustive — all 22 checks, repeat twice
+# Exhaustive — all 23 checks, repeat twice
 uv run checkloop --dir ~/my-project --plan exhaustive --cycles 2
+
+# Super-exhaustive — exhaustive plus infrastructure audits and a meta-review
+# that writes a recommendations report (occasional deep audits only)
+uv run checkloop --dir ~/my-project --plan super-exhaustive
 
 # Pick specific checks manually (overrides plan)
 uv run checkloop --dir ~/my-project --checks readability security tests
@@ -69,13 +73,14 @@ uv tool install git+https://github.com/alexander-marquardt/checkloop.git
 
 ## Execution Plans
 
-Execution plans are TOML files that define which checks to run and which model to use for each check. They live in the `execution_plans/` directory at the project root. Three ship pre-populated — choose one with `--plan`:
+Execution plans are TOML files that define which checks to run and which model to use for each check. They live in the `execution_plans/` directory at the project root. Four ship pre-populated — choose one with `--plan`:
 
 | Plan | Checks | Description |
 |------|--------|-------------|
 | **basic** (default) | 5 checks | Core code quality — readability, DRY, tests (plus test-fix/test-validate bookends) |
 | **thorough** | 15 checks | Adds docs, docs-accuracy, security, performance, error handling, type safety, derived-value consistency, architecture layer separation, cross-check coherence |
-| **exhaustive** | 23 checks | Everything — includes edge cases, complexity, deps, logging, concurrency, concurrency test coverage, a11y, API design, docs-accuracy, derived-value consistency, architecture layer separation, cross-check coherence, and code cleanup |
+| **exhaustive** | 23 checks | Everything in thorough — includes edge cases, complexity, deps, logging, concurrency, concurrency test coverage, a11y, API design, and code cleanup |
+| **super-exhaustive** | 32 checks | Exhaustive plus infrastructure audits (check-config, dead-code, observability, schema-validation, secret-leakage, migration-safety, feature-flags, fixture-drift) and a final **meta-review** that writes a recommendations report to `.checkloop-recommendations.md` and prints it to the terminal after the run. Meant for occasional deep audits. |
 
 Every plan includes the `test-fix` (first) and `test-validate` (last) bookend checks to ensure the test suite is green before and after the review.
 
@@ -128,6 +133,15 @@ uv run checkloop --dir ~/my-project --plan thorough --model sonnet
 | `api-design` | exhaustive | sonnet | Consistent naming, HTTP methods, error formats, pagination. |
 | `test-validate` | bookend | sonnet | Re-runs the full test suite after all checks. Fixes any regressions. Always runs last. |
 | `cleanup-ai-slop` | exhaustive | sonnet | Removes unnecessary noise: redundant docstrings, unnecessary logging, misleading error handling, coverage-driven tests. |
+| `check-config` | super-exhaustive | sonnet | Audits that the project's test, lint, type-check, and CI infrastructure match the stack. Scaffolds Playwright for browser-facing apps that lack E2E coverage, wires up coverage gates, and ensures CI runs the tools that exist locally. |
+| `dead-code` | super-exhaustive | sonnet | Removes unused exports, orphaned files, unreachable branches, stale feature-flag references, and old commented-out blocks. Uses `ts-prune`/`vulture`/`staticcheck` where available. |
+| `observability` | super-exhaustive | opus | Checks that auth, payments, data mutations, external API calls, and background jobs have structured logs, metrics, and reach an alerting path. Adds what's missing using the project's existing observability stack. |
+| `schema-validation` | super-exhaustive | sonnet | Ensures every external boundary (HTTP handlers, webhooks, queue consumers, external API responses, env/config) parses through a schema (Zod/Pydantic/etc.), not a raw type assertion. Verifies webhook signature checks. |
+| `secret-leakage` | super-exhaustive | sonnet | Scans the repo and built output for API keys, tokens, private keys, connection strings with passwords, PII in logs, and server secrets bundled into client code. Flags commits that need rotation. |
+| `migration-safety` | super-exhaustive | opus | Reviews database migrations for locking risk, concurrent-index creation, destructive-change staging, chunked backfills, rollback paths, and transaction-boundary correctness. |
+| `feature-flags` | super-exhaustive | sonnet | Finds ghost flags (referenced, not defined), orphan flags (defined, not referenced), fully-rolled-out flags with dormant branches, and conflicting flag gates. |
+| `fixture-drift` | super-exhaustive | sonnet | Finds test mocks and recorded fixtures that no longer match the real code or external APIs — silently-passing mocks, deep-chain patches, stale HTTP recordings, leaking mocks without teardown. |
+| `meta-review` | super-exhaustive | opus | Reads the codebase and the set of existing checks, then writes `.checkloop-recommendations.md` with prioritised suggestions for domain-specific checks or tests that the generic suite doesn't cover. No code changes. The report is printed to the terminal after the run completes. |
 
 ## Writing Your Own Plan Files
 
@@ -239,7 +253,9 @@ uv run checkloop --cycles 5 --convergence-threshold 0.5
 --plan, -p PLAN        Plan name or path to a TOML plan file.
                        Pre-populated: basic, thorough, exhaustive (default: basic).
 --checks CHECK [...]   Manually select checks (overrides --plan)
---all-checks           Run all 23 checks (same as --plan exhaustive)
+--all-checks           Run all 23 checks (same as --plan exhaustive).
+                       For the 32-check super-exhaustive plan, use
+                       --plan super-exhaustive explicitly.
 --cycles, -c N         Repeat the full suite N times (default: 1)
 --idle-timeout SECS    Kill after N seconds of silence (default: 300)
 --check-timeout SECS   Hard wall-clock limit per check (default: 0 = no limit).
@@ -412,12 +428,22 @@ checks/                   # Check definitions — one Markdown file per check
 ├── api-design.md
 ├── cleanup-ai-slop.md
 ├── coherence.md
-└── test-validate.md
+├── test-validate.md
+├── check-config.md
+├── dead-code.md
+├── observability.md
+├── schema-validation.md
+├── secret-leakage.md
+├── migration-safety.md
+├── feature-flags.md
+├── fixture-drift.md
+└── meta-review.md
 
 execution_plans/          # Execution plans — which checks to run, which model for each
 ├── basic.toml
 ├── thorough.toml
-└── exhaustive.toml
+├── exhaustive.toml
+└── super-exhaustive.toml
 
 prompt_templates/         # Prompt fragments injected into every check at runtime
 ├── full_codebase_scope.md        # Prepended to every check (unless --changed-only)

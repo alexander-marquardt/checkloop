@@ -95,9 +95,9 @@ def _parse_check_file(path: Path) -> CheckDef:
 def _load_all_checks() -> list[CheckDef]:
     """Load all check definitions from the checks/ directory.
 
-    Returns checks ordered to match the exhaustive plan (which defines the
-    canonical ordering for all checks).  Any checks not in the exhaustive
-    plan are appended at the end in alphabetical order.
+    Returns checks ordered to match the super-exhaustive plan (which defines
+    the canonical ordering across every built-in check).  Any checks not in
+    that plan are appended at the end in alphabetical order.
     """
     checks_dir = _find_checks_dir()
     checks_by_id: dict[str, CheckDef] = {}
@@ -105,10 +105,12 @@ def _load_all_checks() -> list[CheckDef]:
         check = _parse_check_file(md_file)
         checks_by_id[check["id"]] = check
 
-    # Order by the exhaustive plan to maintain canonical check ordering.
-    exhaustive = load_all_builtin_plans().get("exhaustive")
-    if exhaustive:
-        ordered_ids = exhaustive.check_ids()
+    # Order by the super-exhaustive plan to maintain canonical check ordering.
+    # Falls back to exhaustive (for backwards compatibility) then alphabetical.
+    plans = load_all_builtin_plans()
+    canonical = plans.get("super-exhaustive") or plans.get("exhaustive")
+    if canonical:
+        ordered_ids = canonical.check_ids()
     else:
         ordered_ids = sorted(checks_by_id.keys())
 
@@ -154,6 +156,7 @@ _ON_DEMAND_ONLY: set[str] = set()
 TIER_BASIC: list[str] = _BUILTIN_PLAN_CONFIGS["basic"].check_ids()
 TIER_THOROUGH: list[str] = _BUILTIN_PLAN_CONFIGS["thorough"].check_ids()
 TIER_EXHAUSTIVE: list[str] = _BUILTIN_PLAN_CONFIGS["exhaustive"].check_ids()
+TIER_SUPER_EXHAUSTIVE: list[str] = _BUILTIN_PLAN_CONFIGS["super-exhaustive"].check_ids()
 
 # Maps plan name to the list of check IDs.
 TIERS: dict[str, list[str]] = {
