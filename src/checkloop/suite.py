@@ -252,6 +252,19 @@ def _run_single_cycle(
         per_check_model = global_model or check_models.get(check["id"])
         # Per-check idle timeout override, falling back to global --idle-timeout.
         per_check_idle_timeout = check_idle_timeouts.get(check["id"])
+        # Refresh the project map in case the previous check added, renamed,
+        # or removed files.  ensure_project_map is a cheap fingerprint-compare
+        # no-op when git ls-files is unchanged and only regenerates when the
+        # tracked-file set actually changed, so the downstream check sees the
+        # new layout instead of a stale map.
+        if not args.dry_run:
+            from checkloop.project_map import ensure_project_map
+            args.project_map = ensure_project_map(
+                workdir,
+                skip_permissions=args.dangerously_skip_permissions,
+                model=getattr(args, "model", None),
+                claude_command=getattr(args, "claude_command", "claude"),
+            )
         outcome = run_single_check(
             check, workdir, args, step_label,
             is_git=is_git, cycle=cycle, model=per_check_model,
