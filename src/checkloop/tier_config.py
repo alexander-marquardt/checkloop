@@ -44,7 +44,7 @@ class PlanConfig:
 
 
 # Pre-populated plan names, matching the TOML filenames in execution_plans/.
-BUILTIN_PLAN_NAMES: list[str] = ["basic", "thorough", "exhaustive"]
+BUILTIN_PLAN_NAMES: list[str] = ["basic", "thorough", "exhaustive", "super-exhaustive"]
 DEFAULT_PLAN_NAME: str = "basic"
 
 

@@ -473,6 +473,49 @@ class TestPrintPushReminder:
         assert "git push" in out
 
 
+class TestPrintRecommendations:
+    """Tests for _print_recommendations() meta-review output surfacing."""
+
+    def test_missing_file_prints_nothing(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: "object",
+    ) -> None:
+        suite._print_recommendations(str(tmp_path), suite_start_time=0.0, dry_run=False)
+        assert capsys.readouterr().out == ""
+
+    def test_dry_run_prints_nothing(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: "object",
+    ) -> None:
+        recs = tmp_path / ".checkloop-recommendations.md"
+        recs.write_text("# Meta-Review\nSome content.\n")
+        suite._print_recommendations(str(tmp_path), suite_start_time=0.0, dry_run=True)
+        assert capsys.readouterr().out == ""
+
+    def test_stale_file_is_skipped(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: "object",
+    ) -> None:
+        import os
+        recs = tmp_path / ".checkloop-recommendations.md"
+        recs.write_text("# Stale report from earlier run\n")
+        old_mtime = recs.stat().st_mtime - 3600
+        os.utime(recs, (old_mtime, old_mtime))
+        # suite_start_time is after the file's mtime, so it's stale.
+        suite._print_recommendations(str(tmp_path), suite_start_time=old_mtime + 60, dry_run=False)
+        assert capsys.readouterr().out == ""
+
+    def test_fresh_file_is_printed(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: "object",
+    ) -> None:
+        recs = tmp_path / ".checkloop-recommendations.md"
+        body = "# Meta-Review\n\n## High-priority\n- Add order-tenant isolation test.\n"
+        recs.write_text(body)
+        # suite_start_time well before now, so the just-written file is fresher.
+        suite._print_recommendations(str(tmp_path), suite_start_time=0.0, dry_run=False)
+        out = capsys.readouterr().out
+        assert "Meta-Review Recommendations" in out
+        assert "Add order-tenant isolation test" in out
+        assert ".checkloop-recommendations.md" in out
+
+
 class TestMultiCycleConvergenceEarlyStop:
     """Integration test for convergence causing early cycle termination."""
 

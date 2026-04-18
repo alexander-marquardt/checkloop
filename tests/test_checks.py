@@ -157,10 +157,10 @@ class TestTierConsistency:
             for check_id in tier_ids:
                 assert check_id in checks.CHECK_IDS, f"{check_id} from tier {tier_name} not in CHECK_IDS"
 
-    def test_exhaustive_tier_includes_all_tier_checks(self) -> None:
-        """The exhaustive tier should include every check except on-demand ones."""
+    def test_super_exhaustive_tier_includes_all_tier_checks(self) -> None:
+        """The super-exhaustive tier is the canonical superset — every check except on-demand ones."""
         on_demand = checks._ON_DEMAND_ONLY
-        assert set(checks.TIER_EXHAUSTIVE) == set(checks.CHECK_IDS) - on_demand
+        assert set(checks.TIER_SUPER_EXHAUSTIVE) == set(checks.CHECK_IDS) - on_demand
 
     def test_on_demand_checks_not_in_any_tier(self) -> None:
         """On-demand checks should not appear in any tier."""
@@ -175,6 +175,9 @@ class TestTierConsistency:
 
     def test_thorough_is_subset_of_exhaustive(self) -> None:
         assert set(checks.TIER_THOROUGH).issubset(set(checks.TIER_EXHAUSTIVE))
+
+    def test_exhaustive_is_subset_of_super_exhaustive(self) -> None:
+        assert set(checks.TIER_EXHAUSTIVE).issubset(set(checks.TIER_SUPER_EXHAUSTIVE))
 
     def test_bookend_checks_in_all_tiers(self) -> None:
         """test-fix and test-validate should appear in all tiers."""

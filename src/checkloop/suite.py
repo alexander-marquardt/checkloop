@@ -457,6 +457,42 @@ def _print_summary(outcomes: list[CheckOutcome], total_elapsed: str) -> None:
 
 # --- Error-handling wrapper ---------------------------------------------------
 
+_RECOMMENDATIONS_FILENAME = ".checkloop-recommendations.md"
+
+
+def _print_recommendations(workdir: str, suite_start_time: float, dry_run: bool) -> None:
+    """Print the meta-review recommendations file if it was written during this run.
+
+    The meta-review check writes ``.checkloop-recommendations.md`` at the root of
+    the target project.  We surface it in the terminal after the final summary so
+    users see it without having to remember the filename.  Only prints when the
+    file's mtime is newer than *suite_start_time*, to avoid resurfacing a stale
+    report from an earlier run.
+    """
+    if dry_run:
+        return
+    path = Path(workdir) / _RECOMMENDATIONS_FILENAME
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        logger.debug("Could not stat %s: %s", path, exc)
+        return
+    if stat.st_mtime < suite_start_time:
+        return
+    try:
+        body = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        logger.warning("Could not read %s: %s", path, exc)
+        return
+    print(f"\n{BOLD}{CYAN}{'─' * 72}{RESET}")
+    print(f"{BOLD}{CYAN}  Meta-Review Recommendations{RESET}")
+    print(f"{BOLD}{CYAN}{'─' * 72}{RESET}\n")
+    print(body.rstrip())
+    print(f"\n{DIM}(Saved to {path}){RESET}\n")
+
+
 def _print_push_reminder(workdir: str, dry_run: bool) -> None:
     """Print post-run instructions for reviewing and pushing local commits.
 
@@ -519,6 +555,7 @@ def run_suite_with_error_handling(
         logger.warning("Suite interrupted by user after %s", elapsed)
         print_status(f"\nInterrupted after {elapsed}. Partial results may have been applied.", YELLOW)
         _print_summary(all_outcomes, elapsed)
+        _print_recommendations(workdir, suite_start_time, args.dry_run)
         _print_push_reminder(workdir, args.dry_run)
         sys.exit(130)
     except FileNotFoundError as exc:
@@ -529,6 +566,7 @@ def run_suite_with_error_handling(
         elapsed = format_duration(time.time() - suite_start_time)
         print_status(f"\nUnexpected error after {elapsed}. Partial results may have been applied.", RED)
         _print_summary(all_outcomes, elapsed)
+        _print_recommendations(workdir, suite_start_time, args.dry_run)
         _print_push_reminder(workdir, args.dry_run)
         raise
     suite_elapsed = format_duration(time.time() - suite_start_time)
@@ -536,4 +574,5 @@ def run_suite_with_error_handling(
                 suite_elapsed, len(selected_checks), num_cycles)
     _print_summary(all_outcomes, suite_elapsed)
     print_banner(f"All done! ({suite_elapsed} total)", GREEN)
+    _print_recommendations(workdir, suite_start_time, args.dry_run)
     _print_push_reminder(workdir, args.dry_run)
