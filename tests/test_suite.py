@@ -103,6 +103,36 @@ class TestRunCheckSuite:
         assert "dry: no changes" in out
 
 
+class TestRunSingleCycleProjectMapRefresh:
+    """Tests that _run_single_cycle refreshes the project map before each check."""
+
+    def test_project_map_refreshed_per_check(self) -> None:
+        """ensure_project_map is called once per check in a live (non-dry) run."""
+        selected_checks: list[CheckDef] = [
+            make_check("a", "A", "do a"),
+            make_check("b", "B", "do b"),
+            make_check("c", "C", "do c"),
+        ]
+        args = make_suite_args(dry_run=False)
+        with mock.patch("checkloop.project_map.ensure_project_map",
+                        return_value="map body") as mock_ensure, \
+             patch_suite_git(["base", "s1", "s2", "s3", "s4", "s5", "s6"]):
+            suite._run_check_suite(selected_checks, 1, "/tmp", args)
+        # Called once at suite start + once per check = 4 times.
+        assert mock_ensure.call_count == 1 + len(selected_checks)
+
+    def test_project_map_not_refreshed_in_dry_run(self) -> None:
+        """Dry-run skips the per-check refresh, same as the suite-start generation."""
+        selected_checks: list[CheckDef] = [
+            make_check("a", "A", "do a"),
+            make_check("b", "B", "do b"),
+        ]
+        args = make_suite_args(dry_run=True)
+        with mock.patch("checkloop.project_map.ensure_project_map") as mock_ensure:
+            suite._run_check_suite(selected_checks, 1, "/tmp", args)
+        mock_ensure.assert_not_called()
+
+
 class TestRunCheckSuiteEdgeCases:
     """Edge case tests for _run_check_suite."""
 
