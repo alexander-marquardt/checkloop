@@ -143,6 +143,39 @@ class TestPrepareClone:
         with pytest.raises(clone.CloneError, match="Review ref"):
             clone.prepare_clone(str(src), "does-not-exist", timestamp="2026-04-21T10-00-00Z")
 
+    def test_rewrites_origin_when_source_has_remote(self, tmp_path: Path) -> None:
+        # Source has a real-looking GitHub origin URL configured.
+        src = tmp_path / "src"
+        _init_git_repo(src)
+        subprocess.run(
+            ["git", "-C", str(src), "remote", "add", "origin", "git@github.com:user/repo.git"],
+            check=True, capture_output=True,
+        )
+
+        dst = clone.prepare_clone(str(src), "main", timestamp="2026-04-21T10-00-00Z")
+
+        # The clone's origin should now point at the GitHub URL, not the local path.
+        out = subprocess.run(
+            ["git", "-C", str(dst), "config", "remote.origin.url"],
+            capture_output=True, text=True, check=True,
+        )
+        assert out.stdout.strip() == "git@github.com:user/repo.git"
+
+    def test_leaves_origin_local_when_source_has_no_remote(self, tmp_path: Path) -> None:
+        # Source has no "origin" — the clone's origin is left pointing at the source path.
+        src = tmp_path / "src"
+        _init_git_repo(src)  # does not configure a remote
+
+        dst = clone.prepare_clone(str(src), "main", timestamp="2026-04-21T10-00-00Z")
+
+        out = subprocess.run(
+            ["git", "-C", str(dst), "config", "remote.origin.url"],
+            capture_output=True, text=True, check=True,
+        )
+        # git clone --local sets origin to the source path — should still be that (not a GitHub URL).
+        url = out.stdout.strip()
+        assert not url.startswith(("git@", "ssh://", "https://", "http://", "git://"))
+
 
 # =============================================================================
 # cleanup_empty_clone

@@ -8,10 +8,16 @@ leaves nothing to clean up in the original repo.
 
 The clone is made with ``git clone --local`` which uses hardlinks on the same
 filesystem, so the disk cost is approximately zero — only uniquely modified
-blobs consume space.  The clone's ``origin`` points at the user's local
-workdir, which means ``origin/<branch>`` in the clone reflects the user's
-local view.  A ``git fetch origin --prune`` runs at startup so those refs are
-current relative to the user's last fetch.
+blobs consume space.  The startup ``git fetch origin --prune`` runs against
+the source directory (fast, no network), *then* the clone's ``origin`` is
+rewritten to the source repo's real remote URL (e.g. the GitHub URL) when
+one is configured.  This means the user can ``git push origin <branch>``
+from inside the clone to push directly to GitHub — no two-hop
+``git fetch <clone-dir>`` dance through the original repo.
+
+When the source has no pushable ``origin`` (e.g. a local-only repo), the
+clone's origin is left pointing at the source path and the adoption flow
+falls back to the fetch-from-clone instructions.
 
 Review ref selection
 --------------------
@@ -47,6 +53,7 @@ from checkloop.run_storage import (
 logger = logging.getLogger(__name__)
 
 _SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
+_REMOTE_URL_SCHEMES = ("git@", "ssh://", "https://", "http://", "git://")
 
 
 class CloneError(RuntimeError):
@@ -91,6 +98,39 @@ def _fetch_origin(clone_dir: Path) -> None:
         # Non-fatal: the clone's origin/* refs may be slightly stale but the
         # checkout below will still succeed for anything already present.
         logger.warning("git fetch origin failed in clone (non-fatal): %s", exc)
+
+
+def is_remote_url(url: str | None) -> bool:
+    """Return True if *url* looks like a pushable remote URL (not a local path)."""
+    if not url:
+        return False
+    return url.startswith(_REMOTE_URL_SCHEMES)
+
+
+def _rewrite_origin_to_source_remote(src: Path, clone_dir: Path) -> str | None:
+    """Point the clone's ``origin`` at the source repo's real remote, if any.
+
+    Runs *after* the startup ``git fetch origin --prune`` (which fetches from
+    the source path — fast, no network).  Once the fetched refs are in place,
+    we swap ``origin`` over to whatever URL the source's own ``origin`` points
+    at, so ``git push origin <branch>`` from inside the clone lands on that
+    remote (typically GitHub) instead of the user's local source directory.
+
+    Returns the new origin URL when a rewrite was applied and the URL looks
+    pushable, or ``None`` when left alone (no origin in source, or it's a
+    local path).  The caller uses the return value to decide which adoption
+    flow to print after the run.
+    """
+    source_origin = _git_stdout(str(src), "config", "remote.origin.url")
+    if source_origin is None or not is_remote_url(source_origin):
+        return None
+    try:
+        _git_run(str(clone_dir), "remote", "set-url", "origin", source_origin, check=True)
+    except (subprocess.CalledProcessError, OSError) as exc:
+        logger.warning("Could not rewrite clone origin to %s (non-fatal): %s", source_origin, exc)
+        return None
+    logger.info("Clone origin rewritten to %s (push target)", source_origin)
+    return source_origin
 
 
 def _resolve_review_ref(clone_dir: Path, requested: str) -> str:
@@ -159,6 +199,10 @@ def prepare_clone(
 
     _fetch_origin(dst)
     ref = _resolve_review_ref(dst, review_branch)
+    # Rewrite origin to the source's real remote URL AFTER the local fetch and
+    # ref resolution — both operations rely on the fetched origin/* refs, and
+    # doing the swap last means the startup path never touches the network.
+    _rewrite_origin_to_source_remote(src, dst)
     _checkout_ref(dst, ref)
     logger.info("Checked out %s in clone (detached)", ref)
 
