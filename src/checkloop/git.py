@@ -487,12 +487,19 @@ def checkout_branch(workdir: str, branch_name: str) -> bool:
 
 
 def create_scratch_branch(workdir: str) -> tuple[str, str, str | None] | None:
-    """Create a fresh ``checkloop/run-<ts>-<sha>`` branch off current HEAD and check it out.
+    """Create a fresh ``checkloop-<iso-ts>`` branch forked from the user's current HEAD.
 
-    All of checkloop's commits (pre-run snapshot of uncommitted work, per-check
-    commits, memory-fix commits) land on this disposable branch so the user's
-    original branch history stays pristine.  The user can merge, cherry-pick,
-    or delete the branch after reviewing.
+    The fork point is whichever branch (and commit) the user was on when
+    checkloop started — **never** main/master, unless that's what they were
+    checked out on.  Uncommitted work in the working tree stays put across
+    the ``git checkout -b`` and is snapshotted in checkloop's first commit on
+    the scratch branch, so the user's pre-run state (tracked + untracked +
+    staged) is preserved on the disposable branch exactly as-is.
+
+    All of checkloop's commits (pre-run snapshot, per-check commits, memory-
+    fix commits) land on this branch so the user's original branch history
+    stays pristine.  The user can merge, cherry-pick, or delete the branch
+    after reviewing.
 
     Returns ``(branch_name, base_sha, original_branch)`` — ``original_branch``
     is None when HEAD was detached.  Returns None if the branch could not be
@@ -506,7 +513,9 @@ def create_scratch_branch(workdir: str) -> tuple[str, str, str | None] | None:
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
     branch_name = f"{_SCRATCH_BRANCH_PREFIX}-{timestamp}"
     try:
-        _git_run(workdir, "checkout", "-b", branch_name, check=True)
+        # Pass base_sha explicitly so the fork point is unambiguous even if
+        # something between git_head_sha() and here were to move HEAD.
+        _git_run(workdir, "checkout", "-b", branch_name, base_sha, check=True)
     except (subprocess.CalledProcessError, OSError) as exc:
         logger.warning("Failed to create scratch branch %s: %s", branch_name, exc)
         return None

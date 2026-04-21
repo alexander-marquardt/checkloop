@@ -10,3 +10,8 @@
 
 ## Testing
 - Run tests with: `uv run python -m pytest tests/ -x -q`
+
+## Git Push Policy
+- NEVER push anything to a remote. Commit locally only; the user handles all pushes themselves.
+- NEVER push to `main` (or `master`) under any circumstance — not directly, not via force-push, not via PR merge. The user controls what lands on the default branch.
+- This applies to both work on this checkloop repository and to any target project checkloop is run against.
