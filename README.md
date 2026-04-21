@@ -75,9 +75,10 @@ uv run checkloop --dir ~/my-project --review-branch main --claude-command claude
 By default (`--review-branch <ref>`) checkloop never modifies your working tree:
 
 1. It makes a hardlink-backed `git clone --local` of the target repo into `~/checkloop-runs/<project>-<iso-timestamp>/` — disk cost is effectively zero on the same filesystem.
-2. It runs `git fetch origin --prune` inside the clone, then checks out the requested ref (preferring `origin/<ref>` when it exists) in **detached-HEAD** state so commits can't accidentally be pushed upstream.
-3. It creates a scratch branch named `<review-branch>-cl-<iso-timestamp>` (e.g. `main-cl-2026-04-21T10-30-45Z`) and commits every change there.
-4. When the run finishes the terminal prints ready-to-paste commands to `git fetch` the scratch branch out of the clone into your real repo, merge it, cherry-pick, or discard it with `rm -rf <clone-dir>`.
+2. It runs `git fetch origin --prune` inside the clone (against the local source, no network), then checks out the requested ref (preferring `origin/<ref>` when it exists) in **detached-HEAD** state so commits can't accidentally be pushed upstream.
+3. It rewrites the clone's `origin` URL to the source repo's real remote (e.g. the GitHub URL), so `git push origin <branch>` from inside the clone later goes straight to GitHub rather than to the user's local source directory.
+4. It creates a scratch branch named `<review-branch>-cl-<iso-timestamp>` (e.g. `main-cl-2026-04-21T10-30-45Z`) and commits every change there.
+5. When the run finishes the terminal prints ready-to-paste commands to `cd` into the clone, review the diff, push the scratch branch, open a PR, and merge it through your normal workflow.
 
 This means you can keep working in your actual project directory while checkloop reviews a separate snapshot of it. The clone directory is also a timestamped backup — clones older than 14 days are pruned automatically.
 
