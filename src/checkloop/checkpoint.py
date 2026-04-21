@@ -24,7 +24,7 @@ from checkloop.terminal import BOLD, CYAN, RESET, YELLOW, print_status
 logger = logging.getLogger(__name__)
 
 _CHECKPOINT_FILENAME = ".checkloop-checkpoint.json"
-_CHECKPOINT_VERSION = 1
+_CHECKPOINT_VERSION = 2
 _DEFAULT_RESUME_TIMEOUT = 10  # seconds to wait for user response
 
 
@@ -33,6 +33,12 @@ class CheckpointData(TypedDict):
 
     Persisted after each completed check so the suite can resume from
     the exact point of interruption on the next run.
+
+    The ``scratch_branch``, ``scratch_base_sha``, and ``original_branch``
+    fields identify the disposable branch checkloop is committing on so a
+    resumed run reattaches to the same branch instead of starting a new one.
+    They are optional so resume remains backward-compatible with checkpoints
+    written before the scratch-branch feature shipped.
     """
 
     version: int
@@ -47,6 +53,9 @@ class CheckpointData(TypedDict):
     changed_this_cycle: list[str]
     previously_changed_ids: list[str] | None
     prev_change_pct: float | None
+    scratch_branch: str | None
+    scratch_base_sha: str | None
+    original_branch: str | None
 
 
 # --- Path helpers ------------------------------------------------------------
@@ -188,6 +197,12 @@ def _has_valid_field_types(data: dict[str, object]) -> bool:
         logger.warning("Checkpoint has invalid previously_changed_ids: %r", prev_ids)
         return False
 
+    for branch_field in ("scratch_branch", "scratch_base_sha", "original_branch"):
+        value = data.get(branch_field)
+        if value is not None and not isinstance(value, str):
+            logger.warning("Checkpoint has invalid %s: %r", branch_field, value)
+            return False
+
     # Cross-field bounds checks — types were already validated above, so we
     # use cast() to inform mypy that the runtime types are narrowed.
     check_index = cast(int, data["current_check_index"])
@@ -298,6 +313,9 @@ def build_checkpoint(
     previously_changed_ids: set[str] | None,
     prev_change_pct: float | None,
     started_at: str | None = None,
+    scratch_branch: str | None = None,
+    scratch_base_sha: str | None = None,
+    original_branch: str | None = None,
 ) -> CheckpointData:
     return CheckpointData(
         version=_CHECKPOINT_VERSION,
@@ -312,4 +330,7 @@ def build_checkpoint(
         changed_this_cycle=sorted(changed_this_cycle),
         previously_changed_ids=sorted(previously_changed_ids) if previously_changed_ids is not None else None,
         prev_change_pct=prev_change_pct,
+        scratch_branch=scratch_branch,
+        scratch_base_sha=scratch_base_sha,
+        original_branch=original_branch,
     )

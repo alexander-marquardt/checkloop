@@ -320,10 +320,11 @@ def run_single_check(
 
     sha_before = git_head_sha(workdir) if is_git else None
 
-    log_dir = Path(workdir) / ".checkloop-logs"
+    run_dir = getattr(args, "run_dir", None) or workdir
+    log_dir = Path(run_dir) / ".checkloop-logs"
     log_path = log_dir / f"{check['id']}_cycle{cycle}.jsonl"
     try:
-        log_dir.mkdir(exist_ok=True)
+        log_dir.mkdir(parents=True, exist_ok=True)
         raw_log = open(log_path, "wb")  # noqa: SIM115
     except OSError as exc:
         logger.warning("Could not open raw log %s: %s", log_path, exc)

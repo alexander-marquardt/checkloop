@@ -30,6 +30,8 @@ SHARED_ARG_DEFAULTS: dict[str, Any] = dict(
     debug=False,
     dangerously_skip_permissions=False,
     changed_files_prefix="",
+    in_place=True,
+    review_branch=None,
 )
 
 
@@ -125,7 +127,7 @@ def make_summary_row(**overrides: Any) -> SummaryRow:
 
 def make_checkpoint_data(**overrides: Any) -> CheckpointData:
     data: CheckpointData = {
-        "version": overrides.pop("version", 1),
+        "version": overrides.pop("version", checkpoint._CHECKPOINT_VERSION),
         "started_at": overrides.pop("started_at", "2026-03-08T12:00:00+00:00"),
         "workdir": overrides.pop("workdir", "/tmp/test-project"),
         "check_ids": overrides.pop("check_ids", ["test-fix", "readability", "dry", "test-validate"]),
@@ -137,6 +139,9 @@ def make_checkpoint_data(**overrides: Any) -> CheckpointData:
         "changed_this_cycle": overrides.pop("changed_this_cycle", ["test-fix"]),
         "previously_changed_ids": overrides.pop("previously_changed_ids", None),
         "prev_change_pct": overrides.pop("prev_change_pct", None),
+        "scratch_branch": overrides.pop("scratch_branch", None),
+        "scratch_base_sha": overrides.pop("scratch_base_sha", None),
+        "original_branch": overrides.pop("original_branch", None),
     }
     return data
 

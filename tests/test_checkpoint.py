@@ -27,7 +27,7 @@ class TestSaveAndLoad:
         checkpoint.save_checkpoint(str(tmp_path), data)
         loaded = checkpoint.load_checkpoint(str(tmp_path))
         assert loaded is not None
-        assert loaded["version"] == 1
+        assert loaded["version"] == checkpoint._CHECKPOINT_VERSION
         assert loaded["current_cycle"] == 1
         assert loaded["current_check_index"] == 2
         assert loaded["changed_this_cycle"] == ["test-fix"]
@@ -74,7 +74,7 @@ class TestLoadCheckpointEdgeCases:
 
     def test_missing_required_keys_returns_none(self, tmp_path: Path) -> None:
         path = tmp_path / checkpoint._CHECKPOINT_FILENAME
-        path.write_text(json.dumps({"version": 1}))
+        path.write_text(json.dumps({"version": checkpoint._CHECKPOINT_VERSION}))
         assert checkpoint.load_checkpoint(str(tmp_path)) is None
 
     def test_non_dict_returns_none(self, tmp_path: Path) -> None:
@@ -219,10 +219,13 @@ class TestBuildCheckpoint:
             previously_changed_ids=None,
             prev_change_pct=None,
         )
-        assert data["version"] == 1
+        assert data["version"] == 2
         assert data["check_ids"] == ["a", "b", "c"]
         assert data["changed_this_cycle"] == ["a"]
         assert data["previously_changed_ids"] is None
+        assert data["scratch_branch"] is None
+        assert data["scratch_base_sha"] is None
+        assert data["original_branch"] is None
 
     def test_sorts_changed_ids(self) -> None:
         data = checkpoint.build_checkpoint(

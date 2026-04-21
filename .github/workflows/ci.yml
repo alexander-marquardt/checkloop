@@ -31,4 +31,4 @@ jobs:
         run: uv run checkloop --help
 
       - name: Dry run
-        run: uv run checkloop --dir . --dry-run
+        run: uv run checkloop --dir . --in-place --dry-run

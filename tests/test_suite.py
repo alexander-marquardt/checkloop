@@ -431,46 +431,138 @@ class TestRunSuiteWithErrorHandlingPartialResults:
 # =============================================================================
 
 # =============================================================================
-# _print_push_reminder
+# _attach_to_scratch_branch
 # =============================================================================
 
-class TestPrintPushReminder:
-    """Tests for _print_push_reminder() post-run review instructions."""
+class TestAttachToScratchBranch:
+    """Tests for _attach_to_scratch_branch() scratch-branch lifecycle."""
+
+    def test_fresh_run_creates_branch(self) -> None:
+        state = suite._SuiteState()
+        with mock.patch.object(
+            suite, "create_scratch_branch",
+            return_value=("checkloop/run-x", "abc1234", "main"),
+        ):
+            suite._attach_to_scratch_branch("/tmp", state)
+        assert state.scratch_branch == "checkloop/run-x"
+        assert state.scratch_base_sha == "abc1234"
+        assert state.original_branch == "main"
+
+    def test_fresh_run_failure_is_non_fatal(self) -> None:
+        state = suite._SuiteState()
+        with mock.patch.object(suite, "create_scratch_branch", return_value=None):
+            suite._attach_to_scratch_branch("/tmp", state)
+        assert state.scratch_branch is None
+        assert state.scratch_base_sha is None
+
+    def test_resume_reattaches_to_existing_branch(self) -> None:
+        state = suite._SuiteState(
+            scratch_branch="checkloop/run-x",
+            scratch_base_sha="abc1234",
+            original_branch="main",
+        )
+        with mock.patch.object(suite, "branch_exists", return_value=True), \
+             mock.patch.object(suite, "checkout_branch", return_value=True) as mock_checkout, \
+             mock.patch.object(suite, "create_scratch_branch") as mock_create:
+            suite._attach_to_scratch_branch("/tmp", state)
+        mock_checkout.assert_called_once_with("/tmp", "checkloop/run-x")
+        mock_create.assert_not_called()
+        # State should be preserved.
+        assert state.scratch_branch == "checkloop/run-x"
+
+    def test_resume_with_missing_branch_creates_new_one(self) -> None:
+        state = suite._SuiteState(
+            scratch_branch="checkloop/run-old",
+            scratch_base_sha="old-sha",
+            original_branch="main",
+        )
+        with mock.patch.object(suite, "branch_exists", return_value=False), \
+             mock.patch.object(
+                 suite, "create_scratch_branch",
+                 return_value=("checkloop/run-new", "new-sha", "main"),
+             ):
+            suite._attach_to_scratch_branch("/tmp", state)
+        assert state.scratch_branch == "checkloop/run-new"
+        assert state.scratch_base_sha == "new-sha"
+
+    def test_resume_checkout_failure_does_not_recreate(self) -> None:
+        state = suite._SuiteState(
+            scratch_branch="checkloop/run-x",
+            scratch_base_sha="abc1234",
+            original_branch="main",
+        )
+        with mock.patch.object(suite, "branch_exists", return_value=True), \
+             mock.patch.object(suite, "checkout_branch", return_value=False), \
+             mock.patch.object(suite, "create_scratch_branch") as mock_create:
+            suite._attach_to_scratch_branch("/tmp", state)
+        mock_create.assert_not_called()
+
+
+# =============================================================================
+# _print_scratch_branch_summary
+# =============================================================================
+
+class TestPrintScratchBranchSummary:
+    """Tests for _print_scratch_branch_summary() post-run review instructions."""
 
     def test_dry_run_prints_nothing(self, capsys: pytest.CaptureFixture[str]) -> None:
-        suite._print_push_reminder("/tmp", dry_run=True)
+        suite._print_scratch_branch_summary(
+            "/tmp", "checkloop/run-x", "abc1234", "main", dry_run=True,
+        )
         assert capsys.readouterr().out == ""
 
     def test_non_git_repo_prints_nothing(self, capsys: pytest.CaptureFixture[str]) -> None:
         with mock.patch.object(suite, "is_git_repo", return_value=False):
-            suite._print_push_reminder("/tmp", dry_run=False)
+            suite._print_scratch_branch_summary(
+                "/tmp", "checkloop/run-x", "abc1234", "main", dry_run=False,
+            )
         assert capsys.readouterr().out == ""
 
-    def test_with_unpushed_commits_lists_them(self, capsys: pytest.CaptureFixture[str]) -> None:
-        commits = ["abc123 Fix a bug", "def456 Add a feature"]
-        with mock.patch.object(suite, "is_git_repo", return_value=True), \
-             mock.patch.object(suite, "get_unpushed_commits", return_value=commits):
-            suite._print_push_reminder("/tmp", dry_run=False)
+    def test_no_scratch_branch_falls_back(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with mock.patch.object(suite, "is_git_repo", return_value=True):
+            suite._print_scratch_branch_summary(
+                "/tmp", None, None, "main", dry_run=False,
+            )
         out = capsys.readouterr().out
-        assert "2 local commit(s)" in out
-        assert "abc123 Fix a bug" in out
-        assert "def456 Add a feature" in out
-
-    def test_with_no_unpushed_commits_says_up_to_date(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch.object(suite, "is_git_repo", return_value=True), \
-             mock.patch.object(suite, "get_unpushed_commits", return_value=[]):
-            suite._print_push_reminder("/tmp", dry_run=False)
-        out = capsys.readouterr().out
-        assert "No unpushed local commits" in out
-
-    def test_shows_review_and_push_instructions(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch.object(suite, "is_git_repo", return_value=True), \
-             mock.patch.object(suite, "get_unpushed_commits", return_value=[]):
-            suite._print_push_reminder("/tmp", dry_run=False)
-        out = capsys.readouterr().out
-        assert "Review & Push" in out
+        assert "No scratch branch" in out
         assert "git log" in out
-        assert "git push" in out
+
+    def test_empty_scratch_branch_suggests_deletion(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with mock.patch.object(suite, "is_git_repo", return_value=True), \
+             mock.patch.object(suite, "count_commits_between", return_value=0):
+            suite._print_scratch_branch_summary(
+                "/tmp", "checkloop/run-x", "abc1234", "main", dry_run=False,
+            )
+        out = capsys.readouterr().out
+        assert "no new commits" in out
+        assert "git branch -D checkloop/run-x" in out
+
+    def test_populated_scratch_branch_shows_merge_instructions(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        with mock.patch.object(suite, "is_git_repo", return_value=True), \
+             mock.patch.object(suite, "count_commits_between", return_value=3):
+            suite._print_scratch_branch_summary(
+                "/tmp", "checkloop/run-x", "abc1234567", "main", dry_run=False,
+            )
+        out = capsys.readouterr().out
+        assert "3 commit(s)" in out
+        assert "git merge --ff-only checkloop/run-x" in out
+        assert "git cherry-pick" in out
+        assert "git switch main" in out
+        assert "git branch -D checkloop/run-x" in out
+
+    def test_detached_head_mentions_no_original_branch(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        with mock.patch.object(suite, "is_git_repo", return_value=True), \
+             mock.patch.object(suite, "count_commits_between", return_value=1):
+            suite._print_scratch_branch_summary(
+                "/tmp", "checkloop/run-x", "abc1234567", None, dry_run=False,
+            )
+        out = capsys.readouterr().out
+        assert "detached" in out.lower()
+        assert "<your-branch>" in out
 
 
 class TestPrintRecommendations:

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shlex
 import subprocess
 
@@ -19,6 +20,40 @@ from checkloop.process import SANITIZED_ENV
 logger = logging.getLogger(__name__)
 
 _COMMIT_MSG_TIMEOUT = 60  # seconds to wait for Claude to generate a commit message
+
+_MIN_VALID_MESSAGE_LEN = 20
+_MAX_VALID_MESSAGE_LEN = 2000
+
+_GARBAGE_MESSAGE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"diff\s+is\s+empty", re.IGNORECASE),
+    re.compile(r"no\s+(uncommitted\s+)?changes\s+to\s+(describe|commit)", re.IGNORECASE),
+    re.compile(r"please\s+(share|provide|post)\s+the\s+(actual\s+)?diff", re.IGNORECASE),
+    re.compile(r"could\s+you\s+(share|provide|post)\s+the", re.IGNORECASE),
+    re.compile(r"would\s+you\s+(share|provide|post|like\s+me)", re.IGNORECASE),
+    re.compile(r"^\s*(sorry|i\s+can['’]?t|i\s+cannot|i\s+am\s+unable)", re.IGNORECASE),
+    re.compile(r"^\s*(here\s+is|here['’]?s)\s+a\s+commit\s+message", re.IGNORECASE),
+)
+"""Regexes matching LLM non-answers that must never become a commit message.
+
+These catch the cases we've actually seen in the wild: "The diff is empty",
+"Could you share the actual diff", "Sorry, I can't …".  Keep the list
+conservative — any false positive just means we fall back to the deterministic
+message, which is acceptable.
+"""
+
+
+def _looks_like_garbage(message: str) -> bool:
+    """Return True if *message* is obviously not a valid commit message.
+
+    Rejects empties, trivially short/long text, and messages that match the
+    non-answer patterns Claude emits when given an empty or confusing diff.
+    """
+    stripped = message.strip()
+    if len(stripped) < _MIN_VALID_MESSAGE_LEN:
+        return True
+    if len(stripped) > _MAX_VALID_MESSAGE_LEN:
+        return True
+    return any(pattern.search(stripped) for pattern in _GARBAGE_MESSAGE_PATTERNS)
 
 
 def generate_commit_message(
@@ -51,6 +86,13 @@ def generate_commit_message(
                            result.returncode, result.stderr[:200])
             return None
         message = result.stdout.strip()
+        if _looks_like_garbage(message):
+            logger.warning(
+                "Discarding LLM commit message — looks like a non-answer or "
+                "empty-diff response: %r",
+                message[:120],
+            )
+            return None
         logger.info("Generated commit message: %s", message[:120])
         return message or None
     except subprocess.TimeoutExpired:

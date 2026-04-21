@@ -76,11 +76,12 @@ class TestGitCommitAll:
         num_patterns = len(git._CHECKLOOP_UNSTAGE_PATTERNS)
         with mock.patch("subprocess.run") as mock_run:
             mock_run.side_effect = [
-                make_git_result(),                       # git add -A
-                *[make_git_result() for _ in range(num_patterns)],  # git reset per pattern
-                make_git_result(returncode=1),           # git diff --cached --quiet (changes exist)
-                make_git_result(),                       # git commit
-                make_git_result(stdout="abc123\n"),       # git rev-parse HEAD
+                make_git_result(),                                   # git add -A
+                *[make_git_result() for _ in range(num_patterns)],   # git reset per pattern
+                make_git_result(stdout=""),                          # diff --cached --name-only -z (no artifacts)
+                make_git_result(returncode=1),                       # git diff --cached --quiet (changes exist)
+                make_git_result(),                                   # git commit
+                make_git_result(stdout="abc123\n"),                  # git rev-parse HEAD
             ]
             assert git.git_commit_all("/tmp", "test commit") is True
 
@@ -88,11 +89,35 @@ class TestGitCommitAll:
         num_patterns = len(git._CHECKLOOP_UNSTAGE_PATTERNS)
         with mock.patch("subprocess.run") as mock_run:
             mock_run.side_effect = [
-                make_git_result(),  # git add -A
-                *[make_git_result() for _ in range(num_patterns)],  # git reset per pattern
-                make_git_result(),  # git diff --cached --quiet (no changes)
+                make_git_result(),                                   # git add -A
+                *[make_git_result() for _ in range(num_patterns)],   # git reset per pattern
+                make_git_result(stdout=""),                          # diff --cached --name-only -z (no artifacts)
+                make_git_result(),                                   # git diff --cached --quiet (no changes)
             ]
             assert git.git_commit_all("/tmp", "test commit") is False
+
+    def test_unstages_artifacts_before_committing(self) -> None:
+        """When git add -A stages artifact paths, they are unstaged before commit."""
+        num_patterns = len(git._CHECKLOOP_UNSTAGE_PATTERNS)
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                make_git_result(),                                          # git add -A
+                *[make_git_result() for _ in range(num_patterns)],          # git reset per pattern
+                make_git_result(stdout="src/a.py\0search-ui/coverage/x.html"),  # diff --cached --name-only -z
+                make_git_result(),                                          # git rm --cached --ignore-unmatch ...
+                make_git_result(returncode=1),                              # git diff --cached --quiet
+                make_git_result(),                                          # git commit
+                make_git_result(stdout="abc123\n"),                         # git rev-parse HEAD
+            ]
+            assert git.git_commit_all("/tmp", "test commit") is True
+
+        # Find the `git rm --cached` call.
+        rm_calls = [c for c in mock_run.call_args_list if "rm" in (c[0][0] if c[0] else [])]
+        assert len(rm_calls) == 1
+        rm_args = rm_calls[0][0][0]
+        assert "--cached" in rm_args
+        assert "search-ui/coverage/x.html" in rm_args
+        assert "src/a.py" not in rm_args
 
     def test_returns_false_on_error(self) -> None:
         with mock.patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, "git")):
@@ -291,11 +316,12 @@ class TestGitCommitAllUnstagePatterns:
         num_patterns = len(git._CHECKLOOP_UNSTAGE_PATTERNS)
         with mock.patch("subprocess.run") as mock_run:
             mock_run.side_effect = [
-                make_git_result(),                       # git add -A
-                *[make_git_result() for _ in range(num_patterns)],  # git reset per pattern
-                make_git_result(returncode=1),           # git diff --cached --quiet
-                make_git_result(),                       # git commit
-                make_git_result(stdout="abc123\n"),       # git rev-parse HEAD
+                make_git_result(),                                   # git add -A
+                *[make_git_result() for _ in range(num_patterns)],   # git reset per pattern
+                make_git_result(stdout=""),                          # diff --cached --name-only -z (no artifacts)
+                make_git_result(returncode=1),                       # git diff --cached --quiet
+                make_git_result(),                                   # git commit
+                make_git_result(stdout="abc123\n"),                  # git rev-parse HEAD
             ]
             git.git_commit_all("/tmp", "test commit")
         # First call is git add -A (no pathspec excludes)
@@ -353,7 +379,12 @@ class TestGetUncommittedDiff:
     """Tests for get_uncommitted_diff()."""
 
     def test_returns_diff_from_head(self) -> None:
-        with mock.patch.object(git, "_git_stdout", return_value="diff content"):
+        def side_effect(workdir: str, *args: str) -> str | None:
+            if args[:2] == ("diff", "HEAD"):
+                return "diff content"
+            # ls-files --others returns nothing (no untracked files).
+            return ""
+        with mock.patch.object(git, "_git_stdout", side_effect=side_effect):
             assert git.get_uncommitted_diff("/tmp") == "diff content"
 
     def test_falls_back_to_cached_when_no_head(self) -> None:
@@ -362,10 +393,336 @@ class TestGetUncommittedDiff:
                 return None
             if args[:2] == ("diff", "--cached"):
                 return "staged diff"
-            return None
+            return ""  # no untracked files
         with mock.patch.object(git, "_git_stdout", side_effect=side_effect):
             assert git.get_uncommitted_diff("/tmp") == "staged diff"
 
-    def test_returns_empty_when_both_fail(self) -> None:
-        with mock.patch.object(git, "_git_stdout", return_value=None):
+    def test_returns_empty_when_no_changes_anywhere(self) -> None:
+        def side_effect(workdir: str, *args: str) -> str | None:
+            if args[:2] == ("diff", "HEAD"):
+                return ""
+            return ""  # no untracked either
+        with mock.patch.object(git, "_git_stdout", side_effect=side_effect):
             assert git.get_uncommitted_diff("/tmp") == ""
+
+    def test_includes_untracked_files_in_diff(self) -> None:
+        """Untracked files are rendered via git diff --no-index so the generator sees them."""
+        def stdout_side_effect(workdir: str, *args: str) -> str | None:
+            if args[:2] == ("diff", "HEAD"):
+                return ""  # no tracked modifications
+            if args[0] == "ls-files":
+                # Null-separated list of untracked paths
+                return "new_file.py\0another.py"
+            return None
+
+        def run_side_effect(workdir: str, *args: str, **kwargs: object) -> mock.MagicMock:
+            # _git_run is called by _untracked_files_as_diff for each untracked file.
+            # Each returns a synthetic new-file patch.
+            path = args[-1]
+            return make_git_result(
+                returncode=1,
+                stdout=f"diff --git a/{path} b/{path}\nnew file mode 100644\n+content of {path}\n",
+            )
+
+        with (
+            mock.patch.object(git, "_git_stdout", side_effect=stdout_side_effect),
+            mock.patch.object(git, "_git_run", side_effect=run_side_effect),
+        ):
+            diff = git.get_uncommitted_diff("/tmp")
+
+        assert "new_file.py" in diff
+        assert "another.py" in diff
+
+    def test_combines_tracked_and_untracked(self) -> None:
+        """When both tracked changes and untracked files exist, both show up."""
+        def stdout_side_effect(workdir: str, *args: str) -> str | None:
+            if args[:2] == ("diff", "HEAD"):
+                return "tracked-diff-content"
+            if args[0] == "ls-files":
+                return "newfile.py"
+            return None
+
+        def run_side_effect(workdir: str, *args: str, **kwargs: object) -> mock.MagicMock:
+            return make_git_result(returncode=1, stdout="UNTRACKED-PATCH\n")
+
+        with (
+            mock.patch.object(git, "_git_stdout", side_effect=stdout_side_effect),
+            mock.patch.object(git, "_git_run", side_effect=run_side_effect),
+        ):
+            diff = git.get_uncommitted_diff("/tmp")
+
+        assert "tracked-diff-content" in diff
+        assert "UNTRACKED-PATCH" in diff
+
+    def test_caps_untracked_files_shown(self) -> None:
+        """When many untracked files exist, only the first N are expanded."""
+        many = "\0".join(f"f{i}.py" for i in range(git._MAX_UNTRACKED_FILES_IN_DIFF + 10))
+
+        def stdout_side_effect(workdir: str, *args: str) -> str | None:
+            if args[:2] == ("diff", "HEAD"):
+                return ""
+            if args[0] == "ls-files":
+                return many
+            return None
+
+        calls = []
+
+        def run_side_effect(workdir: str, *args: str, **kwargs: object) -> mock.MagicMock:
+            calls.append(args[-1])
+            return make_git_result(returncode=1, stdout=f"+{args[-1]}\n")
+
+        with (
+            mock.patch.object(git, "_git_stdout", side_effect=stdout_side_effect),
+            mock.patch.object(git, "_git_run", side_effect=run_side_effect),
+        ):
+            diff = git.get_uncommitted_diff("/tmp")
+
+        assert len(calls) == git._MAX_UNTRACKED_FILES_IN_DIFF
+        assert "more untracked files omitted" in diff
+
+
+class TestLooksLikeArtifact:
+    """Tests for _looks_like_artifact() path classification."""
+
+    def test_coverage_html_matches(self) -> None:
+        assert git._looks_like_artifact("search-ui/coverage/index.html")
+
+    def test_htmlcov_matches(self) -> None:
+        assert git._looks_like_artifact("htmlcov/index.html")
+
+    def test_dist_matches(self) -> None:
+        assert git._looks_like_artifact("packages/foo/dist/bundle.js")
+
+    def test_build_matches(self) -> None:
+        assert git._looks_like_artifact("src/build/output.o")
+
+    def test_next_matches(self) -> None:
+        assert git._looks_like_artifact("apps/web/.next/static/chunks/abc.js")
+
+    def test_node_modules_matches(self) -> None:
+        assert git._looks_like_artifact("node_modules/react/index.js")
+
+    def test_pycache_matches(self) -> None:
+        assert git._looks_like_artifact("pkg/__pycache__/module.cpython-312.pyc")
+
+    def test_coverage_filename_matches(self) -> None:
+        assert git._looks_like_artifact(".coverage")
+        assert git._looks_like_artifact(".coverage.hostname.12345")
+        assert git._looks_like_artifact("coverage.xml")
+        assert git._looks_like_artifact("lcov.info")
+
+    def test_source_file_does_not_match(self) -> None:
+        assert not git._looks_like_artifact("src/checkloop/git.py")
+
+    def test_word_coverage_in_filename_does_not_match(self) -> None:
+        """A file named coverage_report.py in src/ should not match (no /coverage/ path)."""
+        assert not git._looks_like_artifact("src/tests/coverage_report.py")
+
+    def test_backslash_paths_normalized(self) -> None:
+        """Windows-style paths are accepted (normalized to forward slashes)."""
+        assert git._looks_like_artifact("search-ui\\coverage\\index.html")
+
+
+class TestUnstageGeneratedArtifacts:
+    """Tests for _unstage_generated_artifacts() cleanup."""
+
+    def test_unstages_artifact_paths(self) -> None:
+        staged = "search-ui/coverage/foo.html\0src/real.py\0htmlcov/index.html"
+        calls: list[tuple[str, ...]] = []
+
+        def stdout_side_effect(workdir: str, *args: str) -> str | None:
+            if args[:3] == ("diff", "--cached", "--name-only"):
+                return staged
+            return None
+
+        def run_side_effect(workdir: str, *args: str, **kwargs: object) -> mock.MagicMock:
+            calls.append(args)
+            return make_git_result()
+
+        with (
+            mock.patch.object(git, "_git_stdout", side_effect=stdout_side_effect),
+            mock.patch.object(git, "_git_run", side_effect=run_side_effect),
+        ):
+            unstaged = git._unstage_generated_artifacts("/tmp")
+
+        assert "search-ui/coverage/foo.html" in unstaged
+        assert "htmlcov/index.html" in unstaged
+        assert "src/real.py" not in unstaged
+        # Ensure git rm --cached was called with both artifact paths and not the source file.
+        assert len(calls) == 1
+        rm_args = calls[0]
+        assert "rm" in rm_args
+        assert "--cached" in rm_args
+        assert "--ignore-unmatch" in rm_args
+        assert "search-ui/coverage/foo.html" in rm_args
+        assert "htmlcov/index.html" in rm_args
+        assert "src/real.py" not in rm_args
+
+    def test_no_staged_files_returns_empty(self) -> None:
+        with mock.patch.object(git, "_git_stdout", return_value=""):
+            assert git._unstage_generated_artifacts("/tmp") == []
+
+    def test_no_artifacts_among_staged(self) -> None:
+        with mock.patch.object(git, "_git_stdout", return_value="src/a.py\0src/b.py"):
+            with mock.patch.object(git, "_git_run") as mock_run:
+                assert git._unstage_generated_artifacts("/tmp") == []
+                mock_run.assert_not_called()
+
+    def test_oserror_returns_empty(self) -> None:
+        with mock.patch.object(git, "_git_stdout", return_value="a/coverage/x"):
+            with mock.patch.object(git, "_git_run", side_effect=OSError("disk full")):
+                assert git._unstage_generated_artifacts("/tmp") == []
+
+
+class TestCurrentBranchName:
+    """Tests for current_branch_name()."""
+
+    def test_returns_branch(self) -> None:
+        with mock.patch.object(git, "_git_stdout", return_value="main"):
+            assert git.current_branch_name("/tmp") == "main"
+
+    def test_none_when_detached(self) -> None:
+        with mock.patch.object(git, "_git_stdout", return_value=None):
+            assert git.current_branch_name("/tmp") is None
+
+
+class TestBranchExists:
+    """Tests for branch_exists()."""
+
+    def test_true_when_ref_resolves(self) -> None:
+        with mock.patch.object(git, "_git_stdout", return_value="abc123"):
+            assert git.branch_exists("/tmp", "checkloop/run-x") is True
+
+    def test_false_when_ref_missing(self) -> None:
+        with mock.patch.object(git, "_git_stdout", return_value=None):
+            assert git.branch_exists("/tmp", "missing") is False
+
+
+class TestCheckoutBranch:
+    """Tests for checkout_branch()."""
+
+    def test_returns_true_on_success(self) -> None:
+        with mock.patch.object(git, "_git_run", return_value=make_git_result()):
+            assert git.checkout_branch("/tmp", "main") is True
+
+    def test_returns_false_on_called_process_error(self) -> None:
+        err = subprocess.CalledProcessError(1, ["git", "checkout", "main"])
+        with mock.patch.object(git, "_git_run", side_effect=err):
+            assert git.checkout_branch("/tmp", "main") is False
+
+    def test_returns_false_on_oserror(self) -> None:
+        with mock.patch.object(git, "_git_run", side_effect=OSError("no git")):
+            assert git.checkout_branch("/tmp", "main") is False
+
+
+class TestCreateScratchBranch:
+    """Tests for create_scratch_branch()."""
+
+    def test_returns_branch_info_on_success(self) -> None:
+        with mock.patch.object(git, "git_head_sha", return_value="abc1234567890"), \
+             mock.patch.object(git, "current_branch_name", return_value="main"), \
+             mock.patch.object(git, "_git_run", return_value=make_git_result()):
+            info = git.create_scratch_branch("/tmp")
+        assert info is not None
+        branch, base, original = info
+        assert branch.startswith("checkloop-")
+        assert branch.endswith("Z")
+        assert "/" not in branch
+        assert base == "abc1234567890"
+        assert original == "main"
+
+    def test_returns_none_when_no_head_sha(self) -> None:
+        with mock.patch.object(git, "git_head_sha", return_value=None):
+            assert git.create_scratch_branch("/tmp") is None
+
+    def test_returns_none_when_checkout_fails(self) -> None:
+        err = subprocess.CalledProcessError(1, ["git", "checkout", "-b"])
+        with mock.patch.object(git, "git_head_sha", return_value="abc1234"), \
+             mock.patch.object(git, "current_branch_name", return_value="main"), \
+             mock.patch.object(git, "_git_run", side_effect=err):
+            assert git.create_scratch_branch("/tmp") is None
+
+    def test_detached_head_original_branch_is_none(self) -> None:
+        with mock.patch.object(git, "git_head_sha", return_value="abc1234"), \
+             mock.patch.object(git, "current_branch_name", return_value=None), \
+             mock.patch.object(git, "_git_run", return_value=make_git_result()):
+            info = git.create_scratch_branch("/tmp")
+        assert info is not None
+        assert info[2] is None
+
+    def test_review_branch_uses_named_prefix(self) -> None:
+        """When review_branch is given, scratch branch is <name>-cl-<ts>."""
+        with mock.patch.object(git, "git_head_sha", return_value="abc1234"), \
+             mock.patch.object(git, "current_branch_name", return_value=None), \
+             mock.patch.object(git, "_git_run", return_value=make_git_result()):
+            info = git.create_scratch_branch("/tmp", review_branch="main")
+        assert info is not None
+        assert info[0].startswith("main-cl-")
+        assert info[0].endswith("Z")
+
+    def test_review_branch_strips_origin_prefix(self) -> None:
+        """origin/main is sanitized to main- for the branch name."""
+        with mock.patch.object(git, "git_head_sha", return_value="abc1234"), \
+             mock.patch.object(git, "current_branch_name", return_value=None), \
+             mock.patch.object(git, "_git_run", return_value=make_git_result()):
+            info = git.create_scratch_branch("/tmp", review_branch="origin/main")
+        assert info is not None
+        assert info[0].startswith("main-cl-")
+
+    def test_review_branch_replaces_slashes(self) -> None:
+        """feature/foo is flattened to feature-foo- to avoid ref-hierarchy conflicts."""
+        with mock.patch.object(git, "git_head_sha", return_value="abc1234"), \
+             mock.patch.object(git, "current_branch_name", return_value=None), \
+             mock.patch.object(git, "_git_run", return_value=make_git_result()):
+            info = git.create_scratch_branch("/tmp", review_branch="feature/foo")
+        assert info is not None
+        assert info[0].startswith("feature-foo-cl-")
+        assert "/" not in info[0]
+
+
+class TestBuildScratchBranchName:
+    """Tests for _build_scratch_branch_name()."""
+
+    def test_in_place_uses_default_prefix(self) -> None:
+        name = git._build_scratch_branch_name(None, "2026-04-21T10-00-00Z")
+        assert name == "checkloop-2026-04-21T10-00-00Z"
+
+    def test_review_branch_uses_cl_infix(self) -> None:
+        name = git._build_scratch_branch_name("main", "2026-04-21T10-00-00Z")
+        assert name == "main-cl-2026-04-21T10-00-00Z"
+
+    def test_strips_origin_prefix(self) -> None:
+        name = git._build_scratch_branch_name("origin/develop", "2026-04-21T10-00-00Z")
+        assert name == "develop-cl-2026-04-21T10-00-00Z"
+
+    def test_replaces_slashes(self) -> None:
+        name = git._build_scratch_branch_name("feature/my-work", "2026-04-21T10-00-00Z")
+        assert name == "feature-my-work-cl-2026-04-21T10-00-00Z"
+
+    def test_empty_review_branch_falls_back_to_default(self) -> None:
+        name = git._build_scratch_branch_name("", "2026-04-21T10-00-00Z")
+        assert name == "checkloop-2026-04-21T10-00-00Z"
+
+    def test_strips_trailing_dashes_after_sanitization(self) -> None:
+        # "origin/" alone would leave an empty string after stripping — fall back.
+        name = git._build_scratch_branch_name("origin/", "2026-04-21T10-00-00Z")
+        assert name == "checkloop-cl-2026-04-21T10-00-00Z"
+
+
+class TestCountCommitsBetween:
+    """Tests for count_commits_between()."""
+
+    def test_returns_count(self) -> None:
+        with mock.patch.object(git, "_git_stdout", return_value="3"):
+            assert git.count_commits_between("/tmp", "abc123") == 3
+
+    def test_zero_when_no_base_sha(self) -> None:
+        assert git.count_commits_between("/tmp", "") == 0
+
+    def test_zero_on_git_failure(self) -> None:
+        with mock.patch.object(git, "_git_stdout", return_value=None):
+            assert git.count_commits_between("/tmp", "abc123") == 0
+
+    def test_zero_on_unparseable_output(self) -> None:
+        with mock.patch.object(git, "_git_stdout", return_value="not-a-number"):
+            assert git.count_commits_between("/tmp", "abc123") == 0
