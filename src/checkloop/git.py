@@ -450,13 +450,14 @@ def _cached_total_tracked_lines(workdir: str) -> int:
 
 # --- Branch and changed-file helpers -----------------------------------------
 
-_SCRATCH_BRANCH_PREFIX = "checkloop/run"
+_SCRATCH_BRANCH_PREFIX = "checkloop"
 """All checkloop scratch branches start with this prefix.
 
-Using a dedicated namespace means ``git branch --list 'checkloop/*'`` cleanly
-enumerates past and current runs, and the user can blow them all away with a
-single ``git branch -D $(git branch --list 'checkloop/*')`` when they want to
-reclaim ref storage.
+The full branch name is ``checkloop-<ISO-8601-utc>`` (e.g.
+``checkloop-2026-04-21T23-25-31Z``) — flat rather than namespaced so it shows
+up alongside the user's own branches in ``git branch``.  The user can
+enumerate past runs with ``git branch --list 'checkloop-*'`` and clean them
+all up with ``git branch -D $(git branch --list 'checkloop-*')``.
 """
 
 
@@ -502,8 +503,8 @@ def create_scratch_branch(workdir: str) -> tuple[str, str, str | None] | None:
         logger.warning("Cannot create scratch branch — no HEAD SHA available")
         return None
     original = current_branch_name(workdir)
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    branch_name = f"{_SCRATCH_BRANCH_PREFIX}-{timestamp}-{base_sha[:7]}"
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
+    branch_name = f"{_SCRATCH_BRANCH_PREFIX}-{timestamp}"
     try:
         _git_run(workdir, "checkout", "-b", branch_name, check=True)
     except (subprocess.CalledProcessError, OSError) as exc:

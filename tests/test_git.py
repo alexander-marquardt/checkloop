@@ -625,8 +625,9 @@ class TestCreateScratchBranch:
             info = git.create_scratch_branch("/tmp")
         assert info is not None
         branch, base, original = info
-        assert branch.startswith("checkloop/run-")
-        assert branch.endswith("-abc1234")
+        assert branch.startswith("checkloop-")
+        assert branch.endswith("Z")
+        assert "/" not in branch
         assert base == "abc1234567890"
         assert original == "main"
 

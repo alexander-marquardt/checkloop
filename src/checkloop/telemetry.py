@@ -341,8 +341,13 @@ def _telemetry_path_for_today(dir_path: Path) -> Path:
     return dir_path / fname
 
 
-def start(workdir: str, run_id: str) -> None:
+def start(workdir: str, run_id: str, *, run_dir: Path | str | None = None) -> None:
     """Start the background telemetry sampler for this run.
+
+    Writes to ``<run_dir>/.checkloop-telemetry/`` when ``run_dir`` is given —
+    typically checkloop's per-run state directory under ``~/.checkloop/runs/``.
+    Falls back to ``<workdir>/.checkloop-telemetry/`` for backward compat
+    when called without an explicit run_dir (e.g. from tests).
 
     Safe to call more than once — subsequent calls are no-ops.  Failures
     (cannot create dir, cannot open file) are logged and swallowed so
@@ -351,7 +356,8 @@ def start(workdir: str, run_id: str) -> None:
     if _state.thread is not None:
         return
 
-    dir_path = Path(workdir) / _TELEMETRY_DIRNAME
+    base_dir = Path(run_dir) if run_dir is not None else Path(workdir)
+    dir_path = base_dir / _TELEMETRY_DIRNAME
     try:
         dir_path.mkdir(mode=0o700, exist_ok=True)
     except OSError as exc:

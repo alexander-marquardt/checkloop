@@ -46,6 +46,7 @@ from checkloop.cli_args import (
 )
 from checkloop import telemetry
 from checkloop.monitoring import cleanup_all_sessions
+from checkloop.run_storage import create_run_dir, prune_old_runs
 from checkloop.suite import run_suite_with_error_handling
 from checkloop.terminal import YELLOW, fatal, print_status
 
@@ -109,18 +110,19 @@ def _rotate_log_file(log_path: Path) -> None:
         pass
 
 
-def _add_file_log_handler(workdir: str) -> None:
+def _add_file_log_handler(log_dir: str | Path) -> None:
     """Add a DEBUG-level file handler that captures everything to a log file.
 
-    The log file is written to ``<workdir>/.checkloop-run.log``.  Previous
-    logs are rotated to ``.log.1``, ``.log.2``, etc. (up to
+    The log file is written to ``<log_dir>/.checkloop-run.log`` — typically
+    checkloop's per-run state directory under ``~/.checkloop/runs/``.
+    Previous logs are rotated to ``.log.1``, ``.log.2``, etc. (up to
     ``_LOG_RETENTION``) so that diagnostics from recent runs survive even
     if the current run overwrites the main log.
 
     Permissions are restricted to owner-only (0600) because the log may
     contain prompt text, file paths, and other potentially sensitive data.
     """
-    log_path = Path(workdir) / ".checkloop-run.log"
+    log_path = Path(log_dir) / ".checkloop-run.log"
     _rotate_log_file(log_path)
     try:
         fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -250,9 +252,13 @@ def main() -> None:
     args = build_argument_parser().parse_args()
     _configure_logging(args)
     workdir = resolve_working_directory(args.dir)
-    _add_file_log_handler(workdir)
-    logger.info("checkloop started: run_id=%s, workdir=%s", _RUN_ID, workdir)
-    telemetry.start(workdir, _RUN_ID)
+    prune_old_runs()
+    run_dir = create_run_dir(workdir)
+    args.run_dir = str(run_dir)
+    _add_file_log_handler(run_dir)
+    logger.info("checkloop started: run_id=%s, workdir=%s, run_dir=%s",
+                _RUN_ID, workdir, run_dir)
+    telemetry.start(workdir, _RUN_ID, run_dir=run_dir)
     validate_arguments(args)
 
     args.changed_files_prefix = resolve_changed_files_prefix(args, workdir)
