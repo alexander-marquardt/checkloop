@@ -118,18 +118,68 @@ def has_uncommitted_changes(workdir: str) -> bool:
     return bool(output)
 
 
+_MAX_UNTRACKED_FILES_IN_DIFF = 30
+"""Cap on how many untracked files are expanded into the diff.
+
+A check that produces dozens of new files is usually dumping generated
+artifacts (coverage HTML, build output).  Showing the first ``N`` is enough
+context for a commit message; the artifact guard in ``git_commit_all``
+unstages the rest before they get committed.
+"""
+
+
+def _untracked_files_as_diff(workdir: str) -> str:
+    """Render each untracked file as a ``git diff --no-index /dev/null <file>`` patch.
+
+    ``git diff HEAD`` omits untracked files, so a check that only adds new
+    files would leave the commit-message generator with an empty diff —
+    which is exactly how the "The diff is empty" LLM garbage ended up as a
+    commit message.  Expanding untracked files into synthetic "new file"
+    diffs fixes that without mutating repo state (no ``git add --intent-to-add``
+    tricks that would need undoing).
+    """
+    ls = _git_stdout(workdir, "ls-files", "--others", "--exclude-standard", "-z")
+    if not ls:
+        return ""
+    untracked = [f for f in ls.split("\0") if f]
+    if not untracked:
+        return ""
+    shown = untracked[:_MAX_UNTRACKED_FILES_IN_DIFF]
+    patches: list[str] = []
+    for path in shown:
+        try:
+            result = _git_run(workdir, "diff", "--no-index", "--", os.devnull, path)
+        except OSError as exc:
+            logger.debug("diff --no-index failed for untracked %s: %s", path, exc)
+            continue
+        # `git diff --no-index` exits 1 when files differ — which they always do
+        # here (comparing /dev/null to a real file).  Accept rc 0 or 1.
+        if result.returncode in (0, 1) and result.stdout:
+            patches.append(result.stdout)
+    if len(untracked) > _MAX_UNTRACKED_FILES_IN_DIFF:
+        patches.append(
+            f"... ({len(untracked) - _MAX_UNTRACKED_FILES_IN_DIFF} more untracked files omitted from diff)\n",
+        )
+    return "\n".join(patches)
+
+
 def get_uncommitted_diff(workdir: str) -> str:
     """Return the combined diff of all uncommitted changes relative to HEAD.
 
-    Includes both staged and unstaged modifications.  Falls back to
-    ``git diff --cached`` if HEAD does not exist (initial commit scenario).
-    Returns an empty string if no diff is available.
+    Includes staged, unstaged, and untracked files.  Untracked files are
+    expanded via ``git diff --no-index`` so a check that only adds new files
+    still produces a meaningful diff for the commit-message generator.
+    Falls back to ``git diff --cached`` if HEAD does not exist (initial
+    commit scenario).  Returns an empty string if nothing is available.
     """
-    diff = _git_stdout(workdir, "diff", "HEAD")
-    if diff is not None:
-        return diff
-    # No HEAD yet (no commits) — show staged changes only.
-    return _git_stdout(workdir, "diff", "--cached") or ""
+    tracked = _git_stdout(workdir, "diff", "HEAD")
+    if tracked is None:
+        # No HEAD yet (no commits) — show staged changes only.
+        tracked = _git_stdout(workdir, "diff", "--cached") or ""
+    untracked = _untracked_files_as_diff(workdir)
+    if tracked and untracked:
+        return f"{tracked}\n{untracked}"
+    return tracked or untracked
 
 
 # --- Commit -------------------------------------------------------------------
@@ -152,6 +202,83 @@ history would permanently expose that sensitive content.
 """
 
 
+_ARTIFACT_PATH_FRAGMENTS: tuple[str, ...] = (
+    "/coverage/",
+    "/htmlcov/",
+    "/dist/",
+    "/build/",
+    "/.next/",
+    "/.nuxt/",
+    "/.vite-cache/",
+    "/.cache/",
+    "/node_modules/",
+    "/__pycache__/",
+    "/.pytest_cache/",
+    "/.mypy_cache/",
+    "/.ruff_cache/",
+    "/.tox/",
+    "/.gradle/",
+    "/target/",
+)
+"""Path substrings that identify generated build/test artifacts.
+
+These almost never belong in a commit — they're regenerated on every build
+or test run and bloat repo history.  When a check accidentally causes
+artifacts to land in the working tree (e.g. running the test suite creates
+`htmlcov/` or `search-ui/coverage/`), checkloop's ``git add -A`` would
+otherwise commit the lot with a generic message.  We unstage these paths
+explicitly and log a warning so the user knows to add them to ``.gitignore``.
+"""
+
+_ARTIFACT_FILENAME_PREFIXES: tuple[str, ...] = (".coverage",)
+"""Leading-match filename patterns for generated artifacts (e.g. `.coverage.hostname.pid`)."""
+
+_ARTIFACT_FILENAME_EXACT: frozenset[str] = frozenset({
+    ".coverage",
+    "coverage.xml",
+    "coverage.lcov",
+    "lcov.info",
+})
+"""Exact filenames that are always generated artifacts."""
+
+
+def _looks_like_artifact(path: str) -> bool:
+    """Return True if *path* matches one of the artifact patterns.
+
+    Match is substring-based for directory fragments (so ``search-ui/coverage/foo.html``
+    matches ``/coverage/``) and basename-based for exact filenames.
+    """
+    normalized = "/" + path.replace("\\", "/").lstrip("/")
+    if any(fragment in normalized for fragment in _ARTIFACT_PATH_FRAGMENTS):
+        return True
+    basename = normalized.rsplit("/", 1)[-1]
+    if basename in _ARTIFACT_FILENAME_EXACT:
+        return True
+    return any(basename.startswith(prefix) for prefix in _ARTIFACT_FILENAME_PREFIXES)
+
+
+def _unstage_generated_artifacts(workdir: str) -> list[str]:
+    """Unstage any staged files that match artifact patterns.
+
+    Returns the list of unstaged paths so the caller can log them.
+    """
+    staged = _git_stdout(workdir, "diff", "--cached", "--name-only", "-z")
+    if not staged:
+        return []
+    paths = [p for p in staged.split("\0") if p]
+    offenders = [p for p in paths if _looks_like_artifact(p)]
+    if not offenders:
+        return []
+    # `git reset HEAD --` fails on an initial-commit repo with no HEAD.
+    # `git rm --cached --ignore-unmatch` is safe either way.
+    try:
+        _git_run(workdir, "rm", "--cached", "--ignore-unmatch", "--", *offenders)
+    except OSError as exc:
+        logger.warning("Failed to unstage generated artifacts: %s", exc)
+        return []
+    return offenders
+
+
 def git_commit_all(workdir: str, message: str) -> bool:
     """Stage and commit any uncommitted changes.
 
@@ -166,6 +293,16 @@ def git_commit_all(workdir: str, message: str) -> bool:
         # Unstage checkloop's own files (ignore errors — files may not be staged).
         for pattern in _CHECKLOOP_UNSTAGE_PATTERNS:
             _git_run(workdir, "reset", "HEAD", "--", pattern)
+        # Unstage generated build/test artifacts that shouldn't be committed.
+        unstaged_artifacts = _unstage_generated_artifacts(workdir)
+        if unstaged_artifacts:
+            preview = ", ".join(unstaged_artifacts[:5])
+            more = f" (+{len(unstaged_artifacts) - 5} more)" if len(unstaged_artifacts) > 5 else ""
+            logger.warning(
+                "Unstaged %d generated artifact path(s) before commit: %s%s — "
+                "add these patterns to .gitignore so they don't recur.",
+                len(unstaged_artifacts), preview, more,
+            )
         if _git_run(workdir, "diff", "--cached", "--quiet").returncode == 0:
             logger.debug("No staged changes — nothing to commit")
             return False
