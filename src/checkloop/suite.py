@@ -590,6 +590,7 @@ def _print_scratch_branch_summary(
     *,
     clone_mode: bool = False,
     original_workdir: str | None = None,
+    review_branch: str | None = None,
 ) -> None:
     """Print post-run instructions for adopting or discarding checkloop's work.
 
@@ -635,6 +636,7 @@ def _print_scratch_branch_summary(
             scratch_branch=scratch_branch,
             scratch_base_sha=scratch_base_sha,
             original_workdir=original_workdir,
+            review_branch=review_branch,
         )
     else:
         _print_in_place_adoption_commands(
@@ -644,34 +646,53 @@ def _print_scratch_branch_summary(
         )
 
 
+def _pr_base_from_review_branch(review_branch: str | None) -> str:
+    if not review_branch:
+        return "<review-branch>"
+    return review_branch[len("origin/"):] if review_branch.startswith("origin/") else review_branch
+
+
 def _print_clone_adoption_commands(
     *,
     clone_dir: str,
     scratch_branch: str,
     scratch_base_sha: str,
     original_workdir: str,
+    review_branch: str | None,
 ) -> None:
+    base_short = scratch_base_sha[:12]
+    pr_base = _pr_base_from_review_branch(review_branch)
+
     print(f"  {DIM}The clone is at: {clone_dir}{RESET}")
     print(f"  {DIM}Your original repo at {original_workdir} was not touched.{RESET}\n")
 
-    print(f"  {BOLD}To review what checkloop changed:{RESET}")
-    print(f"    git -C {clone_dir} log --oneline {scratch_base_sha[:12]}..{scratch_branch}")
-    print(f"    git -C {clone_dir} diff {scratch_base_sha[:12]}..{scratch_branch}")
+    print(f"  {BOLD}Next steps — review, then push and open a PR:{RESET}\n")
 
-    print(f"\n  {BOLD}To pull the branch into your original repo:{RESET}")
-    print(f"    cd {original_workdir}")
-    print(f"    git fetch {clone_dir} {scratch_branch}:{scratch_branch}")
-    print(f"    git log --oneline {scratch_branch}")
+    print(f"  {BOLD}1. Review what checkloop changed{RESET}")
+    print(f"     git -C {clone_dir} log --oneline {base_short}..{scratch_branch}")
+    print(f"     git -C {clone_dir} diff {base_short}..{scratch_branch}\n")
 
-    print(f"\n  {BOLD}To adopt everything (fast-forward):{RESET}")
-    print(f"    git merge --ff-only {scratch_branch}")
+    print(f"  {BOLD}2. Optional — ask Claude for a final review of the diff{RESET}")
+    print(f"     cd {clone_dir}")
+    print(f"     claude \"Review the diff between {base_short} and HEAD on this branch. "
+          f"Flag anything that looks incorrect, risky, or lower quality than the original.\"\n")
 
-    print(f"\n  {BOLD}To cherry-pick specific commits:{RESET}")
-    print(f"    git cherry-pick <sha>")
+    print(f"  {BOLD}3. Pull the scratch branch into your original repo{RESET}")
+    print(f"     cd {original_workdir}")
+    print(f"     git fetch {clone_dir} {scratch_branch}:{scratch_branch}\n")
 
-    print(f"\n  {BOLD}To discard everything:{RESET}")
-    print(f"    rm -rf {clone_dir}")
-    print(f"    git branch -D {scratch_branch}  # if you already fetched it\n")
+    print(f"  {BOLD}4. Push and open a PR targeting {pr_base}{RESET}")
+    print(f"     git push -u origin {scratch_branch}")
+    print(f"     gh pr create --base {pr_base} --head {scratch_branch}\n")
+
+    print(f"  {BOLD}5. Review the PR (yourself or with your team), then merge it{RESET}")
+    print(f"     {DIM}checkloop does not merge for you — that is your call.{RESET}\n")
+
+    print(f"  {DIM}Alternatives:{RESET}")
+    print(f"  {DIM}  Adopt locally without a PR:   git merge --ff-only {scratch_branch}{RESET}")
+    print(f"  {DIM}  Cherry-pick specific commits: git cherry-pick <sha>{RESET}")
+    print(f"  {DIM}  Discard everything:           rm -rf {clone_dir}{RESET}")
+    print(f"  {DIM}                                git branch -D {scratch_branch}  # if already fetched{RESET}\n")
 
 
 def _print_in_place_adoption_commands(
@@ -680,24 +701,37 @@ def _print_in_place_adoption_commands(
     scratch_base_sha: str,
     original_branch: str | None,
 ) -> None:
+    base_short = scratch_base_sha[:12]
     target_branch = original_branch or "<your-branch>"
     if original_branch:
         print(f"  {DIM}Your original branch ({original_branch}) was not modified.{RESET}\n")
     else:
         print(f"  {DIM}HEAD was detached when the run started — there is no original branch to return to.{RESET}\n")
 
-    print(f"  {BOLD}To review what checkloop changed:{RESET}")
-    print(f"    git log --oneline {scratch_base_sha[:12]}..{scratch_branch}")
-    print(f"    git diff {scratch_base_sha[:12]}..{scratch_branch}")
-    print(f"\n  {BOLD}To adopt everything into {target_branch}:{RESET}")
-    print(f"    git switch {target_branch}")
-    print(f"    git merge --ff-only {scratch_branch}")
-    print(f"\n  {BOLD}To cherry-pick specific commits:{RESET}")
-    print(f"    git switch {target_branch}")
-    print(f"    git cherry-pick <sha>")
-    print(f"\n  {BOLD}To discard everything:{RESET}")
-    print(f"    git switch {target_branch}")
-    print(f"    git branch -D {scratch_branch}\n")
+    print(f"  {BOLD}Next steps — review, then push and open a PR:{RESET}\n")
+
+    print(f"  {BOLD}1. Review what checkloop changed{RESET}")
+    print(f"     git log --oneline {base_short}..{scratch_branch}")
+    print(f"     git diff {base_short}..{scratch_branch}\n")
+
+    print(f"  {BOLD}2. Optional — ask Claude for a final review of the diff{RESET}")
+    print(f"     claude \"Review the diff between {base_short} and {scratch_branch}. "
+          f"Flag anything that looks incorrect, risky, or lower quality than the original.\"\n")
+
+    print(f"  {BOLD}3. Push and open a PR targeting {target_branch}{RESET}")
+    print(f"     git push -u origin {scratch_branch}")
+    print(f"     gh pr create --base {target_branch} --head {scratch_branch}\n")
+
+    print(f"  {BOLD}4. Review the PR (yourself or with your team), then merge it{RESET}")
+    print(f"     {DIM}checkloop does not merge for you — that is your call.{RESET}\n")
+
+    print(f"  {DIM}Alternatives:{RESET}")
+    print(f"  {DIM}  Adopt locally without a PR:   git switch {target_branch}{RESET}")
+    print(f"  {DIM}                                git merge --ff-only {scratch_branch}{RESET}")
+    print(f"  {DIM}  Cherry-pick specific commits: git switch {target_branch}{RESET}")
+    print(f"  {DIM}                                git cherry-pick <sha>{RESET}")
+    print(f"  {DIM}  Discard everything:           git switch {target_branch}{RESET}")
+    print(f"  {DIM}                                git branch -D {scratch_branch}{RESET}\n")
 
 
 def run_suite_with_error_handling(
@@ -740,6 +774,7 @@ def run_suite_with_error_handling(
             args.dry_run,
             clone_mode=getattr(args, "clone_mode", False),
             original_workdir=getattr(args, "original_workdir", None),
+            review_branch=getattr(args, "review_branch", None),
         )
         sys.exit(130)
     except FileNotFoundError as exc:
@@ -759,6 +794,7 @@ def run_suite_with_error_handling(
             args.dry_run,
             clone_mode=getattr(args, "clone_mode", False),
             original_workdir=getattr(args, "original_workdir", None),
+            review_branch=getattr(args, "review_branch", None),
         )
         raise
     suite_elapsed = format_duration(time.time() - suite_start_time)
@@ -773,4 +809,7 @@ def run_suite_with_error_handling(
         getattr(args, "scratch_base_sha", None),
         getattr(args, "original_branch", None),
         args.dry_run,
+        clone_mode=getattr(args, "clone_mode", False),
+        original_workdir=getattr(args, "original_workdir", None),
+        review_branch=getattr(args, "review_branch", None),
     )

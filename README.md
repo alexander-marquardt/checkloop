@@ -85,6 +85,20 @@ Set `CHECKLOOP_STATE_HOME=/some/other/path` to put the clones somewhere other th
 
 `--in-place` preserves the old single-directory behaviour: no clone, commits land on a `checkloop-<iso-timestamp>` scratch branch inside `--dir`, and uncommitted/untracked files in your working tree are reviewed too. Use it when you want to review in-flight work, or for non-git directories.
 
+### After a run — review, push, open a PR
+
+checkloop never pushes or merges anything itself. The scratch branch is left on disk and you decide what happens to it. When a run finishes, the terminal prints copy-pasteable commands for this exact sequence. In clone mode the steps are:
+
+1. **Review what changed** — `git -C <clone-dir> log --oneline <base>..<branch>` and `git -C <clone-dir> diff <base>..<branch>`. Read the diff before you adopt anything; autonomous checks occasionally make changes that are wrong, over-eager, or stylistically off for your project.
+2. **Optional — ask Claude for a second-opinion review** — `cd <clone-dir> && claude "Review the diff between <base> and HEAD on this branch. Flag anything that looks incorrect, risky, or lower quality than the original."` A fresh Claude session reading the final diff catches things the in-loop checks missed because they were focused on a single dimension.
+3. **Pull the scratch branch into your real repo** — `cd <your-repo> && git fetch <clone-dir> <branch>:<branch>`. This is a local fetch; nothing touches `origin`.
+4. **Push and open a PR targeting `<review-branch>`** — `git push -u origin <branch>` followed by `gh pr create --base <review-branch> --head <branch>`. The PR title/body becomes the place where teammates can comment on individual hunks, CI runs, etc.
+5. **Merge through your normal PR workflow** — review the PR (yourself or with your team), wait for CI, then merge. checkloop does not merge for you; that is your call.
+
+If you don't want a PR, adopt locally with `git merge --ff-only <branch>` or cherry-pick specific commits. If you don't want any of it, delete the clone with `rm -rf <clone-dir>`.
+
+In `--in-place` mode the scratch branch already lives in your repo, so steps 1, 2, 4, and 5 are the same but you skip the local `git fetch` in step 3.
+
 To make `checkloop` available globally (without `uv run`):
 
 ```bash
