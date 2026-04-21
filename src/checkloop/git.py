@@ -12,6 +12,7 @@ import os
 import re
 import subprocess
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, overload
 
@@ -448,6 +449,88 @@ def _cached_total_tracked_lines(workdir: str) -> int:
 
 
 # --- Branch and changed-file helpers -----------------------------------------
+
+_SCRATCH_BRANCH_PREFIX = "checkloop/run"
+"""All checkloop scratch branches start with this prefix.
+
+Using a dedicated namespace means ``git branch --list 'checkloop/*'`` cleanly
+enumerates past and current runs, and the user can blow them all away with a
+single ``git branch -D $(git branch --list 'checkloop/*')`` when they want to
+reclaim ref storage.
+"""
+
+
+def current_branch_name(workdir: str) -> str | None:
+    """Return the current branch name, or None if HEAD is detached.
+
+    Used at run-start so checkloop knows which branch the user was on and can
+    display it in the post-run summary (``To merge back into main: …``).
+    """
+    return _git_stdout(workdir, "symbolic-ref", "--short", "HEAD")
+
+
+def branch_exists(workdir: str, branch_name: str) -> bool:
+    """Return True if a local branch with this name exists."""
+    return _git_stdout(workdir, "rev-parse", "--verify", f"refs/heads/{branch_name}") is not None
+
+
+def checkout_branch(workdir: str, branch_name: str) -> bool:
+    """Check out an existing branch.  Returns True on success."""
+    try:
+        _git_run(workdir, "checkout", branch_name, check=True)
+    except (subprocess.CalledProcessError, OSError) as exc:
+        logger.warning("Failed to checkout branch %s: %s", branch_name, exc)
+        return False
+    logger.info("Checked out branch %s", branch_name)
+    return True
+
+
+def create_scratch_branch(workdir: str) -> tuple[str, str, str | None] | None:
+    """Create a fresh ``checkloop/run-<ts>-<sha>`` branch off current HEAD and check it out.
+
+    All of checkloop's commits (pre-run snapshot of uncommitted work, per-check
+    commits, memory-fix commits) land on this disposable branch so the user's
+    original branch history stays pristine.  The user can merge, cherry-pick,
+    or delete the branch after reviewing.
+
+    Returns ``(branch_name, base_sha, original_branch)`` — ``original_branch``
+    is None when HEAD was detached.  Returns None if the branch could not be
+    created (e.g. unreachable HEAD, permission denied).
+    """
+    base_sha = git_head_sha(workdir)
+    if not base_sha:
+        logger.warning("Cannot create scratch branch — no HEAD SHA available")
+        return None
+    original = current_branch_name(workdir)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    branch_name = f"{_SCRATCH_BRANCH_PREFIX}-{timestamp}-{base_sha[:7]}"
+    try:
+        _git_run(workdir, "checkout", "-b", branch_name, check=True)
+    except (subprocess.CalledProcessError, OSError) as exc:
+        logger.warning("Failed to create scratch branch %s: %s", branch_name, exc)
+        return None
+    logger.info("Created scratch branch %s off %s (base: %s)",
+                 branch_name, original or "(detached HEAD)", base_sha[:7])
+    return branch_name, base_sha, original
+
+
+def count_commits_between(workdir: str, base_sha: str, target: str = "HEAD") -> int:
+    """Return the number of commits between *base_sha* and *target* (exclusive of base).
+
+    Used in the post-run summary to tell the user how many commits the scratch
+    branch added.  Returns 0 on any git error.
+    """
+    if not base_sha:
+        return 0
+    output = _git_stdout(workdir, "rev-list", "--count", f"{base_sha}..{target}")
+    if output is None:
+        return 0
+    try:
+        return int(output)
+    except ValueError:
+        logger.debug("Unexpected rev-list --count output: %r", output)
+        return 0
+
 
 def detect_default_branch(workdir: str) -> str:
     """Return the default branch name ('main' or 'master'), falling back to 'main'.

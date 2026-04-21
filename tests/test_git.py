@@ -572,3 +572,98 @@ class TestUnstageGeneratedArtifacts:
         with mock.patch.object(git, "_git_stdout", return_value="a/coverage/x"):
             with mock.patch.object(git, "_git_run", side_effect=OSError("disk full")):
                 assert git._unstage_generated_artifacts("/tmp") == []
+
+
+class TestCurrentBranchName:
+    """Tests for current_branch_name()."""
+
+    def test_returns_branch(self) -> None:
+        with mock.patch.object(git, "_git_stdout", return_value="main"):
+            assert git.current_branch_name("/tmp") == "main"
+
+    def test_none_when_detached(self) -> None:
+        with mock.patch.object(git, "_git_stdout", return_value=None):
+            assert git.current_branch_name("/tmp") is None
+
+
+class TestBranchExists:
+    """Tests for branch_exists()."""
+
+    def test_true_when_ref_resolves(self) -> None:
+        with mock.patch.object(git, "_git_stdout", return_value="abc123"):
+            assert git.branch_exists("/tmp", "checkloop/run-x") is True
+
+    def test_false_when_ref_missing(self) -> None:
+        with mock.patch.object(git, "_git_stdout", return_value=None):
+            assert git.branch_exists("/tmp", "missing") is False
+
+
+class TestCheckoutBranch:
+    """Tests for checkout_branch()."""
+
+    def test_returns_true_on_success(self) -> None:
+        with mock.patch.object(git, "_git_run", return_value=make_git_result()):
+            assert git.checkout_branch("/tmp", "main") is True
+
+    def test_returns_false_on_called_process_error(self) -> None:
+        err = subprocess.CalledProcessError(1, ["git", "checkout", "main"])
+        with mock.patch.object(git, "_git_run", side_effect=err):
+            assert git.checkout_branch("/tmp", "main") is False
+
+    def test_returns_false_on_oserror(self) -> None:
+        with mock.patch.object(git, "_git_run", side_effect=OSError("no git")):
+            assert git.checkout_branch("/tmp", "main") is False
+
+
+class TestCreateScratchBranch:
+    """Tests for create_scratch_branch()."""
+
+    def test_returns_branch_info_on_success(self) -> None:
+        with mock.patch.object(git, "git_head_sha", return_value="abc1234567890"), \
+             mock.patch.object(git, "current_branch_name", return_value="main"), \
+             mock.patch.object(git, "_git_run", return_value=make_git_result()):
+            info = git.create_scratch_branch("/tmp")
+        assert info is not None
+        branch, base, original = info
+        assert branch.startswith("checkloop/run-")
+        assert branch.endswith("-abc1234")
+        assert base == "abc1234567890"
+        assert original == "main"
+
+    def test_returns_none_when_no_head_sha(self) -> None:
+        with mock.patch.object(git, "git_head_sha", return_value=None):
+            assert git.create_scratch_branch("/tmp") is None
+
+    def test_returns_none_when_checkout_fails(self) -> None:
+        err = subprocess.CalledProcessError(1, ["git", "checkout", "-b"])
+        with mock.patch.object(git, "git_head_sha", return_value="abc1234"), \
+             mock.patch.object(git, "current_branch_name", return_value="main"), \
+             mock.patch.object(git, "_git_run", side_effect=err):
+            assert git.create_scratch_branch("/tmp") is None
+
+    def test_detached_head_original_branch_is_none(self) -> None:
+        with mock.patch.object(git, "git_head_sha", return_value="abc1234"), \
+             mock.patch.object(git, "current_branch_name", return_value=None), \
+             mock.patch.object(git, "_git_run", return_value=make_git_result()):
+            info = git.create_scratch_branch("/tmp")
+        assert info is not None
+        assert info[2] is None
+
+
+class TestCountCommitsBetween:
+    """Tests for count_commits_between()."""
+
+    def test_returns_count(self) -> None:
+        with mock.patch.object(git, "_git_stdout", return_value="3"):
+            assert git.count_commits_between("/tmp", "abc123") == 3
+
+    def test_zero_when_no_base_sha(self) -> None:
+        assert git.count_commits_between("/tmp", "") == 0
+
+    def test_zero_on_git_failure(self) -> None:
+        with mock.patch.object(git, "_git_stdout", return_value=None):
+            assert git.count_commits_between("/tmp", "abc123") == 0
+
+    def test_zero_on_unparseable_output(self) -> None:
+        with mock.patch.object(git, "_git_stdout", return_value="not-a-number"):
+            assert git.count_commits_between("/tmp", "abc123") == 0

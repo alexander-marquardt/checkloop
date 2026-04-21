@@ -28,9 +28,12 @@ from checkloop.checkpoint import (
 )
 from checkloop.checks import CheckDef
 from checkloop.git import (
+    branch_exists,
+    checkout_branch,
     compute_change_stats,
+    count_commits_between,
+    create_scratch_branch,
     get_uncommitted_diff,
-    get_unpushed_commits,
     git_commit_all,
     git_head_sha,
     has_uncommitted_changes,
@@ -152,6 +155,12 @@ class _SuiteState:
         previously_changed_ids: Check IDs that produced changes in the prior
             cycle, or None if this is the first cycle.
         started_at: ISO 8601 timestamp when the suite was originally started.
+        scratch_branch: Name of the disposable ``checkloop/run-*`` branch
+            checkloop is committing on, or None outside git repos / dry runs.
+        scratch_base_sha: SHA where the scratch branch was forked from — used
+            to count commits and diff against the user's original state.
+        original_branch: Branch the user was on before the scratch branch was
+            created (None if HEAD was detached).  Used in the post-run summary.
     """
 
     start_cycle: int = 1
@@ -161,6 +170,9 @@ class _SuiteState:
     prev_change_pct: float | None = None
     previously_changed_ids: set[str] | None = None
     started_at: str = ""
+    scratch_branch: str | None = None
+    scratch_base_sha: str | None = None
+    original_branch: str | None = None
 
 
 def _build_suite_state(resume_from: CheckpointData | None) -> _SuiteState:
@@ -175,11 +187,68 @@ def _build_suite_state(resume_from: CheckpointData | None) -> _SuiteState:
     raw_prev = resume_from.get("previously_changed_ids")
     state.previously_changed_ids = set(raw_prev) if raw_prev is not None else None
     state.started_at = resume_from.get("started_at", state.started_at)
+    state.scratch_branch = resume_from.get("scratch_branch")
+    state.scratch_base_sha = resume_from.get("scratch_base_sha")
+    state.original_branch = resume_from.get("original_branch")
     logger.info("Resuming from checkpoint: cycle=%d, check_index=%d, changed=%s",
                 state.start_cycle, state.start_check_index, sorted(state.resume_changed))
     print_status(f"Resuming from cycle {state.start_cycle}, "
                  f"check {state.start_check_index + 1}...", CYAN)
     return state
+
+
+def _attach_to_scratch_branch(workdir: str, state: _SuiteState) -> None:
+    """Create or reattach to checkloop's disposable scratch branch.
+
+    On a fresh run, forks a ``checkloop/run-<timestamp>-<sha>`` branch off the
+    current HEAD and checks it out.  On resume, reattaches to the scratch branch
+    recorded in the checkpoint — creating it again if the user deleted it, which
+    shouldn't happen but is safer than failing the whole resume.
+
+    All subsequent commits (pre-run snapshot, per-check commits, memory-fix
+    commits) land on this branch so the user's original branch history stays
+    pristine.  Silently returns if a branch couldn't be created (non-fatal —
+    the run proceeds on whatever branch the user was on, matching pre-feature
+    behaviour).
+    """
+    if state.scratch_branch:
+        # Resume path: we already have a branch name from the checkpoint.
+        if branch_exists(workdir, state.scratch_branch):
+            if checkout_branch(workdir, state.scratch_branch):
+                print_status(
+                    f"Reattached to scratch branch {state.scratch_branch} "
+                    f"(original: {state.original_branch or '(detached)'}).",
+                    CYAN,
+                )
+                return
+            logger.warning("Resume: failed to checkout %s — continuing on current branch",
+                           state.scratch_branch)
+            return
+        logger.warning(
+            "Resume: scratch branch %s no longer exists — creating a new one",
+            state.scratch_branch,
+        )
+        # Fall through to fresh-create.
+
+    info = create_scratch_branch(workdir)
+    if info is None:
+        # Non-fatal: the run can proceed on the user's current branch.  This is
+        # what pre-feature behaviour looked like, so we don't fail the run.
+        print_status(
+            "Warning: could not create scratch branch — commits will land on the current branch.",
+            YELLOW,
+        )
+        return
+    branch_name, base_sha, original = info
+    state.scratch_branch = branch_name
+    state.scratch_base_sha = base_sha
+    state.original_branch = original
+    print_status(
+        f"Working on scratch branch {branch_name} "
+        f"(forked from {original or '(detached HEAD)'}@{base_sha[:7]}). "
+        f"Original branch is untouched.",
+        GREEN,
+    )
 
 
 # --- Suite orchestration ------------------------------------------------------
@@ -309,8 +378,19 @@ def _run_check_suite(
     Returns the outcomes list (same object as *all_outcomes* when provided).
     """
     is_git = is_git_repo(workdir)
+    state = _build_suite_state(resume_from)
     if is_git and not args.dry_run:
+        # Create or reattach to checkloop's disposable scratch branch BEFORE
+        # committing anything: the pre-run snapshot of the user's uncommitted
+        # work must land on the scratch branch, not on their original branch.
+        _attach_to_scratch_branch(workdir, state)
         _commit_uncommitted_changes(workdir, args.dangerously_skip_permissions, getattr(args, "model", None), getattr(args, "claude_command", "claude"))
+    # Expose scratch-branch info on args so the error-handling wrapper can
+    # surface the review/merge/discard instructions in the post-run summary
+    # even if the suite is interrupted before clearing the checkpoint.
+    args.scratch_branch = state.scratch_branch
+    args.scratch_base_sha = state.scratch_base_sha
+    args.original_branch = state.original_branch
     # On fresh runs, clear previous per-check logs so the directory only
     # contains output from the current session.
     log_dir = Path(workdir) / ".checkloop-logs"
@@ -335,7 +415,6 @@ def _run_check_suite(
         args.project_map = ""
     convergence_enabled = convergence_threshold > 0 and is_git
     check_ids = [c["id"] for c in selected_checks]
-    state = _build_suite_state(resume_from)
     if all_outcomes is None:
         all_outcomes = []
 
@@ -353,6 +432,9 @@ def _run_check_suite(
                 previously_changed_ids=state.previously_changed_ids,
                 prev_change_pct=state.prev_change_pct,
                 started_at=state.started_at,
+                scratch_branch=state.scratch_branch,
+                scratch_base_sha=state.scratch_base_sha,
+                original_branch=state.original_branch,
             )
             save_checkpoint(workdir, data)
         except Exception as exc:
@@ -493,35 +575,60 @@ def _print_recommendations(workdir: str, suite_start_time: float, dry_run: bool)
     print(f"\n{DIM}(Saved to {path}){RESET}\n")
 
 
-def _print_push_reminder(workdir: str, dry_run: bool) -> None:
-    """Print post-run instructions for reviewing and pushing local commits.
+def _print_scratch_branch_summary(
+    workdir: str,
+    scratch_branch: str | None,
+    scratch_base_sha: str | None,
+    original_branch: str | None,
+    dry_run: bool,
+) -> None:
+    """Print post-run instructions for reviewing, merging, or discarding the scratch branch.
 
     Only shown when the target directory is a git repo and not a dry run.
-    Detects unpushed commits so the user knows exactly what needs reviewing.
+    When a scratch branch was created, tells the user how many commits land on
+    it and exactly which commands to run to merge, cherry-pick, or throw them
+    away.  When scratch-branch creation failed earlier and commits landed on
+    the user's original branch, falls back to the plain commit-review output.
     """
     if dry_run or not is_git_repo(workdir):
         return
 
-    unpushed = get_unpushed_commits(workdir)
-
     print(f"\n{BOLD}{CYAN}{'─' * 72}{RESET}")
-    print(f"{BOLD}{CYAN}  Review & Push{RESET}")
+    print(f"{BOLD}{CYAN}  Review & Merge{RESET}")
     print(f"{BOLD}{CYAN}{'─' * 72}{RESET}\n")
 
-    if not unpushed:
-        print(f"  {YELLOW}No unpushed local commits found.{RESET}")
-        print(f"  {YELLOW}(The branch may already be up to date with the remote.){RESET}\n")
-    else:
-        print(f"  {GREEN}{len(unpushed)} local commit(s) are ready to review:{RESET}\n")
-        for line in unpushed:
-            print(f"    {DIM}{line}{RESET}")
+    if not scratch_branch or not scratch_base_sha:
+        print(f"  {YELLOW}No scratch branch was created — commits landed on the current branch.{RESET}")
+        print(f"  {YELLOW}Review with:  git log --oneline -20{RESET}\n")
+        return
 
-    print(f"\n  {BOLD}To review what changed:{RESET}")
-    print(f"    git log --oneline @{{u}}..HEAD   # list unpushed commits")
-    print(f"    git diff @{{u}}..HEAD            # full diff vs remote")
-    print(f"    git show <sha>                  # inspect a single commit")
-    print(f"\n  {BOLD}When you're ready to push:{RESET}")
-    print(f"    git push\n")
+    commit_count = count_commits_between(workdir, scratch_base_sha, scratch_branch)
+    target_branch = original_branch or "<your-branch>"
+
+    if commit_count == 0:
+        print(f"  {YELLOW}Scratch branch {scratch_branch} has no new commits.{RESET}")
+        print(f"  {YELLOW}Nothing to merge. Delete with:  git branch -D {scratch_branch}{RESET}\n")
+        return
+
+    print(f"  {GREEN}Scratch branch {BOLD}{scratch_branch}{RESET}{GREEN} has "
+          f"{commit_count} commit(s) on top of {scratch_base_sha[:7]}.{RESET}")
+    if original_branch:
+        print(f"  {DIM}Your original branch ({original_branch}) was not modified.{RESET}\n")
+    else:
+        print(f"  {DIM}HEAD was detached when the run started — there is no original branch to return to.{RESET}\n")
+
+    print(f"  {BOLD}To review what checkloop changed:{RESET}")
+    print(f"    git log --oneline {scratch_base_sha[:12]}..{scratch_branch}")
+    print(f"    git diff {scratch_base_sha[:12]}..{scratch_branch}")
+    print(f"\n  {BOLD}To adopt everything into {target_branch}:{RESET}")
+    print(f"    git switch {target_branch}")
+    print(f"    git merge --ff-only {scratch_branch}")
+    print(f"\n  {BOLD}To cherry-pick specific commits:{RESET}")
+    print(f"    git switch {target_branch}")
+    print(f"    git cherry-pick <sha>")
+    print(f"\n  {BOLD}To discard everything:{RESET}")
+    print(f"    git switch {target_branch}")
+    print(f"    git branch -D {scratch_branch}\n")
 
 
 def run_suite_with_error_handling(
@@ -556,7 +663,13 @@ def run_suite_with_error_handling(
         print_status(f"\nInterrupted after {elapsed}. Partial results may have been applied.", YELLOW)
         _print_summary(all_outcomes, elapsed)
         _print_recommendations(workdir, suite_start_time, args.dry_run)
-        _print_push_reminder(workdir, args.dry_run)
+        _print_scratch_branch_summary(
+            workdir,
+            getattr(args, "scratch_branch", None),
+            getattr(args, "scratch_base_sha", None),
+            getattr(args, "original_branch", None),
+            args.dry_run,
+        )
         sys.exit(130)
     except FileNotFoundError as exc:
         logger.error("Required external tool not found: %s", exc, exc_info=True)
@@ -567,7 +680,13 @@ def run_suite_with_error_handling(
         print_status(f"\nUnexpected error after {elapsed}. Partial results may have been applied.", RED)
         _print_summary(all_outcomes, elapsed)
         _print_recommendations(workdir, suite_start_time, args.dry_run)
-        _print_push_reminder(workdir, args.dry_run)
+        _print_scratch_branch_summary(
+            workdir,
+            getattr(args, "scratch_branch", None),
+            getattr(args, "scratch_base_sha", None),
+            getattr(args, "original_branch", None),
+            args.dry_run,
+        )
         raise
     suite_elapsed = format_duration(time.time() - suite_start_time)
     logger.info("Suite completed: elapsed=%s, checks=%d, cycles=%d",
@@ -575,4 +694,10 @@ def run_suite_with_error_handling(
     _print_summary(all_outcomes, suite_elapsed)
     print_banner(f"All done! ({suite_elapsed} total)", GREEN)
     _print_recommendations(workdir, suite_start_time, args.dry_run)
-    _print_push_reminder(workdir, args.dry_run)
+    _print_scratch_branch_summary(
+        workdir,
+        getattr(args, "scratch_branch", None),
+        getattr(args, "scratch_base_sha", None),
+        getattr(args, "original_branch", None),
+        args.dry_run,
+    )
