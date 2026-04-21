@@ -27,7 +27,9 @@ from checkloop.checkpoint import (
     save_checkpoint,
 )
 from checkloop.checks import CheckDef
+from checkloop.clone import is_remote_url
 from checkloop.git import (
+    _git_stdout,
     branch_exists,
     checkout_branch,
     compute_change_stats,
@@ -652,6 +654,11 @@ def _pr_base_from_review_branch(review_branch: str | None) -> str:
     return review_branch[len("origin/"):] if review_branch.startswith("origin/") else review_branch
 
 
+def _clone_origin_url(clone_dir: str) -> str | None:
+    """Return the clone's ``origin`` URL, or None if not configured."""
+    return _git_stdout(clone_dir, "config", "remote.origin.url")
+
+
 def _print_clone_adoption_commands(
     *,
     clone_dir: str,
@@ -662,10 +669,70 @@ def _print_clone_adoption_commands(
 ) -> None:
     base_short = scratch_base_sha[:12]
     pr_base = _pr_base_from_review_branch(review_branch)
+    origin_url = _clone_origin_url(clone_dir)
 
     print(f"  {DIM}The clone is at: {clone_dir}{RESET}")
-    print(f"  {DIM}Your original repo at {original_workdir} was not touched.{RESET}\n")
+    print(f"  {DIM}Your original repo at {original_workdir} was not touched.{RESET}")
+    if is_remote_url(origin_url):
+        print(f"  {DIM}The clone's origin points at {origin_url} — you can push directly from it.{RESET}\n")
+        _print_clone_push_direct(
+            clone_dir=clone_dir,
+            scratch_branch=scratch_branch,
+            base_short=base_short,
+            pr_base=pr_base,
+        )
+    else:
+        print()
+        _print_clone_push_via_original(
+            clone_dir=clone_dir,
+            scratch_branch=scratch_branch,
+            base_short=base_short,
+            pr_base=pr_base,
+            original_workdir=original_workdir,
+        )
 
+
+def _print_clone_push_direct(
+    *,
+    clone_dir: str,
+    scratch_branch: str,
+    base_short: str,
+    pr_base: str,
+) -> None:
+    print(f"  {BOLD}Next steps — review, then push and open a PR:{RESET}\n")
+
+    print(f"  {BOLD}1. Switch into the clone{RESET}")
+    print(f"     cd {clone_dir}\n")
+
+    print(f"  {BOLD}2. Review what checkloop changed{RESET}")
+    print(f"     git log --oneline {base_short}..{scratch_branch}")
+    print(f"     git diff {base_short}..{scratch_branch}\n")
+
+    print(f"  {BOLD}3. Optional — ask Claude for a final review of the diff{RESET}")
+    print(f"     claude \"Review the diff between {base_short} and HEAD on this branch. "
+          f"Flag anything that looks incorrect, risky, or lower quality than the original.\"\n")
+
+    print(f"  {BOLD}4. Push the scratch branch to origin{RESET}")
+    print(f"     git push -u origin {scratch_branch}\n")
+
+    print(f"  {BOLD}5. Open a PR targeting {pr_base}{RESET}")
+    print(f"     gh pr create --base {pr_base} --head {scratch_branch}\n")
+
+    print(f"  {BOLD}6. Review the PR (yourself or with your team), then merge it{RESET}")
+    print(f"     {DIM}checkloop does not merge for you — that is your call.{RESET}\n")
+
+    print(f"  {DIM}When you're done: rm -rf {clone_dir}{RESET}\n")
+
+
+def _print_clone_push_via_original(
+    *,
+    clone_dir: str,
+    scratch_branch: str,
+    base_short: str,
+    pr_base: str,
+    original_workdir: str,
+) -> None:
+    print(f"  {DIM}The clone's origin is a local path, so push goes through your original repo.{RESET}\n")
     print(f"  {BOLD}Next steps — review, then push and open a PR:{RESET}\n")
 
     print(f"  {BOLD}1. Review what checkloop changed{RESET}")
