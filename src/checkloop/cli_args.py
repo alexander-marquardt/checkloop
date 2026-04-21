@@ -199,6 +199,24 @@ def build_argument_parser() -> argparse.ArgumentParser:
             "By default, commit messages omit any reference to AI tools."
         ),
     )
+    parser.add_argument(
+        "--review-branch", default=None, metavar="BRANCH",
+        help=(
+            "Branch (or any git ref) to review. Required unless --in-place is set. "
+            "The target repo is cloned to ~/checkloop-runs/<target>-<iso>/ and this "
+            "ref is checked out there. Prefers origin/<BRANCH> when that remote-tracking "
+            "ref exists, so 'main' reviews origin/main, not a possibly-stale local branch."
+        ),
+    )
+    parser.add_argument(
+        "--in-place", action="store_true",
+        help=(
+            "Run checkloop directly in --dir instead of cloning. Use this to review "
+            "in-flight working-tree state (including uncommitted and untracked files) "
+            "or on a non-git directory. Commits still land on a disposable scratch "
+            "branch but they modify the user's working checkout."
+        ),
+    )
 
     return parser
 
@@ -266,6 +284,14 @@ def validate_arguments(args: argparse.Namespace) -> None:
         fatal("--check-timeout cannot be negative")
     if args.system_free_floor_mb < 0:
         fatal("--system-free-floor-mb cannot be negative")
+    if not args.in_place and not args.review_branch:
+        fatal(
+            "Either --review-branch <branch> or --in-place is required. "
+            "--review-branch clones the target repo and reviews the specified ref; "
+            "--in-place runs directly on the working tree in --dir.",
+        )
+    if args.in_place and args.review_branch:
+        fatal("--in-place and --review-branch are mutually exclusive")
 
 
 def resolve_changed_files_prefix(args: argparse.Namespace, workdir: str) -> str:

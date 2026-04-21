@@ -22,11 +22,11 @@ class TestGetRunsRoot:
     """Tests for get_runs_root()."""
 
     def test_uses_env_override(self, tmp_path: Path) -> None:
-        assert run_storage.get_runs_root() == tmp_path / "runs"
+        assert run_storage.get_runs_root() == tmp_path / "checkloop-runs"
 
     def test_defaults_to_home(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("CHECKLOOP_STATE_HOME", raising=False)
-        assert run_storage.get_runs_root() == Path.home() / ".checkloop" / "runs"
+        assert run_storage.get_runs_root() == Path.home() / "checkloop-runs"
 
 
 class TestIsoTimestamp:
@@ -81,7 +81,7 @@ class TestPruneOldRuns:
         assert run_storage.prune_old_runs() == 0
 
     def test_removes_old_run_dirs(self, tmp_path: Path) -> None:
-        runs = tmp_path / "runs"
+        runs = tmp_path / "checkloop-runs"
         runs.mkdir()
         old = runs / "proj-old"
         old.mkdir()
@@ -100,7 +100,7 @@ class TestPruneOldRuns:
         assert fresh.exists()
 
     def test_keeps_recent_runs(self, tmp_path: Path) -> None:
-        runs = tmp_path / "runs"
+        runs = tmp_path / "checkloop-runs"
         runs.mkdir()
         recent = runs / "proj-recent"
         recent.mkdir()
@@ -108,7 +108,7 @@ class TestPruneOldRuns:
         assert recent.exists()
 
     def test_ignores_files_at_root(self, tmp_path: Path) -> None:
-        runs = tmp_path / "runs"
+        runs = tmp_path / "checkloop-runs"
         runs.mkdir()
         stray = runs / "not-a-run.txt"
         stray.write_text("hi")
@@ -118,7 +118,7 @@ class TestPruneOldRuns:
         assert stray.exists()
 
     def test_custom_max_age(self, tmp_path: Path) -> None:
-        runs = tmp_path / "runs"
+        runs = tmp_path / "checkloop-runs"
         runs.mkdir()
         d = runs / "proj"
         d.mkdir()

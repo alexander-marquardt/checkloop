@@ -451,14 +451,43 @@ def _cached_total_tracked_lines(workdir: str) -> int:
 # --- Branch and changed-file helpers -----------------------------------------
 
 _SCRATCH_BRANCH_PREFIX = "checkloop"
-"""All checkloop scratch branches start with this prefix.
+"""Default prefix for checkloop scratch branches (used in --in-place mode).
 
-The full branch name is ``checkloop-<ISO-8601-utc>`` (e.g.
+In-place branch name: ``checkloop-<ISO-8601-utc>`` (e.g.
 ``checkloop-2026-04-21T23-25-31Z``) — flat rather than namespaced so it shows
-up alongside the user's own branches in ``git branch``.  The user can
-enumerate past runs with ``git branch --list 'checkloop-*'`` and clean them
-all up with ``git branch -D $(git branch --list 'checkloop-*')``.
+up alongside the user's own branches in ``git branch``.
+
+In clone mode, a different naming scheme is used — see
+:func:`_build_scratch_branch_name`: ``<review-branch>-cl-<ISO-8601-utc>`` so the
+branch name carries the name of the reviewed ref.
 """
+
+_SCRATCH_BRANCH_INFIX = "cl"
+"""Infix between the review-branch name and the timestamp (short for "checkloop")."""
+
+
+def _build_scratch_branch_name(review_branch: str | None, timestamp: str) -> str:
+    """Return the scratch-branch name to create for this run.
+
+    * In-place mode (review_branch is None) → ``checkloop-<timestamp>``.
+    * Clone mode (review_branch is given) → ``<sanitized-review-branch>-cl-<timestamp>``.
+
+    The review-branch name is sanitized:
+
+      * A leading ``origin/`` is stripped so the resulting name carries the
+        logical branch, not the remote prefix.
+      * ``/`` is replaced with ``-`` to keep the branch name flat — this
+        avoids collisions with any existing refs hierarchy in the clone
+        (``main-cl-<ts>`` is always safe even if ``main`` already exists,
+        whereas ``main/cl-<ts>`` would conflict).
+    """
+    if not review_branch:
+        return f"{_SCRATCH_BRANCH_PREFIX}-{timestamp}"
+    name = review_branch
+    if name.startswith("origin/"):
+        name = name[len("origin/"):]
+    name = name.replace("/", "-").strip("-") or _SCRATCH_BRANCH_PREFIX
+    return f"{name}-{_SCRATCH_BRANCH_INFIX}-{timestamp}"
 
 
 def current_branch_name(workdir: str) -> str | None:
@@ -486,8 +515,11 @@ def checkout_branch(workdir: str, branch_name: str) -> bool:
     return True
 
 
-def create_scratch_branch(workdir: str) -> tuple[str, str, str | None] | None:
-    """Create a fresh ``checkloop-<iso-ts>`` branch forked from the user's current HEAD.
+def create_scratch_branch(
+    workdir: str,
+    review_branch: str | None = None,
+) -> tuple[str, str, str | None] | None:
+    """Create a fresh scratch branch forked from the user's current HEAD.
 
     The fork point is whichever branch (and commit) the user was on when
     checkloop started — **never** main/master, unless that's what they were
@@ -495,6 +527,13 @@ def create_scratch_branch(workdir: str) -> tuple[str, str, str | None] | None:
     the ``git checkout -b`` and is snapshotted in checkloop's first commit on
     the scratch branch, so the user's pre-run state (tracked + untracked +
     staged) is preserved on the disposable branch exactly as-is.
+
+    Branch naming (see :func:`_build_scratch_branch_name`):
+
+      * ``--in-place`` runs use ``checkloop-<iso-ts>``.
+      * ``--review-branch <ref>`` runs use ``<ref>-cl-<iso-ts>`` so the
+        adoption branch carries the reviewed ref's name (e.g.
+        ``main-cl-2026-04-21T10-30-45Z``).
 
     All of checkloop's commits (pre-run snapshot, per-check commits, memory-
     fix commits) land on this branch so the user's original branch history
@@ -511,7 +550,7 @@ def create_scratch_branch(workdir: str) -> tuple[str, str, str | None] | None:
         return None
     original = current_branch_name(workdir)
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
-    branch_name = f"{_SCRATCH_BRANCH_PREFIX}-{timestamp}"
+    branch_name = _build_scratch_branch_name(review_branch, timestamp)
     try:
         # Pass base_sha explicitly so the fork point is unambiguous even if
         # something between git_head_sha() and here were to move HEAD.

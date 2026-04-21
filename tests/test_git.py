@@ -650,6 +650,64 @@ class TestCreateScratchBranch:
         assert info is not None
         assert info[2] is None
 
+    def test_review_branch_uses_named_prefix(self) -> None:
+        """When review_branch is given, scratch branch is <name>-cl-<ts>."""
+        with mock.patch.object(git, "git_head_sha", return_value="abc1234"), \
+             mock.patch.object(git, "current_branch_name", return_value=None), \
+             mock.patch.object(git, "_git_run", return_value=make_git_result()):
+            info = git.create_scratch_branch("/tmp", review_branch="main")
+        assert info is not None
+        assert info[0].startswith("main-cl-")
+        assert info[0].endswith("Z")
+
+    def test_review_branch_strips_origin_prefix(self) -> None:
+        """origin/main is sanitized to main- for the branch name."""
+        with mock.patch.object(git, "git_head_sha", return_value="abc1234"), \
+             mock.patch.object(git, "current_branch_name", return_value=None), \
+             mock.patch.object(git, "_git_run", return_value=make_git_result()):
+            info = git.create_scratch_branch("/tmp", review_branch="origin/main")
+        assert info is not None
+        assert info[0].startswith("main-cl-")
+
+    def test_review_branch_replaces_slashes(self) -> None:
+        """feature/foo is flattened to feature-foo- to avoid ref-hierarchy conflicts."""
+        with mock.patch.object(git, "git_head_sha", return_value="abc1234"), \
+             mock.patch.object(git, "current_branch_name", return_value=None), \
+             mock.patch.object(git, "_git_run", return_value=make_git_result()):
+            info = git.create_scratch_branch("/tmp", review_branch="feature/foo")
+        assert info is not None
+        assert info[0].startswith("feature-foo-cl-")
+        assert "/" not in info[0]
+
+
+class TestBuildScratchBranchName:
+    """Tests for _build_scratch_branch_name()."""
+
+    def test_in_place_uses_default_prefix(self) -> None:
+        name = git._build_scratch_branch_name(None, "2026-04-21T10-00-00Z")
+        assert name == "checkloop-2026-04-21T10-00-00Z"
+
+    def test_review_branch_uses_cl_infix(self) -> None:
+        name = git._build_scratch_branch_name("main", "2026-04-21T10-00-00Z")
+        assert name == "main-cl-2026-04-21T10-00-00Z"
+
+    def test_strips_origin_prefix(self) -> None:
+        name = git._build_scratch_branch_name("origin/develop", "2026-04-21T10-00-00Z")
+        assert name == "develop-cl-2026-04-21T10-00-00Z"
+
+    def test_replaces_slashes(self) -> None:
+        name = git._build_scratch_branch_name("feature/my-work", "2026-04-21T10-00-00Z")
+        assert name == "feature-my-work-cl-2026-04-21T10-00-00Z"
+
+    def test_empty_review_branch_falls_back_to_default(self) -> None:
+        name = git._build_scratch_branch_name("", "2026-04-21T10-00-00Z")
+        assert name == "checkloop-2026-04-21T10-00-00Z"
+
+    def test_strips_trailing_dashes_after_sanitization(self) -> None:
+        # "origin/" alone would leave an empty string after stripping — fall back.
+        name = git._build_scratch_branch_name("origin/", "2026-04-21T10-00-00Z")
+        assert name == "checkloop-cl-2026-04-21T10-00-00Z"
+
 
 class TestCountCommitsBetween:
     """Tests for count_commits_between()."""

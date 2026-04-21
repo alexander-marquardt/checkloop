@@ -197,13 +197,19 @@ def _build_suite_state(resume_from: CheckpointData | None) -> _SuiteState:
     return state
 
 
-def _attach_to_scratch_branch(workdir: str, state: _SuiteState) -> None:
+def _attach_to_scratch_branch(
+    workdir: str,
+    state: _SuiteState,
+    review_branch: str | None = None,
+) -> None:
     """Create or reattach to checkloop's disposable scratch branch.
 
-    On a fresh run, forks a ``checkloop/run-<timestamp>-<sha>`` branch off the
-    current HEAD and checks it out.  On resume, reattaches to the scratch branch
-    recorded in the checkpoint — creating it again if the user deleted it, which
-    shouldn't happen but is safer than failing the whole resume.
+    On a fresh run, forks a branch off the current HEAD and checks it out.
+    The branch name includes the review-branch name when given (see
+    :func:`checkloop.git._build_scratch_branch_name`).
+    On resume, reattaches to the scratch branch recorded in the checkpoint —
+    creating it again if the user deleted it, which shouldn't happen but is
+    safer than failing the whole resume.
 
     All subsequent commits (pre-run snapshot, per-check commits, memory-fix
     commits) land on this branch so the user's original branch history stays
@@ -230,7 +236,7 @@ def _attach_to_scratch_branch(workdir: str, state: _SuiteState) -> None:
         )
         # Fall through to fresh-create.
 
-    info = create_scratch_branch(workdir)
+    info = create_scratch_branch(workdir, review_branch=review_branch)
     if info is None:
         # Non-fatal: the run can proceed on the user's current branch.  This is
         # what pre-feature behaviour looked like, so we don't fail the run.
@@ -383,7 +389,7 @@ def _run_check_suite(
         # Create or reattach to checkloop's disposable scratch branch BEFORE
         # committing anything: the pre-run snapshot of the user's uncommitted
         # work must land on the scratch branch, not on their original branch.
-        _attach_to_scratch_branch(workdir, state)
+        _attach_to_scratch_branch(workdir, state, review_branch=getattr(args, "review_branch", None))
         _commit_uncommitted_changes(workdir, args.dangerously_skip_permissions, getattr(args, "model", None), getattr(args, "claude_command", "claude"))
     # Expose scratch-branch info on args so the error-handling wrapper can
     # surface the review/merge/discard instructions in the post-run summary
@@ -581,20 +587,28 @@ def _print_scratch_branch_summary(
     scratch_base_sha: str | None,
     original_branch: str | None,
     dry_run: bool,
+    *,
+    clone_mode: bool = False,
+    original_workdir: str | None = None,
 ) -> None:
-    """Print post-run instructions for reviewing, merging, or discarding the scratch branch.
+    """Print post-run instructions for adopting or discarding checkloop's work.
 
     Only shown when the target directory is a git repo and not a dry run.
-    When a scratch branch was created, tells the user how many commits land on
-    it and exactly which commands to run to merge, cherry-pick, or throw them
-    away.  When scratch-branch creation failed earlier and commits landed on
-    the user's original branch, falls back to the plain commit-review output.
+    Behaviour depends on ``clone_mode``:
+
+    * In clone mode (default) the scratch branch lives inside a disposable
+      clone under ``~/checkloop-runs/``.  Commands direct the user to
+      ``cd`` back to their real repo and ``git fetch`` the branch out of the
+      clone, so the clone is purely additive and trivially deletable.
+    * In in-place mode the scratch branch lives in the user's real repo and
+      the commands use local ``git merge`` / ``cherry-pick`` / ``branch -D``
+      against it.
     """
     if dry_run or not is_git_repo(workdir):
         return
 
     print(f"\n{BOLD}{CYAN}{'─' * 72}{RESET}")
-    print(f"{BOLD}{CYAN}  Review & Merge{RESET}")
+    print(f"{BOLD}{CYAN}  Review & Adopt{RESET}")
     print(f"{BOLD}{CYAN}{'─' * 72}{RESET}\n")
 
     if not scratch_branch or not scratch_base_sha:
@@ -603,15 +617,70 @@ def _print_scratch_branch_summary(
         return
 
     commit_count = count_commits_between(workdir, scratch_base_sha, scratch_branch)
-    target_branch = original_branch or "<your-branch>"
 
     if commit_count == 0:
-        print(f"  {YELLOW}Scratch branch {scratch_branch} has no new commits.{RESET}")
-        print(f"  {YELLOW}Nothing to merge. Delete with:  git branch -D {scratch_branch}{RESET}\n")
+        print(f"  {YELLOW}Scratch branch {scratch_branch} has no new commits — nothing to adopt.{RESET}")
+        if clone_mode:
+            print(f"  {YELLOW}You can delete the clone: rm -rf {workdir}{RESET}\n")
+        else:
+            print(f"  {YELLOW}Delete it with:  git branch -D {scratch_branch}{RESET}\n")
         return
 
     print(f"  {GREEN}Scratch branch {BOLD}{scratch_branch}{RESET}{GREEN} has "
-          f"{commit_count} commit(s) on top of {scratch_base_sha[:7]}.{RESET}")
+          f"{commit_count} commit(s) on top of {scratch_base_sha[:7]}.{RESET}\n")
+
+    if clone_mode and original_workdir:
+        _print_clone_adoption_commands(
+            clone_dir=workdir,
+            scratch_branch=scratch_branch,
+            scratch_base_sha=scratch_base_sha,
+            original_workdir=original_workdir,
+        )
+    else:
+        _print_in_place_adoption_commands(
+            scratch_branch=scratch_branch,
+            scratch_base_sha=scratch_base_sha,
+            original_branch=original_branch,
+        )
+
+
+def _print_clone_adoption_commands(
+    *,
+    clone_dir: str,
+    scratch_branch: str,
+    scratch_base_sha: str,
+    original_workdir: str,
+) -> None:
+    print(f"  {DIM}The clone is at: {clone_dir}{RESET}")
+    print(f"  {DIM}Your original repo at {original_workdir} was not touched.{RESET}\n")
+
+    print(f"  {BOLD}To review what checkloop changed:{RESET}")
+    print(f"    git -C {clone_dir} log --oneline {scratch_base_sha[:12]}..{scratch_branch}")
+    print(f"    git -C {clone_dir} diff {scratch_base_sha[:12]}..{scratch_branch}")
+
+    print(f"\n  {BOLD}To pull the branch into your original repo:{RESET}")
+    print(f"    cd {original_workdir}")
+    print(f"    git fetch {clone_dir} {scratch_branch}:{scratch_branch}")
+    print(f"    git log --oneline {scratch_branch}")
+
+    print(f"\n  {BOLD}To adopt everything (fast-forward):{RESET}")
+    print(f"    git merge --ff-only {scratch_branch}")
+
+    print(f"\n  {BOLD}To cherry-pick specific commits:{RESET}")
+    print(f"    git cherry-pick <sha>")
+
+    print(f"\n  {BOLD}To discard everything:{RESET}")
+    print(f"    rm -rf {clone_dir}")
+    print(f"    git branch -D {scratch_branch}  # if you already fetched it\n")
+
+
+def _print_in_place_adoption_commands(
+    *,
+    scratch_branch: str,
+    scratch_base_sha: str,
+    original_branch: str | None,
+) -> None:
+    target_branch = original_branch or "<your-branch>"
     if original_branch:
         print(f"  {DIM}Your original branch ({original_branch}) was not modified.{RESET}\n")
     else:
@@ -669,6 +738,8 @@ def run_suite_with_error_handling(
             getattr(args, "scratch_base_sha", None),
             getattr(args, "original_branch", None),
             args.dry_run,
+            clone_mode=getattr(args, "clone_mode", False),
+            original_workdir=getattr(args, "original_workdir", None),
         )
         sys.exit(130)
     except FileNotFoundError as exc:
@@ -686,6 +757,8 @@ def run_suite_with_error_handling(
             getattr(args, "scratch_base_sha", None),
             getattr(args, "original_branch", None),
             args.dry_run,
+            clone_mode=getattr(args, "clone_mode", False),
+            original_workdir=getattr(args, "original_workdir", None),
         )
         raise
     suite_elapsed = format_duration(time.time() - suite_start_time)

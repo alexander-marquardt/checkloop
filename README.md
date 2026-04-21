@@ -24,46 +24,66 @@ uv sync
 
 ## Usage
 
-Run with `uv run checkloop` from the project directory. `--dir` is required:
+Run with `uv run checkloop` from anywhere. Both `--dir` and a mode flag are required — either `--review-branch <ref>` (clone mode, the recommended default) or `--in-place` (run directly in `--dir`):
 
 ```bash
-# Check a project (basic plan — the default)
-uv run checkloop --dir ~/my-project
+# Review the remote main branch — checkloop clones the target into
+# ~/checkloop-runs/<project>-<iso-timestamp>/ and reviews origin/main there
+uv run checkloop --dir ~/my-project --review-branch main
 
-# Use the thorough plan for deeper checks
-uv run checkloop --dir ~/my-project --plan thorough
+# Review a feature branch from origin
+uv run checkloop --dir ~/my-project --review-branch feature/my-work
+
+# Thorough plan on the review branch
+uv run checkloop --dir ~/my-project --review-branch main --plan thorough
 
 # Exhaustive — all 23 checks, repeat twice
-uv run checkloop --dir ~/my-project --plan exhaustive --cycles 2
+uv run checkloop --dir ~/my-project --review-branch main --plan exhaustive --cycles 2
 
 # Super-exhaustive — exhaustive plus infrastructure audits and a meta-review
 # that writes a recommendations report (occasional deep audits only)
-uv run checkloop --dir ~/my-project --plan super-exhaustive
+uv run checkloop --dir ~/my-project --review-branch main --plan super-exhaustive
 
 # Pick specific checks manually (overrides plan)
-uv run checkloop --dir ~/my-project --checks readability security tests
+uv run checkloop --dir ~/my-project --review-branch main --checks readability security tests
 
 # Use your own plan file
-uv run checkloop --dir ~/my-project --plan ./my-plan.toml
+uv run checkloop --dir ~/my-project --review-branch main --plan ./my-plan.toml
 
 # Preview without running
-uv run checkloop --dir ~/my-project --dry-run
+uv run checkloop --dir ~/my-project --review-branch main --dry-run
 
-# Only check files changed on this branch (vs main/master)
-uv run checkloop --dir ~/my-project --changed-only
+# Run against the working tree directly (including uncommitted changes) —
+# this is the legacy behaviour; no clone is made and commits land in --dir
+uv run checkloop --dir ~/my-project --in-place
 
-# Only check files changed vs a specific branch
-uv run checkloop --dir ~/my-project --changed-only develop
+# Only check files changed on the review branch vs main/master
+uv run checkloop --dir ~/my-project --review-branch feature/x --changed-only main
 
 # See what Claude is doing in detail
-uv run checkloop --dir ~/my-project -v
+uv run checkloop --dir ~/my-project --review-branch main -v
 
 # Add a specific check on top of a plan
-uv run checkloop --dir ~/my-project --plan thorough --checks cleanup-ai-slop
+uv run checkloop --dir ~/my-project --review-branch main --plan thorough --checks cleanup-ai-slop
 
 # Use a different Claude CLI (e.g. Bedrock-backed)
-uv run checkloop --dir ~/my-project --claude-command claude-bedrock
+uv run checkloop --dir ~/my-project --review-branch main --claude-command claude-bedrock
 ```
+
+### Clone mode vs in-place mode
+
+By default (`--review-branch <ref>`) checkloop never modifies your working tree:
+
+1. It makes a hardlink-backed `git clone --local` of the target repo into `~/checkloop-runs/<project>-<iso-timestamp>/` — disk cost is effectively zero on the same filesystem.
+2. It runs `git fetch origin --prune` inside the clone, then checks out the requested ref (preferring `origin/<ref>` when it exists) in **detached-HEAD** state so commits can't accidentally be pushed upstream.
+3. It creates a scratch branch named `<review-branch>-cl-<iso-timestamp>` (e.g. `main-cl-2026-04-21T10-30-45Z`) and commits every change there.
+4. When the run finishes the terminal prints ready-to-paste commands to `git fetch` the scratch branch out of the clone into your real repo, merge it, cherry-pick, or discard it with `rm -rf <clone-dir>`.
+
+This means you can keep working in your actual project directory while checkloop reviews a separate snapshot of it. The clone directory is also a timestamped backup — clones older than 14 days are pruned automatically.
+
+Set `CHECKLOOP_STATE_HOME=/some/other/path` to put the clones somewhere other than `~/checkloop-runs/`.
+
+`--in-place` preserves the old single-directory behaviour: no clone, commits land on a `checkloop-<iso-timestamp>` scratch branch inside `--dir`, and uncommitted/untracked files in your working tree are reviewed too. Use it when you want to review in-flight work, or for non-git directories.
 
 To make `checkloop` available globally (without `uv run`):
 
@@ -250,6 +270,15 @@ uv run checkloop --cycles 5 --convergence-threshold 0.5
 
 ```
 --dir, -d DIR          Project directory to check (required)
+--review-branch BRANCH Branch (or any git ref) to review. Required unless
+                       --in-place is set. Clones --dir into
+                       ~/checkloop-runs/<target>-<iso-timestamp>/ and checks
+                       out this ref there. Prefers origin/BRANCH over a local
+                       branch of the same name.
+--in-place             Run directly in --dir instead of cloning. Commits still
+                       land on a disposable scratch branch but they modify the
+                       working tree in --dir. Mutually exclusive with
+                       --review-branch.
 --plan, -p PLAN        Plan name or path to a TOML plan file.
                        Pre-populated: basic, thorough, exhaustive (default: basic).
 --checks CHECK [...]   Manually select checks (overrides --plan)
@@ -298,16 +327,19 @@ uv run checkloop --cycles 5 --convergence-threshold 0.5
 `checkloop` is a modular Python CLI that orchestrates Claude Code as a subprocess. Here is the high-level flow:
 
 1. **Argument resolution** — Parses CLI flags, loads the plan file (or resolves manual check selection), and validates the target directory.
-2. **Pre-run warning** — Displays a 5-second countdown so the user can abort. Warns if `--dangerously-skip-permissions` is (or isn't) set.
-3. **Check execution** — For each check, builds a focused prompt (with commit-message rules appended) and invokes `claude -p <prompt> --output-format stream-json --verbose` as a subprocess.
-4. **Real-time streaming** — Streams JSONL output from the subprocess, displaying tool-use events (file reads, edits, shell commands) and assistant messages with elapsed-time prefixes.
-5. **Idle timeout** — If Claude produces no output for N seconds (default 300), the process group is killed and the next check begins.
-6. **Hard timeout & memory limit** — Optional hard wall-clock timeout (`--check-timeout`) kills checks regardless of output. Memory monitoring (`--max-memory-mb`, default 8192) samples child tree RSS every 10 seconds and kills the process group if it exceeds the limit. A separate host-wide floor (`--system-free-floor-mb`, default 500) kills the running check if free system memory drops below MB — a safety net for swap-thrash stalls. When a kill fires, a "top offender" line names the single largest process (pid, RSS, command) so you can see what went wrong without re-reading the full log.
-7. **Checkpointing** — After each check, saves progress to `.checkloop-checkpoint.json`. If interrupted, the next run offers to resume from where it left off.
-8. **Per-check change detection** — After each check, compares the git HEAD before/after to report how many lines changed. All checks run every cycle so that cascading improvements are never missed.
-9. **Convergence detection** — After each full cycle, measures what percentage of total tracked lines were modified. If below the threshold, the loop exits early. Per-check commits are preserved individually for easier debugging.
-10. **Process cleanup** — Each Claude subprocess runs in its own process group (`setsid`). On completion or timeout, the entire group is killed (SIGTERM, then SIGKILL) to prevent orphaned child processes from leaking memory. An atexit handler sweeps all tracked sessions on program exit. A pre-cleanup state snapshot is appended to `~/.checkloop/cleanup-debug.log` so post-mortem debugging survives a terminal death.
-11. **Telemetry** — A background sampler writes one JSONL line every ~3 seconds to `.checkloop-telemetry/telemetry-YYYY-MM-DD.jsonl` with parent RSS, child-tree RSS, top 5 processes, system free memory, swap, and the active check label. The file survives crashes and OOM kills, so timelines are available even when the terminal dies. See [Observability](#observability).
+2. **Clone preparation** (unless `--in-place`) — Makes a hardlink-backed `git clone --local` of `--dir` into `~/checkloop-runs/<target>-<iso-timestamp>/`, runs `git fetch origin --prune` in the clone, resolves the `--review-branch` ref (preferring `origin/<name>` over any local branch), and checks it out in detached-HEAD state so commits can't be pushed upstream.
+3. **Scratch branch** — Creates `<review-branch>-cl-<iso-timestamp>` (or `checkloop-<iso-timestamp>` in `--in-place` mode) off the current HEAD and switches to it. All checkloop commits land on this branch; the user's original branches are untouched.
+4. **Pre-run warning** — Displays a 5-second countdown so the user can abort. Warns if `--dangerously-skip-permissions` is (or isn't) set.
+5. **Check execution** — For each check, builds a focused prompt (with commit-message rules appended) and invokes `claude -p <prompt> --output-format stream-json --verbose` as a subprocess.
+6. **Real-time streaming** — Streams JSONL output from the subprocess, displaying tool-use events (file reads, edits, shell commands) and assistant messages with elapsed-time prefixes.
+7. **Idle timeout** — If Claude produces no output for N seconds (default 300), the process group is killed and the next check begins.
+8. **Hard timeout & memory limit** — Optional hard wall-clock timeout (`--check-timeout`) kills checks regardless of output. Memory monitoring (`--max-memory-mb`, default 8192) samples child tree RSS every 10 seconds and kills the process group if it exceeds the limit. A separate host-wide floor (`--system-free-floor-mb`, default 500) kills the running check if free system memory drops below MB — a safety net for swap-thrash stalls. When a kill fires, a "top offender" line names the single largest process (pid, RSS, command) so you can see what went wrong without re-reading the full log.
+9. **Checkpointing** — After each check, saves progress to `.checkloop-checkpoint.json` inside the clone (or the `--dir` in `--in-place` mode). If interrupted, the next run offers to resume from where it left off.
+10. **Per-check change detection** — After each check, compares the git HEAD before/after to report how many lines changed. All checks run every cycle so that cascading improvements are never missed.
+11. **Convergence detection** — After each full cycle, measures what percentage of total tracked lines were modified. If below the threshold, the loop exits early. Per-check commits are preserved individually for easier debugging.
+12. **Adoption summary** — On completion (or interrupt) the terminal prints copy-pasteable commands for reviewing the scratch branch, `git fetch`-ing it out of the clone into the real repo, merging or cherry-picking it, or discarding the whole clone with `rm -rf`.
+13. **Process cleanup** — Each Claude subprocess runs in its own process group (`setsid`). On completion or timeout, the entire group is killed (SIGTERM, then SIGKILL) to prevent orphaned child processes from leaking memory. An atexit handler sweeps all tracked sessions on program exit. A pre-cleanup state snapshot is appended to `~/.checkloop/cleanup-debug.log` so post-mortem debugging survives a terminal death.
+14. **Telemetry** — A background sampler writes one JSONL line every ~3 seconds to `<run-dir>/.checkloop-telemetry/telemetry-YYYY-MM-DD.jsonl` (where `<run-dir>` is the clone dir in clone mode, or a fresh `~/checkloop-runs/<target>-<iso>/` dir in `--in-place` mode) with parent RSS, child-tree RSS, top 5 processes, system free memory, swap, and the active check label. The file survives crashes and OOM kills, so timelines are available even when the terminal dies. See [Observability](#observability).
 
 Each check operates on the code left by the previous check, so improvements compound: a readability check renames variables, then the DRY check can spot the newly-visible duplication, and so on.
 
@@ -343,7 +375,7 @@ No other environment variables or config files are required. All configuration i
 
 ## Log File
 
-Every run writes a DEBUG-level log to `.checkloop-run.log` in the target project directory. The log captures detailed operational data — prompt text, subprocess timing, memory measurements, and error traces — useful for post-run debugging. It is overwritten on each run and created with owner-only permissions (0600) since it may contain sensitive content. The file is excluded from git staging by default.
+Every run writes a DEBUG-level log to `<run-dir>/.checkloop-run.log`. `<run-dir>` is the clone directory under `~/checkloop-runs/<target>-<iso-timestamp>/` in clone mode, or a fresh `~/checkloop-runs/<target>-<iso-timestamp>/` directory in `--in-place` mode (so in-place runs don't pollute the target repo either). The log captures detailed operational data — prompt text, subprocess timing, memory measurements, and error traces — useful for post-run debugging. Previous logs are rotated to `.log.1`, `.log.2`, `.log.3`, and files are created with owner-only permissions (0600) since they may contain sensitive content.
 
 ## Observability
 
@@ -351,7 +383,7 @@ Long autonomous runs fail in ways that are hard to diagnose after the fact: the 
 
 ### Telemetry JSONL
 
-A background thread samples the process tree every ~3 seconds and appends one JSON line per sample to `.checkloop-telemetry/telemetry-YYYY-MM-DD.jsonl` in the target project directory. Each sample includes:
+A background thread samples the process tree every ~3 seconds and appends one JSON line per sample to `<run-dir>/.checkloop-telemetry/telemetry-YYYY-MM-DD.jsonl` (the clone directory in clone mode, or a fresh `~/checkloop-runs/<target>-<iso>/` dir in `--in-place` mode). Each sample includes:
 
 - `parent_rss_mb`, `children_rss_mb` — checkloop itself and the total of its descendants (recursive walk, so grandchildren like `pytest` / `python` / `grep` are included)
 - `top_children` — up to the top 5 processes by RSS, with `pid`, `rss_mb`, and `cmd`
@@ -370,7 +402,7 @@ jq -r '[.iso, .children_rss_mb, (.top_children[0] // {}) | .cmd] | @tsv' \
   .checkloop-telemetry/telemetry-2026-04-17.jsonl
 ```
 
-Retention is automatic: files older than 14 days are pruned, and if the directory exceeds 200 MB the oldest files drop until it's back under budget. The directory is git-ignored by default.
+Retention is automatic: per-run directories under `~/checkloop-runs/` older than 14 days are pruned at the start of the next run, and within each run's telemetry directory, files older than 14 days drop and the directory is capped at 200 MB.
 
 ### Top-offender alert
 
@@ -456,10 +488,12 @@ src/checkloop/
 ├── checks.py             # Check loader (reads checks/), plan config, dangerous-prompt guard
 ├── cli.py                # CLI entry point, logging setup, checkpoint resume, signal handling
 ├── cli_args.py           # Argument parsing, validation, resolution, and pre-run display
+├── clone.py              # Disposable `git clone --local` preparation for clone mode
 ├── commit_message.py     # Commit message generation via Claude Code (plain-text, no streaming)
-├── git.py                # Git operations: commits, diffs, line counting, branch detection
+├── git.py                # Git operations: commits, diffs, line counting, scratch branch creation
 ├── monitoring.py         # Memory/process monitoring, orphan detection, session cleanup
 ├── process.py            # Claude Code subprocess spawning, streaming, and cleanup
+├── run_storage.py        # ~/checkloop-runs/ layout, timestamps, 14-day auto-pruning
 ├── streaming.py          # JSONL stream parsing and real-time event display
 ├── suite.py              # Multi-cycle suite orchestration and convergence detection
 ├── terminal.py           # ANSI colours, banners, status messages, duration formatting
@@ -494,8 +528,8 @@ The project has no runtime dependencies — only `pytest` and `mypy` in the dev 
 | Checks hang waiting for permission prompts | You must use `--dangerously-skip-permissions` — checkloop cannot relay interactive prompts |
 | "CLAUDECODE" conflict when running inside a Claude session | checkloop automatically strips this variable; no action needed |
 | Convergence detection not working | Ensure the project directory is a git repo (`git init` if needed) |
-| High memory usage over many checks | checkloop kills orphaned child processes between checks and enforces an 8GB RSS limit by default. Adjust with `--max-memory-mb`, raise the host-wide floor with `--system-free-floor-mb`, or use `--verbose` to monitor RSS. For post-mortem, inspect `.checkloop-telemetry/telemetry-*.jsonl` — see [Observability](#observability) |
-| A check hung or was killed and you want to know why | Check the `top offender` line in `.checkloop-run.log`, then walk the timeline in `.checkloop-telemetry/telemetry-*.jsonl`. If the terminal itself died, `~/.checkloop/cleanup-debug.log` has the last process-tree snapshot |
+| High memory usage over many checks | checkloop kills orphaned child processes between checks and enforces an 8GB RSS limit by default. Adjust with `--max-memory-mb`, raise the host-wide floor with `--system-free-floor-mb`, or use `--verbose` to monitor RSS. For post-mortem, inspect `<run-dir>/.checkloop-telemetry/telemetry-*.jsonl` under `~/checkloop-runs/` — see [Observability](#observability) |
+| A check hung or was killed and you want to know why | Check the `top offender` line in `<run-dir>/.checkloop-run.log`, then walk the timeline in `<run-dir>/.checkloop-telemetry/telemetry-*.jsonl`. If the terminal itself died, `~/.checkloop/cleanup-debug.log` has the last process-tree snapshot |
 | Idle timeout kills a check too early | Increase with `--idle-timeout 600` (or higher) |
 | A check runs too long | Use `--check-timeout 3600` for a hard 1-hour wall-clock limit per check |
 | Want to start fresh after an interrupted run | Use `--no-resume` to skip the checkpoint prompt |

@@ -45,6 +45,7 @@ from checkloop.cli_args import (
     warn_if_mypy_unavailable,
 )
 from checkloop import telemetry
+from checkloop.clone import CloneError, prepare_clone
 from checkloop.monitoring import cleanup_all_sessions
 from checkloop.run_storage import create_run_dir, prune_old_runs
 from checkloop.suite import run_suite_with_error_handling
@@ -251,15 +252,32 @@ def main() -> None:
 
     args = build_argument_parser().parse_args()
     _configure_logging(args)
-    workdir = resolve_working_directory(args.dir)
-    prune_old_runs()
-    run_dir = create_run_dir(workdir)
-    args.run_dir = str(run_dir)
-    _add_file_log_handler(run_dir)
-    logger.info("checkloop started: run_id=%s, workdir=%s, run_dir=%s",
-                _RUN_ID, workdir, run_dir)
-    telemetry.start(workdir, _RUN_ID, run_dir=run_dir)
+    original_workdir = resolve_working_directory(args.dir)
     validate_arguments(args)
+    prune_old_runs()
+
+    if args.in_place:
+        workdir = original_workdir
+        run_dir = create_run_dir(workdir)
+    else:
+        try:
+            clone_dir = prepare_clone(original_workdir, args.review_branch)
+        except CloneError as exc:
+            fatal(f"Could not prepare clone: {exc}")
+        workdir = str(clone_dir)
+        run_dir = clone_dir
+        print_status(f"Cloned {original_workdir} → {clone_dir}", YELLOW)
+        print_status(f"Reviewing ref: {args.review_branch}", YELLOW)
+
+    args.original_workdir = original_workdir
+    args.run_dir = str(run_dir)
+    args.clone_mode = not args.in_place
+    _add_file_log_handler(run_dir)
+    logger.info(
+        "checkloop started: run_id=%s, workdir=%s, original=%s, clone_mode=%s",
+        _RUN_ID, workdir, original_workdir, args.clone_mode,
+    )
+    telemetry.start(workdir, _RUN_ID, run_dir=run_dir)
 
     args.changed_files_prefix = resolve_changed_files_prefix(args, workdir)
 

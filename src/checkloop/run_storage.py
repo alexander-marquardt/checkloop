@@ -1,22 +1,25 @@
-"""Run-scoped debug storage in checkloop's own state directory.
+"""Run-scoped storage under ``~/checkloop-runs/``.
 
-Debug artifacts (telemetry JSONL, run logs, per-check transcripts) are written
-to a per-run subdirectory under ``~/.checkloop/runs/`` rather than under the
-target project directory.  This keeps checkloop from polluting the repos it
-is checking.
+Each checkloop run lives in its own timestamped directory under the runs root.
+In the default (clone) mode this directory *is* a full local clone of the
+target repo with all checkloop commits, debug artifacts, and recommendations
+inside it — disposable, zero interference with the user's working tree, and a
+hard backup of the repo state at the moment the run began.  In ``--in-place``
+mode the directory only holds debug artifacts; the target repo is edited
+directly.
 
-Directory layout::
+Directory layout (clone mode)::
 
-    ~/.checkloop/
-        runs/
-            <target-basename>-<iso-timestamp>/
-                .checkloop-run.log
-                .checkloop-telemetry/telemetry-YYYY-MM-DD.jsonl
-                .checkloop-logs/<check-id>_cycle<N>.jsonl
+    ~/checkloop-runs/
+        <target-basename>-<iso-timestamp>/
+            <full clone of the target repo>
+            .checkloop-run.log
+            .checkloop-telemetry/telemetry-YYYY-MM-DD.jsonl
+            .checkloop-logs/<check-id>_cycle<N>.jsonl
 
 Runs older than ``_DEFAULT_MAX_AGE_DAYS`` are pruned at startup.  The root
 can be overridden with the ``CHECKLOOP_STATE_HOME`` environment variable —
-useful for tests and for users who prefer XDG_STATE_HOME-style paths.
+useful for tests.
 """
 
 from __future__ import annotations
@@ -31,18 +34,17 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_AGE_DAYS = 14
-_RUNS_SUBDIR = "runs"
-_STATE_DIRNAME = ".checkloop"
+_RUNS_DIRNAME = "checkloop-runs"
 
 _SANITIZE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 def get_runs_root() -> Path:
-    """Return the root directory where per-run debug info is stored."""
+    """Return the root directory under which per-run dirs are created."""
     override = os.environ.get("CHECKLOOP_STATE_HOME")
     if override:
-        return Path(override) / _RUNS_SUBDIR
-    return Path.home() / _STATE_DIRNAME / _RUNS_SUBDIR
+        return Path(override) / _RUNS_DIRNAME
+    return Path.home() / _RUNS_DIRNAME
 
 
 def iso_timestamp() -> str:

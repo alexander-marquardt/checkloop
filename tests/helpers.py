@@ -30,6 +30,8 @@ SHARED_ARG_DEFAULTS: dict[str, Any] = dict(
     debug=False,
     dangerously_skip_permissions=False,
     changed_files_prefix="",
+    in_place=True,
+    review_branch=None,
 )
 
 

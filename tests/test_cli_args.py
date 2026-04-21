@@ -225,6 +225,28 @@ class TestValidateArgumentsEdgeCases:
         args = make_mock_cli_args(check_timeout=0)
         cli_args.validate_arguments(args)
 
+    def test_missing_both_mode_flags_exits(self) -> None:
+        """Neither --review-branch nor --in-place was supplied."""
+        args = make_mock_cli_args(in_place=False, review_branch=None)
+        with pytest.raises(SystemExit) as exc_info:
+            cli_args.validate_arguments(args)
+        assert exc_info.value.code == 1
+
+    def test_both_mode_flags_exits(self) -> None:
+        """--in-place and --review-branch are mutually exclusive."""
+        args = make_mock_cli_args(in_place=True, review_branch="main")
+        with pytest.raises(SystemExit) as exc_info:
+            cli_args.validate_arguments(args)
+        assert exc_info.value.code == 1
+
+    def test_only_review_branch_is_valid(self) -> None:
+        args = make_mock_cli_args(in_place=False, review_branch="main")
+        cli_args.validate_arguments(args)
+
+    def test_only_in_place_is_valid(self) -> None:
+        args = make_mock_cli_args(in_place=True, review_branch=None)
+        cli_args.validate_arguments(args)
+
 
 # =============================================================================
 # resolve_selected_checks
@@ -380,7 +402,7 @@ class TestConfigureLogging:
             assert mock_log.call_args.kwargs["level"] == logging.WARNING
 
     def test_verbose_sets_info_level(self) -> None:
-        with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--verbose", "--dry-run", "--pause", "0"]):
+        with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--in-place", "--verbose", "--dry-run", "--pause", "0"]):
             with mock.patch("logging.basicConfig") as mock_log:
                 with mock.patch.object(suite, "_run_check_suite"):
                     cli.main()
@@ -388,7 +410,7 @@ class TestConfigureLogging:
                 assert mock_log.call_args.kwargs["level"] == logging.INFO
 
     def test_debug_sets_debug_level(self) -> None:
-        with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--debug", "--dry-run", "--pause", "0"]):
+        with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--in-place", "--debug", "--dry-run", "--pause", "0"]):
             with mock.patch("logging.basicConfig") as mock_log:
                 with mock.patch.object(suite, "_run_check_suite"):
                     cli.main()

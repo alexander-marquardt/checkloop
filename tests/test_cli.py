@@ -66,14 +66,14 @@ class TestMain:
             assert exc_info.value.code == 1
 
     def test_dry_run_full(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--dry-run", "--pause", "0"]):
+        with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--in-place", "--dry-run", "--pause", "0"]):
             cli.main()
         out = capsys.readouterr().out
         assert "DRY RUN" in out
         assert "All done" in out
 
     def test_all_checks_dry_run(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--all-checks", "--dry-run", "--pause", "0"]):
+        with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--in-place", "--all-checks", "--dry-run", "--pause", "0"]):
             cli.main()
         out = capsys.readouterr().out
         exhaustive_ids = set(checks.TIER_EXHAUSTIVE)
@@ -94,7 +94,7 @@ class TestMain:
             assert exc_info.value.code == 1
 
     def test_specific_checks(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--checks", "security", "perf", "--dry-run", "--pause", "0"]):
+        with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--in-place", "--checks", "security", "perf", "--dry-run", "--pause", "0"]):
             cli.main()
         out = capsys.readouterr().out
         assert "Security" in out
@@ -105,14 +105,14 @@ class TestMainNonDryRun:
     """Tests for main() in non-dry-run mode (with mocked internals)."""
 
     def test_non_dry_run_calls_warning(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--pause", "0"]):
+        with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--in-place", "--pause", "0"]):
             with mock.patch.object(cli, "display_pre_run_warning") as mock_warn:
                 with mock.patch.object(cli, "run_suite_with_error_handling"):
                     cli.main()
                 mock_warn.assert_called_once()
 
     def test_plan_thorough(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--plan", "thorough", "--dry-run", "--pause", "0"]):
+        with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--in-place", "--plan", "thorough", "--dry-run", "--pause", "0"]):
             cli.main()
         out = capsys.readouterr().out
         assert "security" in out
