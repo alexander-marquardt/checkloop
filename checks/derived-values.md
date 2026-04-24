@@ -19,6 +19,8 @@ Look for these patterns:
 
 6. **Inconsistent validation** — The frontend validates input using different rules than the backend (different max lengths, different regex patterns, different required fields). The frontend validation should be a subset of or match the backend validation, not contradict it. Fix: align the rules, or have the frontend fetch validation constraints from the backend.
 
+7. **Re-derived debug / diagnostic information** — Debug panels, "why did this match", score/ranking breakdowns, explain views, "applied rules" lists, "matched terms" highlights, and similar diagnostic surfaces show information that the backend already knows (and often already computes to produce the user-facing result). The frontend must not recompute these values by parsing raw documents, re-running scoring heuristics, re-implementing match logic, or reconstructing pipeline decisions from request/response fragments — debug output that disagrees with what the backend actually did is worse than no debug output at all. Fix: surface the backend's own diagnostic data (e.g. Elasticsearch `explain`, the backend's already-computed score components, the actual rule IDs that fired, the real applied-policy list) through the existing API response and render it verbatim on the frontend. If the backend computes the decision but discards the intermediate reasoning before responding, add the reasoning to the response rather than recreating it client-side.
+
 For each issue found:
 - Identify the backend computation and where it appears (or should appear) in an existing API response
 - Identify the frontend re-derivation and how it differs (or could drift)
