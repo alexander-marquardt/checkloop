@@ -178,6 +178,101 @@ class TestPrepareClone:
 
 
 # =============================================================================
+# _import_claude_memory
+# =============================================================================
+
+class TestImportClaudeMemory:
+    """Tests for _import_claude_memory()."""
+
+    @pytest.fixture
+    def fake_projects_root(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        """Redirect the Claude projects root to a tmp dir so tests are isolated."""
+        root = tmp_path / "claude-projects"
+        root.mkdir()
+        monkeypatch.setattr(clone, "_claude_projects_root", lambda: root)
+        return root
+
+    def test_slug_format(self) -> None:
+        slug = clone._slug_for_path(Path("/Users/alex/Documents/foo"))
+        assert slug == "-Users-alex-Documents-foo"
+
+    def test_copies_memory_when_original_has_it(
+        self, tmp_path: Path, fake_projects_root: Path,
+    ) -> None:
+        original = tmp_path / "src"
+        original.mkdir()
+        clone_dir = tmp_path / "clone"
+        clone_dir.mkdir()
+
+        src_memory = fake_projects_root / clone._slug_for_path(original) / "memory"
+        src_memory.mkdir(parents=True)
+        (src_memory / "MEMORY.md").write_text("# project memory\n")
+        (src_memory / "feedback_x.md").write_text("rule\n")
+
+        clone._import_claude_memory(original, clone_dir)
+
+        dst_memory = fake_projects_root / clone._slug_for_path(clone_dir) / "memory"
+        assert dst_memory.is_dir()
+        assert (dst_memory / "MEMORY.md").read_text() == "# project memory\n"
+        assert (dst_memory / "feedback_x.md").read_text() == "rule\n"
+
+    def test_silent_when_original_has_no_memory(
+        self, tmp_path: Path, fake_projects_root: Path,
+    ) -> None:
+        # No memory dir for original — import is a no-op, no exception.
+        clone._import_claude_memory(tmp_path / "src", tmp_path / "clone")
+        # Clone slug dir should not have been created either.
+        clone_slug = clone._slug_for_path(tmp_path / "clone")
+        assert not (fake_projects_root / clone_slug).exists()
+
+    def test_writes_to_clone_do_not_affect_original(
+        self, tmp_path: Path, fake_projects_root: Path,
+    ) -> None:
+        # Critical safety property: a check session writing to its memory
+        # dir must NOT mutate the original repo's memory.
+        original = tmp_path / "src"
+        original.mkdir()
+        clone_dir = tmp_path / "clone"
+        clone_dir.mkdir()
+
+        src_memory = fake_projects_root / clone._slug_for_path(original) / "memory"
+        src_memory.mkdir(parents=True)
+        (src_memory / "MEMORY.md").write_text("original\n")
+
+        clone._import_claude_memory(original, clone_dir)
+
+        dst_memory = fake_projects_root / clone._slug_for_path(clone_dir) / "memory"
+        (dst_memory / "MEMORY.md").write_text("MUTATED\n")
+        (dst_memory / "new_file.md").write_text("new\n")
+
+        # Original is untouched.
+        assert (src_memory / "MEMORY.md").read_text() == "original\n"
+        assert not (src_memory / "new_file.md").exists()
+
+    def test_skips_when_clone_memory_already_populated(
+        self, tmp_path: Path, fake_projects_root: Path,
+    ) -> None:
+        original = tmp_path / "src"
+        original.mkdir()
+        clone_dir = tmp_path / "clone"
+        clone_dir.mkdir()
+
+        src_memory = fake_projects_root / clone._slug_for_path(original) / "memory"
+        src_memory.mkdir(parents=True)
+        (src_memory / "MEMORY.md").write_text("from-original\n")
+
+        # Pre-populate clone memory with different content.
+        dst_memory = fake_projects_root / clone._slug_for_path(clone_dir) / "memory"
+        dst_memory.mkdir(parents=True)
+        (dst_memory / "MEMORY.md").write_text("pre-existing\n")
+
+        clone._import_claude_memory(original, clone_dir)
+
+        # Pre-existing content must be preserved (no overwrite).
+        assert (dst_memory / "MEMORY.md").read_text() == "pre-existing\n"
+
+
+# =============================================================================
 # cleanup_empty_clone
 # =============================================================================
 

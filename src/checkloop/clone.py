@@ -154,6 +154,55 @@ def _resolve_review_ref(clone_dir: Path, requested: str) -> str:
     )
 
 
+def _claude_projects_root() -> Path:
+    """Return ``~/.claude/projects/`` — the parent of every per-project memory dir."""
+    return Path.home() / ".claude" / "projects"
+
+
+def _slug_for_path(path: Path) -> str:
+    """Translate an absolute filesystem path to Claude Code's project-slug format.
+
+    Claude stores per-project state under ``~/.claude/projects/<slug>/`` where
+    ``<slug>`` is the absolute path with every ``/`` replaced by ``-``.  For
+    ``/Users/alex/Documents/foo`` the slug is ``-Users-alex-Documents-foo``.
+    """
+    return str(path.resolve()).replace("/", "-")
+
+
+def _import_claude_memory(original_workdir: Path, clone_dir: Path) -> None:
+    """Copy the original repo's Claude auto-memory into the clone's slug.
+
+    Read-only import: the original repo's ``memory/`` directory is never
+    modified, and any memory Claude writes during a check run lands in the
+    clone's slug — so it is intentionally orphaned when the clone is cleaned
+    up.  This is the design choice: checkloop should be able to *read*
+    project context (prior incidents, user preferences, pending follow-ups)
+    so checks stay consistent with established conventions, but it must
+    never persist state back into the user's authoritative memory.
+
+    Silently skips when the original has no memory dir (most projects), or
+    when the clone's slug is already populated (defensive — clone is fresh
+    on the happy path).  All copy errors are non-fatal.
+    """
+    projects_root = _claude_projects_root()
+    src = projects_root / _slug_for_path(original_workdir) / "memory"
+    if not src.is_dir():
+        logger.debug("No Claude memory at %s — nothing to import", src)
+        return
+    dst_parent = projects_root / _slug_for_path(clone_dir)
+    dst = dst_parent / "memory"
+    if dst.exists():
+        logger.debug("Clone memory dir already exists at %s — skipping import", dst)
+        return
+    try:
+        dst_parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(src, dst)
+    except OSError as exc:
+        logger.warning("Could not import Claude memory from %s (non-fatal): %s", src, exc)
+        return
+    logger.info("Imported Claude memory %s → %s (read-only; writes during the run are orphaned)", src, dst)
+
+
 def _checkout_ref(clone_dir: Path, ref: str) -> None:
     """Check out *ref* in detached-HEAD state so local commits don't track it."""
     try:
@@ -170,7 +219,7 @@ def prepare_clone(
 ) -> Path:
     """Clone *workdir* and check out *review_branch* in the clone.
 
-    Steps, each abort-on-failure:
+    Steps, each abort-on-failure unless noted:
 
       1. Verify *workdir* is a git repo (cloning a non-git dir is meaningless).
       2. Reserve the clone path under ``get_runs_root()``.
@@ -178,6 +227,8 @@ def prepare_clone(
       4. ``git fetch origin --prune`` in the clone (best effort).
       5. Resolve *review_branch* to a ref (prefers ``origin/<name>``).
       6. ``git checkout --detach <ref>`` so checkloop's commits don't push back.
+      7. Import the original repo's Claude auto-memory into the clone's slug
+         (read-only; best effort) so check sessions inherit project context.
 
     Returns the clone directory path.  Raises :class:`CloneError` on any
     step the run can't recover from.
@@ -205,6 +256,8 @@ def prepare_clone(
     _rewrite_origin_to_source_remote(src, dst)
     _checkout_ref(dst, ref)
     logger.info("Checked out %s in clone (detached)", ref)
+
+    _import_claude_memory(src, dst)
 
     return dst
 
