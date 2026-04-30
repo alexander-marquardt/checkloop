@@ -721,7 +721,7 @@ def _print_clone_push_direct(
     print(f"  {BOLD}6. Review the PR (yourself or with your team), then merge it{RESET}")
     print(f"     {DIM}checkloop does not merge for you — that is your call.{RESET}\n")
 
-    print(f"  {DIM}When you're done: rm -rf {clone_dir}{RESET}\n")
+    print(f"  {DIM}You may consider removing {clone_dir}{RESET}\n")
 
 
 def _print_clone_push_via_original(
