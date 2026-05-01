@@ -32,7 +32,7 @@ Kill-reason constants (possible values of ``CheckResult.kill_reason``):
     KILL_REASON_MEMORY  — Child process tree RSS exceeded limit.
 
 Default resource limits (match ``run_claude()`` keyword defaults):
-    DEFAULT_IDLE_TIMEOUT          — Seconds before killing a silent subprocess (300).
+    DEFAULT_IDLE_TIMEOUT          — Seconds before killing a silent subprocess (600).
     DEFAULT_CHECK_TIMEOUT         — Hard wall-clock timeout per check in seconds (0 = disabled).
     DEFAULT_MAX_MEMORY_MB         — Max child-tree RSS in MB before killing (8192).
     DEFAULT_PAUSE_SECONDS         — Seconds between consecutive checks (2).

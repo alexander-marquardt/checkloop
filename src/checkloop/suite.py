@@ -27,9 +27,7 @@ from checkloop.checkpoint import (
     save_checkpoint,
 )
 from checkloop.checks import CheckDef
-from checkloop.clone import is_remote_url
 from checkloop.git import (
-    _git_stdout,
     branch_exists,
     checkout_branch,
     compute_change_stats,
@@ -654,11 +652,6 @@ def _pr_base_from_review_branch(review_branch: str | None) -> str:
     return review_branch[len("origin/"):] if review_branch.startswith("origin/") else review_branch
 
 
-def _clone_origin_url(clone_dir: str) -> str | None:
-    """Return the clone's ``origin`` URL, or None if not configured."""
-    return _git_stdout(clone_dir, "config", "remote.origin.url")
-
-
 def _print_clone_adoption_commands(
     *,
     clone_dir: str,
@@ -669,62 +662,20 @@ def _print_clone_adoption_commands(
 ) -> None:
     base_short = scratch_base_sha[:12]
     pr_base = _pr_base_from_review_branch(review_branch)
-    origin_url = _clone_origin_url(clone_dir)
 
     print(f"  {DIM}The clone is at: {clone_dir}{RESET}")
-    print(f"  {DIM}Your original repo at {original_workdir} was not touched.{RESET}")
-    if is_remote_url(origin_url):
-        print(f"  {DIM}The clone's origin points at {origin_url} — you can push directly from it.{RESET}\n")
-        _print_clone_push_direct(
-            clone_dir=clone_dir,
-            scratch_branch=scratch_branch,
-            base_short=base_short,
-            pr_base=pr_base,
-        )
-    else:
-        print()
-        _print_clone_push_via_original(
-            clone_dir=clone_dir,
-            scratch_branch=scratch_branch,
-            base_short=base_short,
-            pr_base=pr_base,
-            original_workdir=original_workdir,
-        )
+    print(f"  {DIM}Your original repo at {original_workdir} was not touched.{RESET}\n")
+
+    _print_clone_review_via_claude(
+        clone_dir=clone_dir,
+        scratch_branch=scratch_branch,
+        base_short=base_short,
+        pr_base=pr_base,
+        original_workdir=original_workdir,
+    )
 
 
-def _print_clone_push_direct(
-    *,
-    clone_dir: str,
-    scratch_branch: str,
-    base_short: str,
-    pr_base: str,
-) -> None:
-    print(f"  {BOLD}Next steps — review, then push and open a PR:{RESET}\n")
-
-    print(f"  {BOLD}1. Switch into the clone{RESET}")
-    print(f"     cd {clone_dir}\n")
-
-    print(f"  {BOLD}2. Review what checkloop changed{RESET}")
-    print(f"     git log --oneline {base_short}..{scratch_branch}")
-    print(f"     git diff {base_short}..{scratch_branch}\n")
-
-    print(f"  {BOLD}3. Optional — ask Claude for a final review of the diff{RESET}")
-    print(f"     claude \"Review the diff between {base_short} and HEAD on this branch. "
-          f"Flag anything that looks incorrect, risky, or lower quality than the original.\"\n")
-
-    print(f"  {BOLD}4. Push the scratch branch to origin{RESET}")
-    print(f"     git push -u origin {scratch_branch}\n")
-
-    print(f"  {BOLD}5. Open a PR targeting {pr_base}{RESET}")
-    print(f"     gh pr create --base {pr_base} --head {scratch_branch}\n")
-
-    print(f"  {BOLD}6. Review the PR (yourself or with your team), then merge it{RESET}")
-    print(f"     {DIM}checkloop does not merge for you — that is your call.{RESET}\n")
-
-    print(f"  {DIM}You may consider removing {clone_dir}{RESET}\n")
-
-
-def _print_clone_push_via_original(
+def _print_clone_review_via_claude(
     *,
     clone_dir: str,
     scratch_branch: str,
@@ -732,34 +683,41 @@ def _print_clone_push_via_original(
     pr_base: str,
     original_workdir: str,
 ) -> None:
-    print(f"  {DIM}The clone's origin is a local path, so push goes through your original repo.{RESET}\n")
-    print(f"  {BOLD}Next steps — review, then push and open a PR:{RESET}\n")
+    """Print the post-run flow that hands the scratch branch to Claude for review.
 
-    print(f"  {BOLD}1. Review what checkloop changed{RESET}")
-    print(f"     git -C {clone_dir} log --oneline {base_short}..{scratch_branch}")
-    print(f"     git -C {clone_dir} diff {base_short}..{scratch_branch}\n")
+    Checkloop never pushes or opens PRs.  Instead, the user fetches the scratch
+    branch into their original repo and lets Claude (running there) review each
+    commit and cherry-pick the accepted ones onto fresh local branches that the
+    user pushes through their normal workflow when ready.
+    """
+    print(f"  {BOLD}Next steps — let Claude review and selectively adopt the work:{RESET}\n")
 
-    print(f"  {BOLD}2. Optional — ask Claude for a final review of the diff{RESET}")
-    print(f"     cd {clone_dir}")
-    print(f"     claude \"Review the diff between {base_short} and HEAD on this branch. "
-          f"Flag anything that looks incorrect, risky, or lower quality than the original.\"\n")
-
-    print(f"  {BOLD}3. Pull the scratch branch into your original repo{RESET}")
+    print(f"  {BOLD}1. Fetch the scratch branch into your original repo{RESET}")
     print(f"     cd {original_workdir}")
     print(f"     git fetch {clone_dir} {scratch_branch}:{scratch_branch}\n")
 
-    print(f"  {BOLD}4. Push and open a PR targeting {pr_base}{RESET}")
-    print(f"     git push -u origin {scratch_branch}")
-    print(f"     gh pr create --base {pr_base} --head {scratch_branch}\n")
+    review_prompt = (
+        f"Review the commits on {scratch_branch} compared to {pr_base} "
+        f"(base: {base_short}). For each commit, decide whether the change is "
+        f"correct, complete, and consistent with this project's conventions "
+        f"(read CLAUDE.md and AGENTS.md if present). Group accepted commits "
+        f"into one or more new local branches off {pr_base} with clear, "
+        f"descriptive names and commit messages — cherry-pick or rewrite as "
+        f"needed for clarity. Skip anything that looks wrong, over-eager, or "
+        f"lower quality than the original. Do NOT push and do NOT open PRs — "
+        f"leave the new branches local so I can review them and push myself."
+    )
+    print(f"  {BOLD}2. Ask Claude to review and cherry-pick what is worth keeping{RESET}")
+    print(f"     claude \"{review_prompt}\"\n")
 
-    print(f"  {BOLD}5. Review the PR (yourself or with your team), then merge it{RESET}")
-    print(f"     {DIM}checkloop does not merge for you — that is your call.{RESET}\n")
+    print(f"  {BOLD}3. Review Claude's branches, then push at your own pace{RESET}")
+    print(f"     git branch --list      {DIM}# see what Claude created{RESET}")
+    print(f"     git log --oneline <new-branch>")
+    print(f"     {DIM}push and open PRs through your normal workflow when satisfied.{RESET}\n")
 
-    print(f"  {DIM}Alternatives:{RESET}")
-    print(f"  {DIM}  Adopt locally without a PR:   git merge --ff-only {scratch_branch}{RESET}")
-    print(f"  {DIM}  Cherry-pick specific commits: git cherry-pick <sha>{RESET}")
-    print(f"  {DIM}  Discard everything:           rm -rf {clone_dir}{RESET}")
-    print(f"  {DIM}                                git branch -D {scratch_branch}  # if already fetched{RESET}\n")
+    print(f"  {DIM}You may consider removing {clone_dir} once the review is complete.{RESET}")
+    print(f"  {DIM}If you'd rather skip Claude and adopt directly: "
+          f"git merge --ff-only {scratch_branch} (or git cherry-pick <sha>) inside your repo.{RESET}\n")
 
 
 def _print_in_place_adoption_commands(
