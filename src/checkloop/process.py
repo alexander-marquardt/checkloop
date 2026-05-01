@@ -64,8 +64,16 @@ class CheckResult:
     exit_code: int
     kill_reason: str | None = None
 
-DEFAULT_IDLE_TIMEOUT = 300
-"""Seconds of silence before killing a subprocess (default for *idle_timeout*)."""
+DEFAULT_IDLE_TIMEOUT = 600
+"""Seconds of silence before killing a subprocess (default for *idle_timeout*).
+
+Raised from 300s to 600s after observing that long-running checks against
+large codebases (e.g. multi-package monorepos) routinely fall silent for
+5-10 minutes during extended-thinking turns or while a long Bash command
+(pytest, eslint, large grep) is in flight.  The CPU/descendant forgiveness
+caps the actual kill at ``_CPU_GRACE_MULTIPLIER * idle_timeout`` (1200s
+= 20 minutes), so the new default is still bounded.
+"""
 
 DEFAULT_MAX_MEMORY_MB = 8192
 """Max child-tree RSS in MB before killing (default for *max_memory_mb*)."""
@@ -405,12 +413,15 @@ def _check_idle_timeout(
                     f"({int(idle_seconds)}s idle, stream silent)", DIM)
                 return False, updated_sample
 
-    logger.warning("Idle timeout: pid=%d, idle=%.0fs, elapsed=%s",
+    logger.warning("Idle timeout: pid=%d, idle=%.0fs, elapsed=%s, configured=%ds, hard_cap=%ds",
                    process.pid, idle_seconds,
-                   format_duration(now - check_start_time))
+                   format_duration(now - check_start_time), idle_timeout, hard_cap)
     clear_inline_status()
-    print_status(f"\nIdle for {idle_timeout}s — killing "
-                 f"(ran {format_duration(now - check_start_time)}).", RED)
+    print_status(
+        f"\nIdle for {int(idle_seconds)}s (ran {format_duration(now - check_start_time)}) — killing. "
+        f"Configured --idle-timeout={idle_timeout}s; raise it if this looks premature.",
+        RED,
+    )
     _kill_process_group(process)
     return True, updated_sample
 

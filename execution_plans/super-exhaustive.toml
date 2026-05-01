@@ -5,7 +5,7 @@ description = "Everything in exhaustive plus infrastructure audits (check-config
 [[checks]]
 id = "test-fix"
 model = "sonnet"
-idle_timeout = 300
+idle_timeout = 600
 
 [[checks]]
 id = "check-config"
@@ -15,12 +15,12 @@ idle_timeout = 600
 [[checks]]
 id = "readability"
 model = "sonnet"
-idle_timeout = 300
+idle_timeout = 600
 
 [[checks]]
 id = "dry"
 model = "sonnet"
-idle_timeout = 300
+idle_timeout = 600
 
 [[checks]]
 id = "dead-code"
@@ -30,7 +30,7 @@ idle_timeout = 600
 [[checks]]
 id = "tests"
 model = "sonnet"
-idle_timeout = 300
+idle_timeout = 600
 
 [[checks]]
 id = "fixture-drift"
@@ -40,12 +40,12 @@ idle_timeout = 600
 [[checks]]
 id = "docs"
 model = "sonnet"
-idle_timeout = 300
+idle_timeout = 600
 
 [[checks]]
 id = "docs-accuracy"
 model = "sonnet"
-idle_timeout = 300
+idle_timeout = 600
 
 [[checks]]
 id = "security"
@@ -70,12 +70,12 @@ idle_timeout = 900
 [[checks]]
 id = "errors"
 model = "sonnet"
-idle_timeout = 300
+idle_timeout = 600
 
 [[checks]]
 id = "types"
 model = "sonnet"
-idle_timeout = 300
+idle_timeout = 600
 
 [[checks]]
 id = "derived-values"
@@ -95,17 +95,17 @@ idle_timeout = 900
 [[checks]]
 id = "complexity"
 model = "sonnet"
-idle_timeout = 300
+idle_timeout = 600
 
 [[checks]]
 id = "deps"
 model = "sonnet"
-idle_timeout = 300
+idle_timeout = 600
 
 [[checks]]
 id = "logging"
 model = "sonnet"
-idle_timeout = 300
+idle_timeout = 600
 
 [[checks]]
 id = "observability"
@@ -135,17 +135,17 @@ idle_timeout = 600
 [[checks]]
 id = "accessibility"
 model = "sonnet"
-idle_timeout = 300
+idle_timeout = 600
 
 [[checks]]
 id = "api-design"
 model = "sonnet"
-idle_timeout = 300
+idle_timeout = 600
 
 [[checks]]
 id = "cleanup-ai-slop"
 model = "sonnet"
-idle_timeout = 300
+idle_timeout = 600
 
 [[checks]]
 id = "coherence"
@@ -155,7 +155,7 @@ idle_timeout = 900
 [[checks]]
 id = "test-validate"
 model = "sonnet"
-idle_timeout = 300
+idle_timeout = 600
 
 [[checks]]
 id = "meta-review"

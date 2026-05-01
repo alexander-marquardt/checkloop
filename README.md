@@ -79,7 +79,7 @@ By default (`--review-branch <ref>`) checkloop never modifies your working tree:
 3. It rewrites the clone's `origin` URL to the source repo's real remote (e.g. the GitHub URL), so `git push origin <branch>` from inside the clone later goes straight to GitHub rather than to the user's local source directory.
 4. It creates a scratch branch named `<review-branch>-cl-<iso-timestamp>` (e.g. `main-cl-2026-04-21T10-30-45Z`) and commits every change there.
 5. It imports the target's Claude auto-memory (if any) from `~/.claude/projects/<original-slug>/memory/` into the clone's project slug, so the check sessions inherit the same project context — prior incidents, user preferences, pending follow-ups — that you would see when running Claude in the original repo. **The import is read-only**: any memory the check sessions write during the run lands in the clone's slug and is intentionally orphaned when the clone is removed. Checkloop never modifies the original repo's memory.
-6. When the run finishes the terminal prints ready-to-paste commands to `cd` into the clone, review the diff, push the scratch branch, open a PR, and merge it through your normal workflow.
+6. When the run finishes the terminal prints a single copy-paste prompt for a Claude session in your **original** repo — that Claude inspects the scratch branch in the clone (read-only, no fetch into the original repo), and re-applies any genuine improvements as fresh edits in the original repo on new branches, then tests, commits, opens PRs, and merges through the original repo's normal workflow. All git activity beyond inspection happens in the original repo, never in the clone.
 
 This means you can keep working in your actual project directory while checkloop reviews a separate snapshot of it. The clone directory is also a timestamped backup — clones older than 14 days are pruned automatically.
 
@@ -87,24 +87,13 @@ Set `CHECKLOOP_STATE_HOME=/some/other/path` to put the clones somewhere other th
 
 `--in-place` preserves the old single-directory behaviour: no clone, commits land on a `checkloop-<iso-timestamp>` scratch branch inside `--dir`, and uncommitted/untracked files in your working tree are reviewed too. Use it when you want to review in-flight work, or for non-git directories.
 
-### After a run — review, push, open a PR
+### After a run — let Claude review and adopt the work
 
-checkloop never pushes or merges anything itself. The scratch branch is left on disk and you decide what happens to it. When a run finishes, the terminal prints copy-pasteable commands for this exact sequence.
+checkloop never pushes or merges anything itself, and the clone directory is treated as read-only review material — no git operations should originate there. When the run finishes the terminal prints a single copy-paste prompt aimed at a Claude session running inside your **original** repo. That session inspects the scratch branch in the clone with `git -C <clone-dir> log/diff/show` (without fetching it into the original repo), applies project standards (`CLAUDE.md`, `AGENTS.md`), and — for the improvements that are worth keeping — re-applies them as fresh edits in the original repo on new branches, runs the project's tests and linters, then commits, pushes, opens PRs, and merges through the repo's normal workflow. The clone's own commits are never imported; only the *ideas* cross over.
 
-The clone's `origin` is rewritten at startup to the source repo's real remote URL (typically GitHub), so **you can push directly from inside the clone** — no need to copy the branch back into your original working directory first:
+If you'd rather adopt manually, inspect the clone with `git -C <clone-dir> log/diff` and re-implement the improvements directly in your original repo. If you don't want any of it, `rm -rf <clone-dir>` removes the entire run.
 
-1. **Switch into the clone** — `cd <clone-dir>`.
-2. **Review what changed** — `git log --oneline <base>..<branch>` and `git diff <base>..<branch>`. Read the diff before you adopt anything; autonomous checks occasionally make changes that are wrong, over-eager, or stylistically off for your project.
-3. **Optional — ask Claude for a second-opinion review** — `claude "Review the diff between <base> and HEAD on this branch. Flag anything that looks incorrect, risky, or lower quality than the original."` A fresh Claude session reading the final diff catches things the in-loop checks missed because they were focused on a single dimension.
-4. **Push the scratch branch to origin** — `git push -u origin <branch>`. Pushes straight to GitHub (or whatever remote the source repo pointed at).
-5. **Open a PR targeting `<review-branch>`** — `gh pr create --base <review-branch> --head <branch>`.
-6. **Merge through your normal PR workflow** — review the PR (yourself or with your team), wait for CI, then merge. checkloop does not merge for you; that is your call.
-
-If the source repo has no pushable remote (local-only repo, no `origin` configured), the clone's origin is left pointing at the source path and the post-run output falls back to a two-hop flow: `git fetch <clone-dir> <branch>:<branch>` into your real repo, then push and PR from there.
-
-If you don't want a PR, adopt locally with `git merge --ff-only <branch>` from your real repo after fetching, or cherry-pick specific commits. If you don't want any of it, delete the clone with `rm -rf <clone-dir>`.
-
-In `--in-place` mode the scratch branch already lives in your repo, so the flow is just: review, optional Claude pass, push, PR, merge.
+In `--in-place` mode the scratch branch already lives in your repo, so the flow is just: review (manually or via Claude), then push and PR through your normal workflow.
 
 To make `checkloop` available globally (without `uv run`):
 
@@ -307,7 +296,9 @@ uv run checkloop --cycles 5 --convergence-threshold 0.5
                        For the 32-check super-exhaustive plan, use
                        --plan super-exhaustive explicitly.
 --cycles, -c N         Repeat the full suite N times (default: 1)
---idle-timeout SECS    Kill after N seconds of silence (default: 300)
+--idle-timeout SECS    Kill after N seconds of silence (default: 600). Forgiveness
+                       extends this up to 2x when descendants are alive or the
+                       process tree is CPU-active, so the actual ceiling is ~20m.
 --check-timeout SECS   Hard wall-clock limit per check (default: 0 = no limit).
                        Unlike --idle-timeout, kills even actively-running checks.
 --max-memory-mb MB     Kill a check if its child process tree exceeds this RSS
@@ -358,7 +349,7 @@ uv run checkloop --cycles 5 --convergence-threshold 0.5
 9. **Checkpointing** — After each check, saves progress to `.checkloop-checkpoint.json` inside the clone (or the `--dir` in `--in-place` mode). If interrupted, the next run offers to resume from where it left off.
 10. **Per-check change detection** — After each check, compares the git HEAD before/after to report how many lines changed. All checks run every cycle so that cascading improvements are never missed.
 11. **Convergence detection** — After each full cycle, measures what percentage of total tracked lines were modified. If below the threshold, the loop exits early. Per-check commits are preserved individually for easier debugging.
-12. **Adoption summary** — On completion (or interrupt) the terminal prints copy-pasteable commands for reviewing the scratch branch, `git fetch`-ing it out of the clone into the real repo, merging or cherry-picking it, or discarding the whole clone with `rm -rf`.
+12. **Adoption summary** — On completion (or interrupt) the terminal prints a single copy-paste prompt for a Claude session in the original repo. That session inspects the scratch branch in the clone (read-only, no `git fetch`), applies project standards, and re-applies any genuine improvements as fresh commits in the original repo on new branches — then tests, pushes, opens a PR, and merges through the original repo's normal workflow. The clone is never used as a push origin and its commits are never cherry-picked.
 13. **Process cleanup** — Each Claude subprocess runs in its own process group (`setsid`). On completion or timeout, the entire group is killed (SIGTERM, then SIGKILL) to prevent orphaned child processes from leaking memory. An atexit handler sweeps all tracked sessions on program exit. A pre-cleanup state snapshot is appended to `~/.checkloop/cleanup-debug.log` so post-mortem debugging survives a terminal death.
 14. **Telemetry** — A background sampler writes one JSONL line every ~3 seconds to `<run-dir>/.checkloop-telemetry/telemetry-YYYY-MM-DD.jsonl` (where `<run-dir>` is the clone dir in clone mode, or a fresh `~/checkloop-runs/<target>-<iso>/` dir in `--in-place` mode) with parent RSS, child-tree RSS, top 5 processes, system free memory, swap, and the active check label. The file survives crashes and OOM kills, so timelines are available even when the terminal dies. See [Observability](#observability).
 
@@ -551,7 +542,7 @@ The project has no runtime dependencies — only `pytest` and `mypy` in the dev 
 | Convergence detection not working | Ensure the project directory is a git repo (`git init` if needed) |
 | High memory usage over many checks | checkloop kills orphaned child processes between checks and enforces an 8GB RSS limit by default. Adjust with `--max-memory-mb`, raise the host-wide floor with `--system-free-floor-mb`, or use `--verbose` to monitor RSS. For post-mortem, inspect `<run-dir>/.checkloop-telemetry/telemetry-*.jsonl` under `~/checkloop-runs/` — see [Observability](#observability) |
 | A check hung or was killed and you want to know why | Check the `top offender` line in `<run-dir>/.checkloop-run.log`, then walk the timeline in `<run-dir>/.checkloop-telemetry/telemetry-*.jsonl`. If the terminal itself died, `~/.checkloop/cleanup-debug.log` has the last process-tree snapshot |
-| Idle timeout kills a check too early | Increase with `--idle-timeout 600` (or higher) |
+| Idle timeout kills a check too early | The default is already 600s (with up to 2x forgiveness while descendants run or CPU is active). For very large codebases or very deep extended-thinking checks, increase further with `--idle-timeout 900` (or higher) |
 | A check runs too long | Use `--check-timeout 3600` for a hard 1-hour wall-clock limit per check |
 | Want to start fresh after an interrupted run | Use `--no-resume` to skip the checkpoint prompt |
 
