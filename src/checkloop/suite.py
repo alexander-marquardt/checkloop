@@ -683,41 +683,47 @@ def _print_clone_review_via_claude(
     pr_base: str,
     original_workdir: str,
 ) -> None:
-    """Print the post-run flow that hands the scratch branch to Claude for review.
+    """Print a copy-paste prompt that drives Claude in the original repo.
 
-    Checkloop never pushes or opens PRs.  Instead, the user fetches the scratch
-    branch into their original repo and lets Claude (running there) review each
-    commit and cherry-pick the accepted ones onto fresh local branches that the
-    user pushes through their normal workflow when ready.
+    Checkloop never pushes or opens PRs from the clone.  The output is a single
+    self-contained prompt: the user opens a Claude session in their original
+    working directory, pastes the prompt, and Claude pulls the scratch branch
+    in from the clone, tests it, applies project standards, and — if the work
+    holds up — commits, opens a PR, and merges through the original repo's
+    normal workflow.
     """
-    print(f"  {BOLD}Next steps — let Claude review and selectively adopt the work:{RESET}\n")
-
-    print(f"  {BOLD}1. Fetch the scratch branch into your original repo{RESET}")
-    print(f"     cd {original_workdir}")
-    print(f"     git fetch {clone_dir} {scratch_branch}:{scratch_branch}\n")
-
     review_prompt = (
-        f"Review the commits on {scratch_branch} compared to {pr_base} "
-        f"(base: {base_short}). For each commit, decide whether the change is "
-        f"correct, complete, and consistent with this project's conventions "
-        f"(read CLAUDE.md and AGENTS.md if present). Group accepted commits "
-        f"into one or more new local branches off {pr_base} with clear, "
-        f"descriptive names and commit messages — cherry-pick or rewrite as "
-        f"needed for clarity. Skip anything that looks wrong, over-eager, or "
-        f"lower quality than the original. Do NOT push and do NOT open PRs — "
-        f"leave the new branches local so I can review them and push myself."
+        f"A checkloop run produced a scratch branch {scratch_branch} inside a "
+        f"sibling clone at {clone_dir} (built off {pr_base} at {base_short}). "
+        f"Treat the clone as read-only review material — do not git fetch its "
+        f"branch into this repo and do not merge or cherry-pick its commits "
+        f"directly. Instead, inspect the work in place:\n\n"
+        f"    git -C {clone_dir} log --oneline {pr_base}..{scratch_branch}\n"
+        f"    git -C {clone_dir} diff {pr_base}..{scratch_branch} -- <path>\n"
+        f"    git -C {clone_dir} show <sha>\n\n"
+        f"For each change, decide whether it is correct, complete, and "
+        f"consistent with this project's conventions (read CLAUDE.md and "
+        f"AGENTS.md if present). Skip anything that looks wrong, over-eager, "
+        f"or lower quality than what is already here. For the improvements "
+        f"that are worth keeping, re-apply them by editing this repo directly "
+        f"(do not import the clone's commits) on one or more new branches off "
+        f"{pr_base} with clear names and descriptive commit messages — group "
+        f"related improvements together. Run the project's tests and linters "
+        f"on each new branch. If a branch passes and is a genuine "
+        f"improvement, push it, open a PR, and merge it through this repo's "
+        f"normal workflow. All pushes/PRs/merges happen from this repo, never "
+        f"from {clone_dir}."
     )
-    print(f"  {BOLD}2. Ask Claude to review and cherry-pick what is worth keeping{RESET}")
-    print(f"     claude \"{review_prompt}\"\n")
 
-    print(f"  {BOLD}3. Review Claude's branches, then push at your own pace{RESET}")
-    print(f"     git branch --list      {DIM}# see what Claude created{RESET}")
-    print(f"     git log --oneline <new-branch>")
-    print(f"     {DIM}push and open PRs through your normal workflow when satisfied.{RESET}\n")
-
-    print(f"  {DIM}You may consider removing {clone_dir} once the review is complete.{RESET}")
-    print(f"  {DIM}If you'd rather skip Claude and adopt directly: "
-          f"git merge --ff-only {scratch_branch} (or git cherry-pick <sha>) inside your repo.{RESET}\n")
+    print(f"  {BOLD}Next step — paste this into a Claude session in your original repo:{RESET}\n")
+    print(f"  {DIM}cd {original_workdir} && claude{RESET}\n")
+    print(f"  {DIM}--- begin prompt ---{RESET}")
+    print(review_prompt)
+    print(f"  {DIM}--- end prompt ---{RESET}\n")
+    print(f"  {DIM}You may consider removing {clone_dir} once Claude is done with it.{RESET}")
+    print(f"  {DIM}Prefer to adopt manually? Inspect with "
+          f"git -C {clone_dir} log/diff {pr_base}..{scratch_branch}, then "
+          f"re-apply the improvements as your own commits in this repo.{RESET}\n")
 
 
 def _print_in_place_adoption_commands(
