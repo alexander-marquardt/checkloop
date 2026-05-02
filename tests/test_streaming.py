@@ -223,5 +223,49 @@ class TestSummariseToolUseAdditionalEdgeCases:
         assert streaming._summarise_tool_use("WRITE", {"file_path": "/c"}) == " /c"
 
 
+class TestStreamObserver:
+    """Tests for StreamObserver — compaction-state tracking from JSONL events."""
+
+    def test_compacting_event_sets_flag(self) -> None:
+        observer = streaming.StreamObserver()
+        event = {"type": "system", "subtype": "status", "status": "compacting"}
+        streaming._update_observer(event, observer)
+        assert observer.compacting is True
+
+    def test_other_system_event_clears_flag(self) -> None:
+        observer = streaming.StreamObserver(compacting=True)
+        event = {"type": "system", "subtype": "status", "status": "active"}
+        streaming._update_observer(event, observer)
+        assert observer.compacting is False
+
+    def test_assistant_event_clears_flag(self) -> None:
+        observer = streaming.StreamObserver(compacting=True)
+        event = {"type": "assistant", "message": {"content": []}}
+        streaming._update_observer(event, observer)
+        assert observer.compacting is False
+
+    def test_starts_inactive(self) -> None:
+        observer = streaming.StreamObserver()
+        assert observer.compacting is False
+
+    def test_process_jsonl_buffer_updates_observer(self) -> None:
+        import json
+        observer = streaming.StreamObserver()
+        compaction_line = json.dumps({
+            "type": "system", "subtype": "status", "status": "compacting",
+        }).encode() + b"\n"
+        buf = bytearray(compaction_line)
+        streaming.process_jsonl_buffer(buf, time.time(), False, observer=observer)
+        assert observer.compacting is True
+
+        # A subsequent assistant event clears the flag.
+        assistant_line = json.dumps({
+            "type": "assistant", "message": {"content": []},
+        }).encode() + b"\n"
+        buf.extend(assistant_line)
+        streaming.process_jsonl_buffer(buf, time.time(), False, observer=observer)
+        assert observer.compacting is False
+
+
 
 

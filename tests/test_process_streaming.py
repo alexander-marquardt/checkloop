@@ -37,11 +37,13 @@ class TestStreamProcessOutput:
         mock_proc.poll.return_value = None
         mock_proc.pid = 12345
 
-        # idle window = 1000s with idle_timeout=120 → past the no-signal cap
-        # (120 * 6 = 720s), so the kill path actually fires.  An earlier
-        # version of this test only advanced time by 150s, which now sits
-        # inside the no-signal grace window.
-        with mock.patch("select.select", return_value=([], [], [])):
+        # idle window = 1000s with idle_timeout=120, descendants alive but
+        # quiescent → partial-signal cap (240s) is exceeded and the kill
+        # fires.  The no-signal tier no longer kills, so we exercise the
+        # partial-signal kill path here instead.
+        with mock.patch("select.select", return_value=([], [], [])), \
+             mock.patch.object(process, "find_all_descendant_pids", return_value=[999]), \
+             mock.patch.object(process, "measure_tree_cpu_seconds", return_value=None):
             with mock.patch("time.time") as mock_time:
                 mock_time.side_effect = [
                     100.0,

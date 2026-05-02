@@ -303,17 +303,18 @@ uv run checkloop --cycles 5 --convergence-threshold 0.5
                            --check-timeout bounds runtime)
                          - one signal (descendants OR CPU, not both) → extend
                            to 2x then kill
-                         - neither signal → extend to 6x (≈1 hour at the
-                           default) then kill, OR if --check-timeout is set,
-                           skip the idle kill entirely
-                       Sub-agent / extended-thinking turns can leave the tree
-                       totally silent at the OS level for many minutes; the
-                       no-signal grace window covers most legitimate cases.
+                         - neither signal → never killed; sub-agent turns
+                           and context compaction routinely socket-block for
+                           1h+ with no kernel-visible activity, and we cannot
+                           tell that apart from a genuine hang. --check-timeout
+                           is the wall-clock safety net for this tier.
+                       A status=compacting SDK event also suppresses the kill
+                       in every tier until compaction completes.
 --check-timeout SECS   Hard wall-clock limit per check (default: 0 = no limit).
                        Unlike --idle-timeout, kills even actively-running
-                       checks. Setting it also disables the no-signal idle
-                       kill, so wall-clock becomes the sole bound — recommended
-                       for monorepos where Claude routinely delegates to a
+                       checks. This is the only bound on the no-signal tier
+                       (parent socket-blocked on API), so set it for
+                       monorepos where Claude routinely delegates to a
                        sub-agent for 20+ minutes per turn.
 --max-memory-mb MB     Kill a check if its child process tree exceeds this RSS
                        (default: 8192). Set to 0 to disable.
@@ -358,7 +359,7 @@ uv run checkloop --cycles 5 --convergence-threshold 0.5
 4. **Pre-run warning** — Displays a 5-second countdown so the user can abort. Warns if `--dangerously-skip-permissions` is (or isn't) set.
 5. **Check execution** — For each check, builds a focused prompt (with commit-message rules appended) and invokes `claude -p <prompt> --output-format stream-json --verbose` as a subprocess.
 6. **Real-time streaming** — Streams JSONL output from the subprocess, displaying tool-use events (file reads, edits, shell commands) and assistant messages with elapsed-time prefixes.
-7. **Idle timeout** — If Claude produces no output for N seconds (default 600), the watchdog consults two forgiveness signals before killing: live descendants in the process tree, and per-tree CPU activity. When both are present the kill is suppressed entirely (only `--check-timeout` bounds total runtime). When only one is present the window extends to 2× the configured timeout. With neither (the typical sub-agent / extended-thinking case where the parent process sits on a long API call with no children and no CPU), the window extends to 6× — or, when `--check-timeout` is set, the idle kill is skipped entirely so wall-clock alone bounds the run.
+7. **Idle timeout** — If Claude produces no output for N seconds (default 600), the watchdog consults two forgiveness signals before killing: live descendants in the process tree, and per-tree CPU activity. When both are present the kill is suppressed entirely (only `--check-timeout` bounds total runtime). When only one is present the window extends to 2× the configured timeout. With neither (the typical sub-agent / extended-thinking case where the parent process sits on a long API call with no children and no CPU), the kill is suppressed entirely — that tier proved to be a false-positive factory in the 2026-05-02 post-mortem, so `--check-timeout` is the wall-clock safety net there. A `status=compacting` SDK event also suppresses the kill in every tier until compaction completes.
 8. **Hard timeout & memory limit** — Optional hard wall-clock timeout (`--check-timeout`) kills checks regardless of output. Memory monitoring (`--max-memory-mb`, default 8192) samples child tree RSS every 10 seconds and kills the process group if it exceeds the limit. A separate host-wide floor (`--system-free-floor-mb`, default 500) kills the running check if free system memory drops below MB — a safety net for swap-thrash stalls. When a kill fires, a "top offender" line names the single largest process (pid, RSS, command) so you can see what went wrong without re-reading the full log.
 9. **Checkpointing** — After each check, saves progress to `.checkloop-checkpoint.json` inside the clone (or the `--dir` in `--in-place` mode). If interrupted, the next run offers to resume from where it left off.
 10. **Per-check change detection** — After each check, compares the git HEAD before/after to report how many lines changed. All checks run every cycle so that cascading improvements are never missed.
@@ -556,7 +557,7 @@ The project has no runtime dependencies — only `pytest` and `mypy` in the dev 
 | Convergence detection not working | Ensure the project directory is a git repo (`git init` if needed) |
 | High memory usage over many checks | checkloop kills orphaned child processes between checks and enforces an 8GB RSS limit by default. Adjust with `--max-memory-mb`, raise the host-wide floor with `--system-free-floor-mb`, or use `--verbose` to monitor RSS. For post-mortem, inspect `<run-dir>/.checkloop-telemetry/telemetry-*.jsonl` under `~/checkloop-runs/` — see [Observability](#observability) |
 | A check hung or was killed and you want to know why | Check the `top offender` line in `<run-dir>/.checkloop-run.log`, then walk the timeline in `<run-dir>/.checkloop-telemetry/telemetry-*.jsonl`. If the terminal itself died, `~/.checkloop/cleanup-debug.log` has the last process-tree snapshot |
-| Idle timeout kills a check too early | The watchdog has three escalating tolerance bands (see `--idle-timeout` above). Inspect the kill line in `<run-dir>/.checkloop-run.log` — the `descendants=N, busy_ratio=…` fields reveal which band fired. If `descendants=0, busy_ratio=0.00`, the check was likely in a sub-agent / extended-thinking turn (parent process blocked on a single long API call). The cleanest fix is to set `--check-timeout 7200` (or another generous wall-clock limit), which disables the no-signal idle kill entirely. Alternatively raise `--idle-timeout` so the 6× no-signal cap covers your workload |
+| Idle timeout kills a check too early | Inspect the kill line in `<run-dir>/.checkloop-run.log` — the `descendants=N, busy_ratio=…` fields reveal which tier fired. The no-signal tier (`descendants=0, busy_ratio=0.00`) no longer kills at all; if a kill fired with descendants alive, the partial-signal tier hit its 2× cap, meaning a quiescent subprocess (e.g. a hung language server) was holding the tree without making progress. Raise `--idle-timeout` to widen that cap, or set `--check-timeout 7200` for a wall-clock bound that covers any silent agent work |
 | A check runs too long | Use `--check-timeout 3600` for a hard 1-hour wall-clock limit per check |
 | Want to start fresh after an interrupted run | Use `--no-resume` to skip the checkpoint prompt |
 

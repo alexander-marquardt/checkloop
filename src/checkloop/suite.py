@@ -712,7 +712,15 @@ def _print_clone_review_via_claude(
         f"on each new branch. If a branch passes and is a genuine "
         f"improvement, push it, open a PR, and merge it through this repo's "
         f"normal workflow. All pushes/PRs/merges happen from this repo, never "
-        f"from {clone_dir}."
+        f"from {clone_dir}.\n\n"
+        f"When you are done, print a summary with two sections: "
+        f"**Accepted** — for each change you re-applied, one bullet naming "
+        f"the file(s) or area touched, the new branch it landed on, and a "
+        f"one-line reason it was worth keeping; and **Rejected** — for each "
+        f"change you skipped, one bullet naming the file(s) or area and a "
+        f"one-line reason it was wrong, redundant, or lower quality. "
+        f"Mention anything you were unsure about under a third **Deferred** "
+        f"section so I can decide."
     )
 
     print(f"  {BOLD}Next step — paste this into a Claude session in your original repo:{RESET}\n")
