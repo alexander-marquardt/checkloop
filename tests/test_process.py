@@ -184,7 +184,7 @@ class TestCheckIdleTimeout:
         mock_kill.assert_called_once()
 
     def test_hard_cap_kills_even_with_descendants(self) -> None:
-        """Past the hard cap, descendant-forgiveness no longer suppresses the kill.
+        """Past the hard cap, a quiescent descendant tree no longer suppresses kill.
 
         Pre-existing behaviour let stale descendants suppress idle kill forever;
         readability-stall post-mortem (2026-04-17) showed 16 min of silence
@@ -200,6 +200,51 @@ class TestCheckIdleTimeout:
                 last_output_time=100.0, idle_timeout=120,
                 check_start_time=80.0, process=mock_proc,
                 last_cpu_sample=None,
+            )
+        assert killed is True
+        mock_kill.assert_called_once()
+
+    def test_descendants_plus_busy_tree_uncapped(self) -> None:
+        """When descendants are alive AND tree is CPU-busy, idle is uncapped.
+
+        Bounded by --check-timeout, not idle_timeout.  Validates the PRISM-scale
+        scenario where a check legitimately stays silent for 20+ min while a
+        pytest run keeps grandchildren busy in the background.
+        """
+        mock_proc = mock.MagicMock()
+        mock_proc.pid = 12345
+        # idle_seconds = 901 — well past hard cap (240) — but descendants alive
+        # and busy_ratio = (900 - 100) / 900 ≈ 0.89, far above the floor.
+        with mock.patch("time.time", return_value=1001.0), \
+             mock.patch.object(process, "_kill_process_group") as mock_kill, \
+             mock.patch.object(process, "find_all_descendant_pids", return_value=[999, 1000]), \
+             mock.patch.object(process, "measure_tree_cpu_seconds", return_value=900.0):
+            killed, sample = process._check_idle_timeout(
+                last_output_time=100.0, idle_timeout=120,
+                check_start_time=80.0, process=mock_proc,
+                last_cpu_sample=(100.0, 100.0),
+            )
+        assert killed is False
+        mock_kill.assert_not_called()
+        assert sample == (1001.0, 900.0)
+
+    def test_descendants_alive_but_quiescent_kills_at_hard_cap(self) -> None:
+        """Descendants alive but tree is NOT CPU-busy → kill at hard cap.
+
+        This guards against a hung language server keeping the check alive
+        forever just by existing in the process table.
+        """
+        mock_proc = mock.MagicMock()
+        mock_proc.pid = 12345
+        # idle_seconds = 301 > hard_cap = 240; cpu delta near zero → not busy
+        with mock.patch("time.time", return_value=401.0), \
+             mock.patch.object(process, "_kill_process_group") as mock_kill, \
+             mock.patch.object(process, "find_all_descendant_pids", return_value=[999]), \
+             mock.patch.object(process, "measure_tree_cpu_seconds", return_value=100.05):
+            killed, _ = process._check_idle_timeout(
+                last_output_time=100.0, idle_timeout=120,
+                check_start_time=80.0, process=mock_proc,
+                last_cpu_sample=(100.0, 100.0),
             )
         assert killed is True
         mock_kill.assert_called_once()

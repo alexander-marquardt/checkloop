@@ -296,11 +296,17 @@ uv run checkloop --cycles 5 --convergence-threshold 0.5
                        For the 32-check super-exhaustive plan, use
                        --plan super-exhaustive explicitly.
 --cycles, -c N         Repeat the full suite N times (default: 1)
---idle-timeout SECS    Kill after N seconds of silence (default: 600). Forgiveness
-                       extends this up to 2x when descendants are alive or the
-                       process tree is CPU-active, so the actual ceiling is ~20m.
+--idle-timeout SECS    Kill after N seconds of silence (default: 600). The
+                       threshold is consulted, not absolute: when the process
+                       tree has descendants alive AND is CPU-busy, the kill is
+                       suppressed entirely (only --check-timeout bounds total
+                       runtime). Single-signal forgiveness (descendants alive
+                       OR CPU-busy, but not both) extends the window to 2x and
+                       then kills.
 --check-timeout SECS   Hard wall-clock limit per check (default: 0 = no limit).
                        Unlike --idle-timeout, kills even actively-running checks.
+                       Recommended when --idle-timeout uncapped forgiveness is
+                       in play, as the only outer bound on stuck-but-busy runs.
 --max-memory-mb MB     Kill a check if its child process tree exceeds this RSS
                        (default: 8192). Set to 0 to disable.
 --system-free-floor-mb MB
@@ -344,7 +350,7 @@ uv run checkloop --cycles 5 --convergence-threshold 0.5
 4. **Pre-run warning** — Displays a 5-second countdown so the user can abort. Warns if `--dangerously-skip-permissions` is (or isn't) set.
 5. **Check execution** — For each check, builds a focused prompt (with commit-message rules appended) and invokes `claude -p <prompt> --output-format stream-json --verbose` as a subprocess.
 6. **Real-time streaming** — Streams JSONL output from the subprocess, displaying tool-use events (file reads, edits, shell commands) and assistant messages with elapsed-time prefixes.
-7. **Idle timeout** — If Claude produces no output for N seconds (default 300), the process group is killed and the next check begins.
+7. **Idle timeout** — If Claude produces no output for N seconds (default 600), the watchdog consults two forgiveness signals before killing: live descendants in the process tree, and per-tree CPU activity. When both are present the kill is suppressed entirely (only `--check-timeout` bounds total runtime). When only one is present the window extends to 2x the configured timeout and then kills. With neither, the kill happens at the threshold.
 8. **Hard timeout & memory limit** — Optional hard wall-clock timeout (`--check-timeout`) kills checks regardless of output. Memory monitoring (`--max-memory-mb`, default 8192) samples child tree RSS every 10 seconds and kills the process group if it exceeds the limit. A separate host-wide floor (`--system-free-floor-mb`, default 500) kills the running check if free system memory drops below MB — a safety net for swap-thrash stalls. When a kill fires, a "top offender" line names the single largest process (pid, RSS, command) so you can see what went wrong without re-reading the full log.
 9. **Checkpointing** — After each check, saves progress to `.checkloop-checkpoint.json` inside the clone (or the `--dir` in `--in-place` mode). If interrupted, the next run offers to resume from where it left off.
 10. **Per-check change detection** — After each check, compares the git HEAD before/after to report how many lines changed. All checks run every cycle so that cascading improvements are never missed.
@@ -542,7 +548,7 @@ The project has no runtime dependencies — only `pytest` and `mypy` in the dev 
 | Convergence detection not working | Ensure the project directory is a git repo (`git init` if needed) |
 | High memory usage over many checks | checkloop kills orphaned child processes between checks and enforces an 8GB RSS limit by default. Adjust with `--max-memory-mb`, raise the host-wide floor with `--system-free-floor-mb`, or use `--verbose` to monitor RSS. For post-mortem, inspect `<run-dir>/.checkloop-telemetry/telemetry-*.jsonl` under `~/checkloop-runs/` — see [Observability](#observability) |
 | A check hung or was killed and you want to know why | Check the `top offender` line in `<run-dir>/.checkloop-run.log`, then walk the timeline in `<run-dir>/.checkloop-telemetry/telemetry-*.jsonl`. If the terminal itself died, `~/.checkloop/cleanup-debug.log` has the last process-tree snapshot |
-| Idle timeout kills a check too early | The default is already 600s (with up to 2x forgiveness while descendants run or CPU is active). For very large codebases or very deep extended-thinking checks, increase further with `--idle-timeout 900` (or higher) |
+| Idle timeout kills a check too early | The default is 600s, but the kill is suppressed entirely while the process tree has descendants alive AND is CPU-busy — so checks that are clearly making progress should never trip it. If you're still seeing kills with that pattern, the watchdog observed *both* a quiet stream and an idle tree (no descendants or no CPU). Inspect `<run-dir>/.checkloop-run.log` for the `descendants=N, busy_ratio=…` fields on the kill line, then either raise `--idle-timeout` or pair it with a generous `--check-timeout` as the outer bound |
 | A check runs too long | Use `--check-timeout 3600` for a hard 1-hour wall-clock limit per check |
 | Want to start fresh after an interrupted run | Use `--no-resume` to skip the checkpoint prompt |
 
