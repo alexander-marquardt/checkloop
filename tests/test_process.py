@@ -89,18 +89,25 @@ class TestCheckIdleTimeout:
             )
         assert killed is False
 
-    def test_one_second_over_threshold(self) -> None:
+    def test_one_second_over_threshold_within_no_signal_grace(self) -> None:
+        """Just past the threshold with no signals: deferred to no-signal cap, not killed.
+
+        Sub-agent turns and extended thinking can leave the kernel-visible
+        tree completely silent.  The 6× no-signal grace window covers most of
+        these without an explicit --check-timeout.
+        """
         mock_proc = mock.MagicMock()
         mock_proc.pid = 12345
         with mock.patch("time.time", return_value=221.0), \
-             mock.patch.object(process, "_kill_process_group"), \
+             mock.patch.object(process, "_kill_process_group") as mock_kill, \
              mock.patch.object(process, "find_all_descendant_pids", return_value=[]), \
              mock.patch.object(process, "measure_tree_cpu_seconds", return_value=None):
             killed, _ = process._check_idle_timeout(
                 last_output_time=100.0, idle_timeout=120,
                 check_start_time=80.0, process=mock_proc, last_cpu_sample=None,
             )
-        assert killed is True
+        assert killed is False
+        mock_kill.assert_not_called()
 
     def test_descendants_running_prevents_kill(self) -> None:
         """When idle timeout triggers but descendants are running, don't kill."""
@@ -116,11 +123,12 @@ class TestCheckIdleTimeout:
         assert killed is False  # Should NOT kill
         mock_kill.assert_not_called()
 
-    def test_no_descendants_allows_kill(self) -> None:
-        """When idle timeout triggers and no descendants, proceed with kill."""
+    def test_no_signal_past_no_signal_cap_kills(self) -> None:
+        """No descendants, no CPU activity, past the no-signal cap → kill."""
         mock_proc = mock.MagicMock()
         mock_proc.pid = 12345
-        with mock.patch("time.time", return_value=221.0), \
+        # idle = 800s with idle_timeout=120 → past no_signal_cap (720s)
+        with mock.patch("time.time", return_value=900.0), \
              mock.patch.object(process, "_kill_process_group") as mock_kill, \
              mock.patch.object(process, "find_all_descendant_pids", return_value=[]), \
              mock.patch.object(process, "measure_tree_cpu_seconds", return_value=None):
@@ -128,8 +136,30 @@ class TestCheckIdleTimeout:
                 last_output_time=100.0, idle_timeout=120,
                 check_start_time=80.0, process=mock_proc, last_cpu_sample=None,
             )
-        assert killed is True  # Should kill
+        assert killed is True
         mock_kill.assert_called_once()
+
+    def test_check_timeout_skips_idle_kill_with_no_signal(self) -> None:
+        """When --check-timeout is set, no-signal idle never kills.
+
+        Wall-clock --check-timeout becomes the sole bound: agent-mode and
+        extended-thinking turns of any duration survive, while a genuinely
+        stuck check still dies when wall-clock runs out.
+        """
+        mock_proc = mock.MagicMock()
+        mock_proc.pid = 12345
+        # idle = 7200s (2h) — way past no_signal_cap (720s) — but check_timeout is set.
+        with mock.patch("time.time", return_value=7300.0), \
+             mock.patch.object(process, "_kill_process_group") as mock_kill, \
+             mock.patch.object(process, "find_all_descendant_pids", return_value=[]), \
+             mock.patch.object(process, "measure_tree_cpu_seconds", return_value=None):
+            killed, _ = process._check_idle_timeout(
+                last_output_time=100.0, idle_timeout=120,
+                check_start_time=80.0, process=mock_proc, last_cpu_sample=None,
+                check_timeout=86400,
+            )
+        assert killed is False
+        mock_kill.assert_not_called()
 
     def test_cpu_active_extends_idle_window(self) -> None:
         """When no descendants but tree is CPU-active, extend the idle window."""
@@ -149,8 +179,13 @@ class TestCheckIdleTimeout:
         mock_kill.assert_not_called()
         assert sample == (221.0, 50.0)
 
-    def test_cpu_idle_kills_as_normal(self) -> None:
-        """When tree has negligible CPU activity, the kill proceeds."""
+    def test_cpu_idle_within_no_signal_grace_does_not_kill(self) -> None:
+        """Negligible CPU activity at threshold: deferred to no-signal cap.
+
+        Below the busy-ratio floor the tree counts as "no CPU signal", so the
+        no-signal grace window applies (kill only past 6× the threshold or
+        --check-timeout firing, whichever comes first).
+        """
         mock_proc = mock.MagicMock()
         mock_proc.pid = 12345
         # wall delta 121s, cpu delta 0.1s → busy_ratio ≈ 0.0008, below floor
@@ -163,8 +198,8 @@ class TestCheckIdleTimeout:
                 check_start_time=80.0, process=mock_proc,
                 last_cpu_sample=(100.0, 20.0),
             )
-        assert killed is True
-        mock_kill.assert_called_once()
+        assert killed is False
+        mock_kill.assert_not_called()
 
     def test_hard_cap_kills_even_with_busy_tree(self) -> None:
         """Past _CPU_GRACE_MULTIPLIER * idle_timeout, kill regardless of CPU."""
@@ -726,15 +761,20 @@ class TestCheckResourceLimitsCombined:
         assert kill_reason is None
 
     def test_idle_timeout_detected_first(self) -> None:
-        """Idle timeout should be detected before hard timeout or memory."""
+        """Idle timeout should be detected before hard timeout or memory.
+
+        Uses check_timeout=0 (default) so the no-signal idle kill applies; the
+        idle interval is past 6× the threshold so the no-signal grace window
+        is exhausted and the kill fires.
+        """
         proc = self._make_mock_process()
         now = time.time()
         with mock.patch.object(process, "find_all_descendant_pids", return_value=[]), \
              mock.patch.object(process, "measure_tree_cpu_seconds", return_value=None), \
              mock.patch.object(process, "_kill_process_group"):
             kill_reason, *_ = process._check_resource_limits(
-                proc, check_start_time=now - 10, last_output_time=now - 400,
-                idle_timeout=300, check_timeout=600, max_memory_mb=8192,
+                proc, check_start_time=now - 10, last_output_time=now - 2000,
+                idle_timeout=300, check_timeout=0, max_memory_mb=8192,
                 last_memory_check=now, last_nudge_time=0.0,
             )
         assert kill_reason == process.KILL_REASON_IDLE
