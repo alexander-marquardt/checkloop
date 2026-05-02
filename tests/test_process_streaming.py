@@ -37,13 +37,17 @@ class TestStreamProcessOutput:
         mock_proc.poll.return_value = None
         mock_proc.pid = 12345
 
+        # idle window = 1000s with idle_timeout=120 → past the no-signal cap
+        # (120 * 6 = 720s), so the kill path actually fires.  An earlier
+        # version of this test only advanced time by 150s, which now sits
+        # inside the no-signal grace window.
         with mock.patch("select.select", return_value=([], [], [])):
             with mock.patch("time.time") as mock_time:
                 mock_time.side_effect = [
                     100.0,
                     100.0,
-                    250.0,
-                ] + [250.0] * 10
+                    1100.0,
+                ] + [1100.0] * 10
                 mock_proc.stdout.read.return_value = b""
                 with mock.patch("os.getpgid", return_value=12345):
                     with mock.patch("os.killpg"):

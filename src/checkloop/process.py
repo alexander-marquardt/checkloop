@@ -348,6 +348,17 @@ to ``idle_timeout * _CPU_GRACE_MULTIPLIER`` and then kills.  When *both*
 signals are present (descendants alive AND tree CPU-busy) the cap is lifted
 entirely; the only outer bound becomes ``--check-timeout``."""
 
+_NO_SIGNAL_GRACE_MULTIPLIER = 6
+"""Cap on idle-timeout forgiveness for the *no signal* case (no descendants
+AND no CPU activity).  Sub-agent turns and extended-thinking on a single
+long-running API call leave the parent process completely idle from the
+kernel's perspective: no children, no CPU on the parent (it's blocked on a
+socket read), and no JSONL output until the API turn completes.  A 6×
+multiplier puts the kill at roughly an hour of complete silence at the
+default, which covers nearly all legitimate agent-mode work while still
+catching genuine hangs.  When ``--check-timeout`` is set, this no-signal
+kill is bypassed entirely — wall-clock becomes the sole bound."""
+
 
 def _measure_busy_ratio(
     process: subprocess.Popen[bytes],
@@ -380,6 +391,8 @@ def _check_idle_timeout(
     check_start_time: float,
     process: subprocess.Popen[bytes],
     last_cpu_sample: tuple[float, float] | None,
+    *,
+    check_timeout: int = 0,
 ) -> tuple[bool, tuple[float, float] | None]:
     """Return ``(should_kill, updated_cpu_sample)``.
 
@@ -397,19 +410,23 @@ def _check_idle_timeout(
     * **Both signals** (descendants alive AND tree CPU-busy) — uncapped.
       The check is making real progress somewhere and should be allowed to
       continue.  ``--check-timeout`` is the only outer bound.
-    * **Descendants alive but quiescent** — extend up to
-      ``_CPU_GRACE_MULTIPLIER * idle_timeout`` then kill, so a stuck
-      language server can't suppress the watchdog forever.
-    * **No descendants but CPU-busy** — extend up to the same cap.  A
-      runaway in-process loop with no children gets bounded.
-    * **Neither signal** — kill immediately at the configured threshold.
+    * **One signal** (descendants alive XOR CPU-busy) — extend up to
+      ``_CPU_GRACE_MULTIPLIER * idle_timeout`` then kill.  Bounds a stuck
+      language server (descendants but no CPU) or a runaway in-process loop
+      (CPU but no children).
+    * **Neither signal** — sub-agent delegation and long extended-thinking
+      turns leave the tree completely silent at the kernel level.  Extend
+      up to ``_NO_SIGNAL_GRACE_MULTIPLIER * idle_timeout`` (~1 hour at the
+      default) before killing.  When *check_timeout* is positive, skip the
+      kill entirely — the wall-clock bound takes over.
     """
     now = time.time()
     idle_seconds = now - last_output_time
     if idle_seconds <= idle_timeout:
         return False, last_cpu_sample
 
-    hard_cap = idle_timeout * _CPU_GRACE_MULTIPLIER
+    partial_cap = idle_timeout * _CPU_GRACE_MULTIPLIER
+    no_signal_cap = idle_timeout * _NO_SIGNAL_GRACE_MULTIPLIER
     descendants = find_all_descendant_pids(process.pid)
     busy_ratio, updated_sample = _measure_busy_ratio(process, now, last_cpu_sample)
     # Bind to a non-Optional local for the busy branches below; mypy can't infer
@@ -434,7 +451,7 @@ def _check_idle_timeout(
         return False, updated_sample
 
     # Descendants alive but quiescent — bounded extension.
-    if descendants and idle_seconds < hard_cap:
+    if descendants and idle_seconds < partial_cap:
         logger.info("Idle timeout would trigger, but %d descendant(s) still running: %s",
                     len(descendants), descendants[:5])
         print_status_inline(
@@ -443,7 +460,7 @@ def _check_idle_timeout(
         return False, updated_sample
 
     # No descendants but Claude itself is CPU-busy — bounded extension.
-    if not descendants and tree_busy and idle_seconds < hard_cap:
+    if not descendants and tree_busy and idle_seconds < partial_cap:
         logger.info(
             "Idle timeout would trigger, but tree is CPU-active "
             "(busy_ratio=%.2f): extending idle window",
@@ -454,16 +471,45 @@ def _check_idle_timeout(
             f"({int(idle_seconds)}s idle, stream silent)", DIM)
         return False, updated_sample
 
+    # Neither signal — agent-delegation / extended-thinking on a single API
+    # call.  When --check-timeout is set, skip the kill entirely (wall-clock
+    # bounds runtime).  Otherwise extend up to the no-signal cap.
+    if not descendants and not tree_busy:
+        if check_timeout > 0:
+            logger.info(
+                "Idle timeout would trigger, but --check-timeout=%ds is set — "
+                "treating idle as advisory.  idle=%.0fs, no observable activity",
+                check_timeout, idle_seconds,
+            )
+            print_status_inline(
+                f"  [{elapsed}] no observable activity ({int(idle_seconds)}s silent) — "
+                f"--check-timeout={check_timeout}s will bound runtime", DIM)
+            return False, updated_sample
+        if idle_seconds < no_signal_cap:
+            logger.info(
+                "Idle timeout deferred — neither descendants nor CPU activity, "
+                "but within no-signal grace (%ds < %ds).  Likely an agent-mode "
+                "or extended-thinking turn.",
+                int(idle_seconds), no_signal_cap,
+            )
+            print_status_inline(
+                f"  [{elapsed}] no observable activity — possibly an agent-mode "
+                f"turn ({int(idle_seconds)}s / {no_signal_cap}s before kill; "
+                f"set --check-timeout to bypass this kill)", DIM)
+            return False, updated_sample
+
     logger.warning(
         "Idle timeout: pid=%d, idle=%.0fs, elapsed=%s, configured=%ds, "
-        "descendants=%d, busy_ratio=%s, hard_cap=%ds",
+        "descendants=%d, busy_ratio=%s, partial_cap=%ds, no_signal_cap=%ds",
         process.pid, idle_seconds, elapsed, idle_timeout, len(descendants),
-        f"{busy_ratio:.2f}" if busy_ratio is not None else "n/a", hard_cap,
+        f"{busy_ratio:.2f}" if busy_ratio is not None else "n/a",
+        partial_cap, no_signal_cap,
     )
     clear_inline_status()
     print_status(
         f"\nIdle for {int(idle_seconds)}s (ran {elapsed}) — killing. "
-        f"Configured --idle-timeout={idle_timeout}s; raise it if this looks premature.",
+        f"Configured --idle-timeout={idle_timeout}s; raise it, or set "
+        f"--check-timeout to bound by wall-clock instead.",
         RED,
     )
     _kill_process_group(process)
@@ -701,6 +747,7 @@ def _check_resource_limits(
 
     idle_killed, last_cpu_sample = _check_idle_timeout(
         last_output_time, idle_timeout, check_start_time, process, last_cpu_sample,
+        check_timeout=check_timeout,
     )
     if idle_killed:
         return KILL_REASON_IDLE, last_memory_check, last_nudge_time, prev_rss_mb, last_cpu_sample
