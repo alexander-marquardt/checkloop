@@ -89,12 +89,13 @@ class TestCheckIdleTimeout:
             )
         assert killed is False
 
-    def test_one_second_over_threshold_within_no_signal_grace(self) -> None:
-        """Just past the threshold with no signals: deferred to no-signal cap, not killed.
+    def test_one_second_over_threshold_with_no_signals_does_not_kill(self) -> None:
+        """No descendants and no CPU activity → never kills (advisory only).
 
-        Sub-agent turns and extended thinking can leave the kernel-visible
-        tree completely silent.  The 6× no-signal grace window covers most of
-        these without an explicit --check-timeout.
+        The post-mortem of 2026-05-02 confirmed every historical kill at the
+        no-signal tier was a false positive (sub-agent turn, compaction, or
+        extended thinking blocked on the API socket).  --check-timeout is
+        the wall-clock safety net for this tier now.
         """
         mock_proc = mock.MagicMock()
         mock_proc.pid = 12345
@@ -123,32 +124,17 @@ class TestCheckIdleTimeout:
         assert killed is False  # Should NOT kill
         mock_kill.assert_not_called()
 
-    def test_no_signal_past_no_signal_cap_kills(self) -> None:
-        """No descendants, no CPU activity, past the no-signal cap → kill."""
-        mock_proc = mock.MagicMock()
-        mock_proc.pid = 12345
-        # idle = 800s with idle_timeout=120 → past no_signal_cap (720s)
-        with mock.patch("time.time", return_value=900.0), \
-             mock.patch.object(process, "_kill_process_group") as mock_kill, \
-             mock.patch.object(process, "find_all_descendant_pids", return_value=[]), \
-             mock.patch.object(process, "measure_tree_cpu_seconds", return_value=None):
-            killed, _ = process._check_idle_timeout(
-                last_output_time=100.0, idle_timeout=120,
-                check_start_time=80.0, process=mock_proc, last_cpu_sample=None,
-            )
-        assert killed is True
-        mock_kill.assert_called_once()
+    def test_no_signal_far_past_threshold_still_does_not_kill(self) -> None:
+        """No descendants and no CPU → never kills, regardless of how long silent.
 
-    def test_check_timeout_skips_idle_kill_with_no_signal(self) -> None:
-        """When --check-timeout is set, no-signal idle never kills.
-
-        Wall-clock --check-timeout becomes the sole bound: agent-mode and
-        extended-thinking turns of any duration survive, while a genuinely
-        stuck check still dies when wall-clock runs out.
+        Historic 6× cap has been removed — the post-mortem of 2026-05-02
+        showed that every kill in this tier was a false positive
+        (compaction or sub-agent turn). ``--check-timeout`` is the only
+        wall-clock bound for this case now.
         """
         mock_proc = mock.MagicMock()
         mock_proc.pid = 12345
-        # idle = 7200s (2h) — way past no_signal_cap (720s) — but check_timeout is set.
+        # idle = 7200s (2h) — would have been killed by the old cap.
         with mock.patch("time.time", return_value=7300.0), \
              mock.patch.object(process, "_kill_process_group") as mock_kill, \
              mock.patch.object(process, "find_all_descendant_pids", return_value=[]), \
@@ -156,7 +142,48 @@ class TestCheckIdleTimeout:
             killed, _ = process._check_idle_timeout(
                 last_output_time=100.0, idle_timeout=120,
                 check_start_time=80.0, process=mock_proc, last_cpu_sample=None,
-                check_timeout=86400,
+            )
+        assert killed is False
+        mock_kill.assert_not_called()
+
+    def test_compacting_event_suppresses_kill_with_descendants(self) -> None:
+        """A status=compacting SDK event suppresses kill at every tier.
+
+        Descendants alive but quiescent past the partial cap would normally
+        kill — when the SDK has just announced compaction, suppress.
+        """
+        from checkloop.streaming import StreamObserver
+        mock_proc = mock.MagicMock()
+        mock_proc.pid = 12345
+        observer = StreamObserver(compacting=True)
+        # idle_seconds = 301 > partial_cap = 240; descendants alive but quiescent.
+        with mock.patch("time.time", return_value=401.0), \
+             mock.patch.object(process, "_kill_process_group") as mock_kill, \
+             mock.patch.object(process, "find_all_descendant_pids", return_value=[999]), \
+             mock.patch.object(process, "measure_tree_cpu_seconds", return_value=None):
+            killed, _ = process._check_idle_timeout(
+                last_output_time=100.0, idle_timeout=120,
+                check_start_time=80.0, process=mock_proc, last_cpu_sample=None,
+                observer=observer,
+            )
+        assert killed is False
+        mock_kill.assert_not_called()
+
+    def test_compacting_event_suppresses_kill_with_cpu_runaway(self) -> None:
+        """Compaction grace overrides even the partial-CPU-runaway kill path."""
+        from checkloop.streaming import StreamObserver
+        mock_proc = mock.MagicMock()
+        mock_proc.pid = 12345
+        observer = StreamObserver(compacting=True)
+        # CPU runaway past hard cap would normally kill — compaction overrides.
+        with mock.patch("time.time", return_value=401.0), \
+             mock.patch.object(process, "_kill_process_group") as mock_kill, \
+             mock.patch.object(process, "find_all_descendant_pids", return_value=[]), \
+             mock.patch.object(process, "measure_tree_cpu_seconds", return_value=200.0):
+            killed, _ = process._check_idle_timeout(
+                last_output_time=100.0, idle_timeout=120,
+                check_start_time=80.0, process=mock_proc,
+                last_cpu_sample=(100.0, 20.0), observer=observer,
             )
         assert killed is False
         mock_kill.assert_not_called()
@@ -179,12 +206,11 @@ class TestCheckIdleTimeout:
         mock_kill.assert_not_called()
         assert sample == (221.0, 50.0)
 
-    def test_cpu_idle_within_no_signal_grace_does_not_kill(self) -> None:
-        """Negligible CPU activity at threshold: deferred to no-signal cap.
+    def test_cpu_idle_with_no_descendants_does_not_kill(self) -> None:
+        """Negligible CPU activity with no descendants → advisory, never kills.
 
-        Below the busy-ratio floor the tree counts as "no CPU signal", so the
-        no-signal grace window applies (kill only past 6× the threshold or
-        --check-timeout firing, whichever comes first).
+        Below the busy-ratio floor the tree counts as "no CPU signal", and
+        the no-signal tier no longer kills at all.
         """
         mock_proc = mock.MagicMock()
         mock_proc.pid = 12345
@@ -763,17 +789,17 @@ class TestCheckResourceLimitsCombined:
     def test_idle_timeout_detected_first(self) -> None:
         """Idle timeout should be detected before hard timeout or memory.
 
-        Uses check_timeout=0 (default) so the no-signal idle kill applies; the
-        idle interval is past 6× the threshold so the no-signal grace window
-        is exhausted and the kill fires.
+        Uses descendants alive but quiescent past 2× idle_timeout so the
+        partial-signal cap fires.  (The no-signal tier no longer kills, so
+        we drive the kill through the partial tier instead.)
         """
         proc = self._make_mock_process()
         now = time.time()
-        with mock.patch.object(process, "find_all_descendant_pids", return_value=[]), \
+        with mock.patch.object(process, "find_all_descendant_pids", return_value=[999]), \
              mock.patch.object(process, "measure_tree_cpu_seconds", return_value=None), \
              mock.patch.object(process, "_kill_process_group"):
             kill_reason, *_ = process._check_resource_limits(
-                proc, check_start_time=now - 10, last_output_time=now - 2000,
+                proc, check_start_time=now - 10, last_output_time=now - 700,
                 idle_timeout=300, check_timeout=0, max_memory_mb=8192,
                 last_memory_check=now, last_nudge_time=0.0,
             )

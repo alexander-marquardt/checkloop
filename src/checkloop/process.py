@@ -33,7 +33,7 @@ from checkloop.monitoring import (
     snapshot_process_rss,
     verify_pids_dead,
 )
-from checkloop.streaming import process_jsonl_buffer
+from checkloop.streaming import StreamObserver, process_jsonl_buffer
 from checkloop.terminal import (
     DIM,
     GREEN,
@@ -70,11 +70,13 @@ DEFAULT_IDLE_TIMEOUT = 600
 
 Reaching this threshold no longer kills the check on its own — see
 ``_check_idle_timeout`` for the layered forgiveness rules.  When the tree
-has descendants alive *and* is CPU-busy, the cap is lifted entirely and the
-run continues until ``--check-timeout`` (or the user) intervenes.  When only
-one signal is present the window extends to ``_CPU_GRACE_MULTIPLIER *
-idle_timeout`` and then kills; with neither signal the kill happens at the
-threshold.
+has descendants alive *and* is CPU-busy, the cap is lifted entirely.  When
+only one signal is present (descendants alive XOR tree CPU-busy) the window
+extends to ``_CPU_GRACE_MULTIPLIER * idle_timeout`` and then kills.  When
+neither signal is present (parent blocked on an API socket — a sub-agent
+turn or context compaction) the idle kill is suppressed entirely;
+``--check-timeout`` is the only outer bound.  A ``status=compacting`` SDK
+event also suppresses the kill in every tier.
 
 The default was raised from 300s to 600s after observing that PRISM-scale
 monorepo checks routinely sit silent for 5–10 minutes during extended
@@ -227,6 +229,8 @@ def _drain_remaining_stdout(
     output_buffer: bytearray,
     check_start_time: float,
     debug: bool,
+    *,
+    observer: StreamObserver | None = None,
 ) -> bytearray:
     try:
         while True:
@@ -235,7 +239,8 @@ def _drain_remaining_stdout(
                 break
             output_buffer.extend(remaining)
             output_buffer = process_jsonl_buffer(
-                output_buffer, check_start_time, debug, max_buffer_size=_MAX_BUFFER_SIZE,
+                output_buffer, check_start_time, debug,
+                max_buffer_size=_MAX_BUFFER_SIZE, observer=observer,
             )
     except OSError as exc:
         logger.debug("Failed to drain remaining stdout: %s", exc)
@@ -346,18 +351,12 @@ descendants alive but no CPU activity (a quiescent subprocess) — or no
 descendants but CPU is active (Claude itself thinking) — the window extends
 to ``idle_timeout * _CPU_GRACE_MULTIPLIER`` and then kills.  When *both*
 signals are present (descendants alive AND tree CPU-busy) the cap is lifted
-entirely; the only outer bound becomes ``--check-timeout``."""
-
-_NO_SIGNAL_GRACE_MULTIPLIER = 6
-"""Cap on idle-timeout forgiveness for the *no signal* case (no descendants
-AND no CPU activity).  Sub-agent turns and extended-thinking on a single
-long-running API call leave the parent process completely idle from the
-kernel's perspective: no children, no CPU on the parent (it's blocked on a
-socket read), and no JSONL output until the API turn completes.  A 6×
-multiplier puts the kill at roughly an hour of complete silence at the
-default, which covers nearly all legitimate agent-mode work while still
-catching genuine hangs.  When ``--check-timeout`` is set, this no-signal
-kill is bypassed entirely — wall-clock becomes the sole bound."""
+entirely; the only outer bound becomes ``--check-timeout``.  The
+*no-signal* case (no descendants AND no CPU activity) is purely advisory —
+it never kills — because the SDK routinely socket-blocks for an hour or
+more during sub-agent turns and context compaction with no kernel-visible
+activity, and we cannot distinguish that from a genuine hang from the
+outside."""
 
 
 def _measure_busy_ratio(
@@ -392,7 +391,7 @@ def _check_idle_timeout(
     process: subprocess.Popen[bytes],
     last_cpu_sample: tuple[float, float] | None,
     *,
-    check_timeout: int = 0,
+    observer: StreamObserver | None = None,
 ) -> tuple[bool, tuple[float, float] | None]:
     """Return ``(should_kill, updated_cpu_sample)``.
 
@@ -408,17 +407,21 @@ def _check_idle_timeout(
     The forgiveness is layered:
 
     * **Both signals** (descendants alive AND tree CPU-busy) — uncapped.
-      The check is making real progress somewhere and should be allowed to
-      continue.  ``--check-timeout`` is the only outer bound.
+      The check is making real progress somewhere; ``--check-timeout`` is
+      the only outer bound.
     * **One signal** (descendants alive XOR CPU-busy) — extend up to
       ``_CPU_GRACE_MULTIPLIER * idle_timeout`` then kill.  Bounds a stuck
       language server (descendants but no CPU) or a runaway in-process loop
       (CPU but no children).
-    * **Neither signal** — sub-agent delegation and long extended-thinking
-      turns leave the tree completely silent at the kernel level.  Extend
-      up to ``_NO_SIGNAL_GRACE_MULTIPLIER * idle_timeout`` (~1 hour at the
-      default) before killing.  When *check_timeout* is positive, skip the
-      kill entirely — the wall-clock bound takes over.
+    * **Neither signal** — never kills.  Sub-agent turns and context
+      compaction leave the parent socket-blocked for arbitrarily long with
+      no kernel-visible activity, and the post-mortem of 2026-05-02 showed
+      we cannot tell that apart from a genuine hang from the outside.
+      ``--check-timeout`` is the only safety net here.
+
+    A ``status=compacting`` SDK event (tracked via ``observer``) overrides
+    every tier and suppresses the kill — the SDK has explicitly told us it
+    is in a known long-blocking state.
     """
     now = time.time()
     idle_seconds = now - last_output_time
@@ -426,7 +429,6 @@ def _check_idle_timeout(
         return False, last_cpu_sample
 
     partial_cap = idle_timeout * _CPU_GRACE_MULTIPLIER
-    no_signal_cap = idle_timeout * _NO_SIGNAL_GRACE_MULTIPLIER
     descendants = find_all_descendant_pids(process.pid)
     busy_ratio, updated_sample = _measure_busy_ratio(process, now, last_cpu_sample)
     # Bind to a non-Optional local for the busy branches below; mypy can't infer
@@ -435,6 +437,18 @@ def _check_idle_timeout(
     tree_busy = busy_ratio is not None and busy_ratio >= _CPU_ACTIVITY_BUSY_RATIO
 
     elapsed = format_duration(now - check_start_time)
+
+    # Compaction trumps every tier — the SDK announced it would go silent.
+    if observer is not None and observer.compacting:
+        logger.info(
+            "Idle timeout would trigger, but SDK is mid-compaction "
+            "(idle=%.0fs) — suppressing kill until compaction completes",
+            idle_seconds,
+        )
+        print_status_inline(
+            f"  [{elapsed}] compacting context — {int(idle_seconds)}s silent, "
+            f"no kill while SDK is in compaction", DIM)
+        return False, updated_sample
 
     # Strongest forgiveness — descendants alive AND tree CPU-busy.
     # No cap: the tree is provably making progress, so let it run until
@@ -471,39 +485,29 @@ def _check_idle_timeout(
             f"({int(idle_seconds)}s idle, stream silent)", DIM)
         return False, updated_sample
 
-    # Neither signal — agent-delegation / extended-thinking on a single API
-    # call.  When --check-timeout is set, skip the kill entirely (wall-clock
-    # bounds runtime).  Otherwise extend up to the no-signal cap.
+    # No descendants and no CPU — sub-agent / compaction / extended thinking.
+    # We cannot distinguish "blocked on API socket doing real work" from
+    # "stuck" out here, and the 2026-05-02 post-mortem confirmed every
+    # historical kill at this tier was a false positive.  Treat as advisory
+    # and rely on --check-timeout for the wall-clock bound.
     if not descendants and not tree_busy:
-        if check_timeout > 0:
-            logger.info(
-                "Idle timeout would trigger, but --check-timeout=%ds is set — "
-                "treating idle as advisory.  idle=%.0fs, no observable activity",
-                check_timeout, idle_seconds,
-            )
-            print_status_inline(
-                f"  [{elapsed}] no observable activity ({int(idle_seconds)}s silent) — "
-                f"--check-timeout={check_timeout}s will bound runtime", DIM)
-            return False, updated_sample
-        if idle_seconds < no_signal_cap:
-            logger.info(
-                "Idle timeout deferred — neither descendants nor CPU activity, "
-                "but within no-signal grace (%ds < %ds).  Likely an agent-mode "
-                "or extended-thinking turn.",
-                int(idle_seconds), no_signal_cap,
-            )
-            print_status_inline(
-                f"  [{elapsed}] no observable activity — possibly an agent-mode "
-                f"turn ({int(idle_seconds)}s / {no_signal_cap}s before kill; "
-                f"set --check-timeout to bypass this kill)", DIM)
-            return False, updated_sample
+        logger.info(
+            "Idle timeout deferred — neither descendants nor CPU activity "
+            "(idle=%.0fs).  Likely a sub-agent turn or context compaction; "
+            "rely on --check-timeout for the wall-clock bound.",
+            idle_seconds,
+        )
+        print_status_inline(
+            f"  [{elapsed}] no observable activity ({int(idle_seconds)}s silent) — "
+            f"likely sub-agent turn; set --check-timeout to bound runtime", DIM)
+        return False, updated_sample
 
     logger.warning(
         "Idle timeout: pid=%d, idle=%.0fs, elapsed=%s, configured=%ds, "
-        "descendants=%d, busy_ratio=%s, partial_cap=%ds, no_signal_cap=%ds",
+        "descendants=%d, busy_ratio=%s, partial_cap=%ds",
         process.pid, idle_seconds, elapsed, idle_timeout, len(descendants),
         f"{busy_ratio:.2f}" if busy_ratio is not None else "n/a",
-        partial_cap, no_signal_cap,
+        partial_cap,
     )
     clear_inline_status()
     print_status(
@@ -655,10 +659,12 @@ def _flush_and_close_stdout(
     output_buffer: bytearray,
     check_start_time: float,
     debug: bool,
+    *,
+    observer: StreamObserver | None = None,
 ) -> None:
     # Append a newline to force any trailing incomplete JSONL line through the parser
     output_buffer.extend(b"\n")
-    process_jsonl_buffer(output_buffer, check_start_time, debug)
+    process_jsonl_buffer(output_buffer, check_start_time, debug, observer=observer)
     try:
         stdout.close()
     except OSError as exc:
@@ -723,6 +729,7 @@ def _check_resource_limits(
     known_descendants: set[int] | None = None,
     prev_rss_mb: float = 0.0,
     system_free_floor_mb: int = 0,
+    observer: StreamObserver | None = None,
 ) -> tuple[str | None, float, float, float, tuple[float, float] | None]:
     """Check all resource limits in one pass, sending nudges before timeout.
 
@@ -747,7 +754,7 @@ def _check_resource_limits(
 
     idle_killed, last_cpu_sample = _check_idle_timeout(
         last_output_time, idle_timeout, check_start_time, process, last_cpu_sample,
-        check_timeout=check_timeout,
+        observer=observer,
     )
     if idle_killed:
         return KILL_REASON_IDLE, last_memory_check, last_nudge_time, prev_rss_mb, last_cpu_sample
@@ -832,6 +839,7 @@ def _stream_process_output(
     last_cpu_sample: tuple[float, float] | None = None  # (wall_time, cumulative CPU seconds)
     output_buffer = bytearray()
     kill_reason: str | None = None
+    observer = StreamObserver()
 
     try:
         while True:
@@ -862,6 +870,7 @@ def _stream_process_output(
                 last_cpu_sample,
                 known_descendants=accumulated_descendant_pids, prev_rss_mb=prev_rss_mb,
                 system_free_floor_mb=system_free_floor_mb,
+                observer=observer,
             )
             if kill_reason:
                 break
@@ -881,7 +890,7 @@ def _stream_process_output(
                 if process.poll() is not None:
                     logger.debug("Process exited (rc=%s) — draining remaining stdout", process.returncode)
                     output_buffer = _drain_remaining_stdout(
-                        stdout, output_buffer, check_start_time, debug,
+                        stdout, output_buffer, check_start_time, debug, observer=observer,
                     )
                     break
 
@@ -916,12 +925,13 @@ def _stream_process_output(
                 raw_log_file.flush()
             output_buffer.extend(chunk)
             output_buffer = process_jsonl_buffer(
-                output_buffer, check_start_time, debug, max_buffer_size=_MAX_BUFFER_SIZE,
+                output_buffer, check_start_time, debug,
+                max_buffer_size=_MAX_BUFFER_SIZE, observer=observer,
             )
 
     finally:
         clear_inline_status()
-        _flush_and_close_stdout(stdout, output_buffer, check_start_time, debug)
+        _flush_and_close_stdout(stdout, output_buffer, check_start_time, debug, observer=observer)
 
     return check_start_time, kill_reason
 

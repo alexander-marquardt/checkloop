@@ -12,11 +12,27 @@ import json
 import logging
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, TypeAlias
 
 from checkloop.terminal import BLUE, DIM, GREEN, RESET, format_duration
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class StreamObserver:
+    """Mutable state tracked across JSONL events for the watchdog to consult.
+
+    The Claude SDK emits ``{"type":"system","subtype":"status","status":
+    "compacting"}`` immediately before context-window compaction, then goes
+    silent for as long as the API takes to summarise the conversation —
+    routinely tens of minutes on PRISM-scale runs.  The idle-timeout
+    watchdog reads ``compacting`` to suppress kills while the SDK is in
+    that known long-blocking state; any subsequent event clears the flag.
+    """
+
+    compacting: bool = False
 
 _BASH_DISPLAY_LIMIT = 80  # max chars shown for bash commands in tool summaries
 
@@ -105,8 +121,23 @@ _EVENT_TYPE_HANDLERS: dict[str, _EventHandler] = {
 }
 
 
-def _print_event(event: dict[str, Any], check_start_time: float) -> None:
+def _update_observer(event: dict[str, Any], observer: StreamObserver) -> None:
+    is_compacting = (
+        event.get("type") == "system"
+        and event.get("subtype") == "status"
+        and event.get("status") == "compacting"
+    )
+    observer.compacting = is_compacting
+
+
+def _print_event(
+    event: dict[str, Any],
+    check_start_time: float,
+    observer: StreamObserver | None = None,
+) -> None:
     event_type = event.get("type", "")
+    if observer is not None:
+        _update_observer(event, observer)
     printer = _EVENT_TYPE_HANDLERS.get(event_type)
     if printer is None:
         if event_type:
@@ -116,7 +147,12 @@ def _print_event(event: dict[str, Any], check_start_time: float) -> None:
     printer(event, elapsed_prefix)
 
 
-def _process_single_line(line_str: str, check_start_time: float, debug: bool) -> None:
+def _process_single_line(
+    line_str: str,
+    check_start_time: float,
+    debug: bool,
+    observer: StreamObserver | None = None,
+) -> None:
     if not line_str:
         return
     try:
@@ -124,7 +160,7 @@ def _process_single_line(line_str: str, check_start_time: float, debug: bool) ->
         if not isinstance(parsed, dict):
             logger.debug("Skipping non-object JSON value: %s", type(parsed).__name__)
             return
-        _print_event(parsed, check_start_time)
+        _print_event(parsed, check_start_time, observer)
     except json.JSONDecodeError:
         logger.debug("Skipping non-JSON line from subprocess: %.120s", line_str)
         if debug:
@@ -139,6 +175,7 @@ def process_jsonl_buffer(
     debug: bool,
     *,
     max_buffer_size: int = 0,
+    observer: StreamObserver | None = None,
 ) -> bytearray:
     """Process complete JSONL lines from the buffer, return the remainder.
 
@@ -156,6 +193,9 @@ def process_jsonl_buffer(
             diagnosing Claude Code subprocess issues).
         max_buffer_size: Safety cap in bytes.  If the buffer exceeds this
             size after processing, it is cleared.  0 disables the check.
+        observer: When provided, gets ``compacting`` flipped according to
+            the most recent event so the watchdog can suppress kills during
+            known long-blocking SDK states.
 
     Returns:
         The same *output_buffer* object with consumed lines removed.
@@ -169,7 +209,7 @@ def process_jsonl_buffer(
         del output_buffer[:last_newline + 1]
         for line_bytes in complete_lines_bytes.split(b"\n"):
             line_str = line_bytes.decode("utf-8", errors="replace").strip()
-            _process_single_line(line_str, check_start_time, debug)
+            _process_single_line(line_str, check_start_time, debug, observer)
     if max_buffer_size > 0 and len(output_buffer) > max_buffer_size:
         logger.warning("Output buffer exceeded %d bytes — truncating", max_buffer_size)
         output_buffer.clear()
