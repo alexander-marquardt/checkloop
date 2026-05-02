@@ -65,14 +65,21 @@ class CheckResult:
     kill_reason: str | None = None
 
 DEFAULT_IDLE_TIMEOUT = 600
-"""Seconds of silence before killing a subprocess (default for *idle_timeout*).
+"""Seconds of silence before consulting forgiveness signals (default for
+*idle_timeout*).
 
-Raised from 300s to 600s after observing that long-running checks against
-large codebases (e.g. multi-package monorepos) routinely fall silent for
-5-10 minutes during extended-thinking turns or while a long Bash command
-(pytest, eslint, large grep) is in flight.  The CPU/descendant forgiveness
-caps the actual kill at ``_CPU_GRACE_MULTIPLIER * idle_timeout`` (1200s
-= 20 minutes), so the new default is still bounded.
+Reaching this threshold no longer kills the check on its own — see
+``_check_idle_timeout`` for the layered forgiveness rules.  When the tree
+has descendants alive *and* is CPU-busy, the cap is lifted entirely and the
+run continues until ``--check-timeout`` (or the user) intervenes.  When only
+one signal is present the window extends to ``_CPU_GRACE_MULTIPLIER *
+idle_timeout`` and then kills; with neither signal the kill happens at the
+threshold.
+
+The default was raised from 300s to 600s after observing that PRISM-scale
+monorepo checks routinely sit silent for 5–10 minutes during extended
+thinking or while a long Bash command (pytest, eslint, large grep) is in
+flight.
 """
 
 DEFAULT_MAX_MEMORY_MB = 8192
@@ -334,10 +341,37 @@ loop from a fully idle process.  Tuned conservatively so noise doesn't rescue
 a genuinely stuck run."""
 
 _CPU_GRACE_MULTIPLIER = 2
-"""Hard cap on idle-timeout forgiveness.  If idle_seconds exceeds
-``idle_timeout * _CPU_GRACE_MULTIPLIER``, kill regardless of CPU activity —
-a process can burn CPU indefinitely in a loop without making real progress,
-so the grace window must be bounded."""
+"""Cap on idle-timeout forgiveness for *partial* signals.  When the tree has
+descendants alive but no CPU activity (a quiescent subprocess) — or no
+descendants but CPU is active (Claude itself thinking) — the window extends
+to ``idle_timeout * _CPU_GRACE_MULTIPLIER`` and then kills.  When *both*
+signals are present (descendants alive AND tree CPU-busy) the cap is lifted
+entirely; the only outer bound becomes ``--check-timeout``."""
+
+
+def _measure_busy_ratio(
+    process: subprocess.Popen[bytes],
+    now: float,
+    last_cpu_sample: tuple[float, float] | None,
+) -> tuple[float | None, tuple[float, float] | None]:
+    """Sample tree CPU and return ``(busy_ratio, updated_sample)``.
+
+    *busy_ratio* is CPU-seconds-per-wall-second since *last_cpu_sample*, or
+    ``None`` if no baseline is available yet or the wall delta is too small
+    to be meaningful (< 5s).  *updated_sample* is the new ``(wall, cpu)``
+    tuple to thread through the next call.
+    """
+    cpu_now = measure_tree_cpu_seconds(process.pid)
+    if cpu_now is None:
+        return None, last_cpu_sample
+    updated_sample = (now, cpu_now)
+    if last_cpu_sample is None:
+        return None, updated_sample
+    prev_wall, prev_cpu = last_cpu_sample
+    dwall = now - prev_wall
+    if dwall < 5.0:
+        return None, updated_sample
+    return max(0.0, cpu_now - prev_cpu) / dwall, updated_sample
 
 
 def _check_idle_timeout(
@@ -353,15 +387,22 @@ def _check_idle_timeout(
     killing:
 
     1. **Descendants alive** — Claude may be waiting on a long-running
-       subprocess (pytest, grep, language server).  Skip the kill.
-    2. **Tree CPU activity** — even with no descendants, Claude itself may
-       be in an extended-thinking turn that produces no stream output but
-       does burn CPU.  If the tree has done meaningful CPU work since the
-       last sample, extend the window up to ``_CPU_GRACE_MULTIPLIER`` times
-       the configured idle_timeout.
+       subprocess (pytest, grep, language server).
+    2. **Tree CPU activity** — Claude (or a child) may be in an
+       extended-thinking turn or a CPU-bound Bash command that produces no
+       stream output but does burn CPU.
 
-    Both guards are capped at ``_CPU_GRACE_MULTIPLIER * idle_timeout`` so a
-    stuck-but-busy-looking process eventually dies.
+    The forgiveness is layered:
+
+    * **Both signals** (descendants alive AND tree CPU-busy) — uncapped.
+      The check is making real progress somewhere and should be allowed to
+      continue.  ``--check-timeout`` is the only outer bound.
+    * **Descendants alive but quiescent** — extend up to
+      ``_CPU_GRACE_MULTIPLIER * idle_timeout`` then kill, so a stuck
+      language server can't suppress the watchdog forever.
+    * **No descendants but CPU-busy** — extend up to the same cap.  A
+      runaway in-process loop with no children gets bounded.
+    * **Neither signal** — kill immediately at the configured threshold.
     """
     now = time.time()
     idle_seconds = now - last_output_time
@@ -369,56 +410,59 @@ def _check_idle_timeout(
         return False, last_cpu_sample
 
     hard_cap = idle_timeout * _CPU_GRACE_MULTIPLIER
-
-    # Descendant forgiveness — unchanged, but capped so a permanently-hung
-    # child (e.g. a zombie language server) can no longer suppress the kill
-    # forever as it did pre-cap (readability stall: 16m of silence while a
-    # stale descendant kept the idle check returning False).
     descendants = find_all_descendant_pids(process.pid)
+    busy_ratio, updated_sample = _measure_busy_ratio(process, now, last_cpu_sample)
+    # Bind to a non-Optional local for the busy branches below; mypy can't infer
+    # the narrowing through tree_busy alone.
+    busy = busy_ratio if busy_ratio is not None else 0.0
+    tree_busy = busy_ratio is not None and busy_ratio >= _CPU_ACTIVITY_BUSY_RATIO
+
+    elapsed = format_duration(now - check_start_time)
+
+    # Strongest forgiveness — descendants alive AND tree CPU-busy.
+    # No cap: the tree is provably making progress, so let it run until
+    # --check-timeout fires (or the user interrupts).
+    if descendants and tree_busy:
+        logger.info(
+            "Idle timeout would trigger, but tree is busy: %d descendant(s) and "
+            "CPU busy_ratio=%.2f — uncapped forgiveness",
+            len(descendants), busy,
+        )
+        print_status_inline(
+            f"  [{elapsed}] working — {len(descendants)} subprocess(es), "
+            f"CPU {busy * 100:.0f}% ({int(idle_seconds)}s idle, stream silent)", DIM)
+        return False, updated_sample
+
+    # Descendants alive but quiescent — bounded extension.
     if descendants and idle_seconds < hard_cap:
         logger.info("Idle timeout would trigger, but %d descendant(s) still running: %s",
                     len(descendants), descendants[:5])
-        elapsed = format_duration(now - check_start_time)
         print_status_inline(
             f"  [{elapsed}] waiting — {len(descendants)} subprocess(es) still running "
             f"({int(idle_seconds)}s idle)", DIM)
-        return False, last_cpu_sample
+        return False, updated_sample
 
-    # No descendants (or past the hard cap with descendants) — check CPU
-    # activity before killing.  A high busy-ratio means Claude is genuinely
-    # working even though the JSONL stream has gone silent, so extend the
-    # window up to the hard cap.
-    cpu_now = measure_tree_cpu_seconds(process.pid)
-    updated_sample = (now, cpu_now) if cpu_now is not None else last_cpu_sample
+    # No descendants but Claude itself is CPU-busy — bounded extension.
+    if not descendants and tree_busy and idle_seconds < hard_cap:
+        logger.info(
+            "Idle timeout would trigger, but tree is CPU-active "
+            "(busy_ratio=%.2f): extending idle window",
+            busy,
+        )
+        print_status_inline(
+            f"  [{elapsed}] working — CPU {busy * 100:.0f}% "
+            f"({int(idle_seconds)}s idle, stream silent)", DIM)
+        return False, updated_sample
 
-    if (
-        not descendants
-        and cpu_now is not None
-        and last_cpu_sample is not None
-        and idle_seconds < hard_cap
-    ):
-        prev_wall, prev_cpu = last_cpu_sample
-        dwall = now - prev_wall
-        if dwall >= 5.0:
-            busy_ratio = max(0.0, cpu_now - prev_cpu) / dwall
-            if busy_ratio >= _CPU_ACTIVITY_BUSY_RATIO:
-                logger.info(
-                    "Idle timeout would trigger, but tree is CPU-active "
-                    "(busy_ratio=%.2f over %.0fs): extending idle window",
-                    busy_ratio, dwall,
-                )
-                elapsed = format_duration(now - check_start_time)
-                print_status_inline(
-                    f"  [{elapsed}] working — CPU {busy_ratio * 100:.0f}% "
-                    f"({int(idle_seconds)}s idle, stream silent)", DIM)
-                return False, updated_sample
-
-    logger.warning("Idle timeout: pid=%d, idle=%.0fs, elapsed=%s, configured=%ds, hard_cap=%ds",
-                   process.pid, idle_seconds,
-                   format_duration(now - check_start_time), idle_timeout, hard_cap)
+    logger.warning(
+        "Idle timeout: pid=%d, idle=%.0fs, elapsed=%s, configured=%ds, "
+        "descendants=%d, busy_ratio=%s, hard_cap=%ds",
+        process.pid, idle_seconds, elapsed, idle_timeout, len(descendants),
+        f"{busy_ratio:.2f}" if busy_ratio is not None else "n/a", hard_cap,
+    )
     clear_inline_status()
     print_status(
-        f"\nIdle for {int(idle_seconds)}s (ran {format_duration(now - check_start_time)}) — killing. "
+        f"\nIdle for {int(idle_seconds)}s (ran {elapsed}) — killing. "
         f"Configured --idle-timeout={idle_timeout}s; raise it if this looks premature.",
         RED,
     )
