@@ -1,6 +1,6 @@
 [tier]
 name = "super-exhaustive"
-description = "Everything in exhaustive plus infrastructure audits (check-config, dead-code, observability, schema-validation, secret-leakage, migration-safety, feature-flags, fixture-drift) and a final meta-review that writes recommendations for checks to consider next. Meant for occasional deep audits, not every run."
+description = "Everything in exhaustive plus infrastructure audits (check-config, dead-code, observability, schema-validation, secret-leakage, feature-flags, fixture-drift) and a final meta-review that writes recommendations for checks to consider next. Meant for occasional deep audits, not every run. Note: migration-safety is available as an on-demand check (--checks migration-safety) for projects with SQL/relational migrations, but is not included in any default plan."
 
 [[checks]]
 id = "test-fix"
@@ -119,11 +119,6 @@ idle_timeout = 900
 
 [[checks]]
 id = "concurrency-testing"
-model = "opus"
-idle_timeout = 900
-
-[[checks]]
-id = "migration-safety"
 model = "opus"
 idle_timeout = 900
 
