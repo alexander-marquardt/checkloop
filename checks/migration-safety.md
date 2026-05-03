@@ -13,7 +13,7 @@ Review database migrations (and any other schema/state mutations that run on dep
 
    **Index creation:** Creating an index on a large table with `CREATE INDEX` (no `CONCURRENTLY`) blocks writes. Postgres offers `CREATE INDEX CONCURRENTLY` — prefer it for any table expected to have significant row counts in production. Same rule applies to `DROP INDEX CONCURRENTLY`.
 
-   **Destructive changes:** `DROP COLUMN`, `DROP TABLE`, renames, and type narrowings are destructive. Best practice is a multi-step rollout:
+   **Destructive changes:** column drops, table drops, renames, and type narrowings are destructive. Best practice is a multi-step rollout:
    - Step 1: Add new column / table (old still in use).
    - Step 2: Backfill data and dual-write from application code.
    - Step 3: Cut over reads.

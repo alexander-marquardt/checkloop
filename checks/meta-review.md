@@ -39,7 +39,6 @@ The following checkloop checks have definitions and are available to be run on t
 - **observability** — logs/metrics/alerts on critical paths
 - **schema-validation** — validators at every external boundary
 - **secret-leakage** — PII/secret sweep in code, logs, bundles
-- **migration-safety** — DB migration safety (locking, backfills, rollback)
 - **feature-flags** — ghost/orphan/stale-flag hygiene
 - **fixture-drift** — mocks/fixtures that no longer match real code
 

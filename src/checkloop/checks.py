@@ -150,7 +150,10 @@ def get_check_by_id(check_id: str) -> CheckDef | None:
 _BUILTIN_PLAN_CONFIGS: dict[str, PlanConfig] = load_all_builtin_plans()
 
 # Checks that are only run when explicitly requested via --checks, never included in plans.
-_ON_DEMAND_ONLY: set[str] = set()
+# migration-safety is opt-in because it only applies to projects with SQL/relational
+# migrations (Postgres, MySQL, etc.); the default plans skip it to avoid wasting a Claude
+# invocation on the majority of projects that don't have a migrations directory at all.
+_ON_DEMAND_ONLY: set[str] = {"migration-safety"}
 
 # Public plan lists — derived from plan TOML files for programmatic access.
 TIER_BASIC: list[str] = _BUILTIN_PLAN_CONFIGS["basic"].check_ids()
