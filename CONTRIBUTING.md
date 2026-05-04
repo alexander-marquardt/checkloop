@@ -1,52 +1,222 @@
 # Contributing to checkloop
 
-Thanks for your interest in contributing!
+This document is the single source of truth for how work happens in this repository — engineering conventions, testing expectations, commit and PR mechanics, and the project-specific philosophies that aren't obvious from the code alone. Read it before opening a PR; if something here conflicts with what you find in a file, the file is wrong and a fix is welcome.
 
-## Filing Issues
+## What checkloop is
 
-- **Bugs:** Use the [bug report template](.github/ISSUE_TEMPLATE/bug_report.md). Include the command you ran, what you expected, and what actually happened.
-- **Feature requests:** Use the [feature request template](.github/ISSUE_TEMPLATE/feature_request.md).
+`checkloop` runs Claude Code as a sequence of focused, single-concern code reviews against a target repository. Instead of one omnibus "review everything" prompt, it loops — readability, then DRY, then tests, then security, and so on — and lets each pass build on what the previous pass cleaned up. A typical run produces a scratch branch in a disposable clone under `~/checkloop-runs/`; the user reviews and adopts the work in their own repo afterwards.
 
-## Development Setup
+The tool itself is a Python CLI that orchestrates Claude Code subprocesses, watches their JSONL output, enforces idle and memory limits, and emits per-check logs and telemetry. It is *not* a Claude SDK wrapper or a framework — it is glue around the `claude` binary.
+
+## Stack
+
+- **Python ≥ 3.12** — runtime
+- **uv** — package manager and runner
+- **pytest** — test runner
+- **mypy** — type checker
+- **No frontend, no database, no service stack** — the CLI is the whole product
+
+External runtime dependency: the `claude` CLI from `@anthropic-ai/claude-code`. Tests stub it; manual end-to-end runs require it on `PATH`.
+
+## Setup
 
 ```bash
-# Clone the repo
 git clone https://github.com/alexander-marquardt/checkloop.git
 cd checkloop
-
-# Install with uv (recommended)
 uv sync
-
-# Run locally
 uv run checkloop --help
-
-# Or install in editable mode
-uv pip install -e .
 ```
 
-## Submitting PRs
+To iterate against your own work without re-installing, use `uv run` — it picks up local source changes immediately.
 
-1. Fork the repo and create a branch from `main`.
-2. Make your changes. Keep them focused — one PR per feature or fix.
-3. Run the test suite and type checker:
-   ```bash
-   uv run python -m pytest tests/ -x -q
-   uv run mypy src/checkloop/
-   ```
-4. Test your changes end-to-end: run `checkloop --dry-run` at minimum.
-5. Submit a PR with a clear description of what changed and why.
+## Repository layout
 
-## Code Style
+```
+checkloop/
+├── src/checkloop/
+│   ├── cli.py, cli_args.py        # Entry point and argument parsing
+│   ├── suite.py                   # Run orchestration and post-run review prompt
+│   ├── check_runner.py            # Per-check execution: prompt build, dangerous-keyword guard, Claude invocation
+│   ├── checks.py                  # Check registry, plan loading, dangerous-prompt regex
+│   ├── process.py                 # Subprocess lifecycle, watchdog (idle/memory), descendant tracking
+│   ├── streaming.py               # JSONL event parsing, StreamObserver, tool-use rendering
+│   ├── monitoring.py              # Telemetry sampler (RSS, descendant snapshot)
+│   ├── telemetry.py               # JSONL telemetry writer
+│   ├── clone.py                   # Clone-mode setup; auto-memory import
+│   ├── git.py                     # Git helpers (status, branch, commit count)
+│   ├── commit_message.py          # Per-check commit message generation
+│   ├── checkpoint.py              # Resume support
+│   ├── project_map.py             # Cached layout summary, refreshed per check
+│   ├── run_storage.py             # On-disk run directory layout
+│   ├── tier_config.py             # Plan TOML schema
+│   └── terminal.py                # ANSI colour, status-line rewriting
+├── checks/                        # One markdown file per check (id in frontmatter)
+├── execution_plans/               # Pre-populated TOML plans (basic, thorough, exhaustive, super-exhaustive)
+├── prompt_templates/              # Fragments injected into every check prompt
+├── tests/                         # pytest suite
+├── CLAUDE.md                      # Agent-facing pointer to this file
+└── CONTRIBUTING.md                # You are here
+```
 
-- Follow the existing patterns in the codebase.
-- Use type hints for function signatures.
-- Keep it simple — this is a CLI tool, not a framework.
+## How a run works
 
-## Adding Checks
+1. **Clone-mode setup** (default): `clone.py` makes a fresh clone of the target repo under `~/checkloop-runs/<project>-<timestamp>/`, checks out the review branch, and creates a scratch branch off it. The user's actual working tree is never touched. The user's Claude memory directory for the target project is read-only-imported into the clone's slug so the agent inherits prior context — writes during the run land in the clone's slug and are orphaned with the clone.
+2. **Plan resolution**: `checks.py` loads the requested plan TOML, expands check IDs into prompts, and builds a flat ordered list. Bookend checks (`test-fix` first, `test-validate` last) are always present.
+3. **Per-check execution**: `check_runner.py` builds the prompt, runs `looks_dangerous()` over it as a safety net, snapshots git state, then `process.py` spawns the Claude subprocess and `streaming.py` parses its stdout JSONL.
+4. **Watchdog**: while the subprocess runs, three signals decide whether it's still doing real work — descendant processes alive, parent tree CPU activity, and recent JSONL output. The watchdog suppresses idle-kill while *any* signal is positive, while a `system: status=compacting` event is in flight, and tier-3 (no signal at all) is now advisory and bounded only by `--check-timeout`. The historical context for that policy is in PR #20.
+5. **Post-run**: `suite.py` prints a per-check summary, surfaces `.checkloop-recommendations.md` from the clone (if `meta-review` ran), and emits a copy-paste prompt that drives the original-repo Claude through reviewing the scratch branch and re-applying the work as new commits.
 
-New checks are welcome! Add them to the `CHECKS` list in `src/checkloop/checks.py`. Each check needs:
-- `id`: short lowercase key (used in `--checks` flag)
-- `label`: human-readable name for the banner
-- `prompt`: the instruction sent to Claude
+A more detailed user-facing walkthrough lives in `README.md` — this section exists so contributors don't have to reverse-engineer it from the code.
 
-Then add the check ID to the appropriate tier list (`_CORE_BASIC`, `_CORE_THOROUGH`, or `_CORE_EXHAUSTIVE`) in the same file.
+## Day-to-day commands
+
+```bash
+# Run the test suite (the canonical command)
+uv run python -m pytest tests/ -x -q
+
+# Type-check
+uv run mypy src/checkloop/
+
+# Single test file
+uv run python -m pytest tests/test_process.py -x -q
+
+# Single test
+uv run python -m pytest tests/test_streaming.py::TestStreamObserver -x -q
+
+# Run checkloop against itself in dry-run (no Claude calls)
+uv run checkloop --dir . --review-branch main --dry-run
+
+# Run checkloop against a real target (requires the claude binary)
+uv run checkloop --dir ~/some-project --review-branch main --plan basic
+```
+
+## Branching, rebasing, merging
+
+Work happens on feature branches off `main`. Sync with `git pull origin main --rebase` rather than merge commits — the history stays linear and bisectable. PRs target `main` directly; there is no staging branch.
+
+Before a PR is mergeable, CI must be green. Don't merge with checks pending or failing. If a check is flaky, fix the flake, don't retry until it passes.
+
+## Push policy
+
+A few rules that keep automated agents (and tired humans) from doing things that are hard to undo:
+
+- **No unsolicited pushes.** Commit locally and stop. The user normally handles pushes. When the user explicitly says "push" or "push and open a PR", a feature-branch push is fine without re-prompting.
+- **Direct merges or pushes to `main` (including `gh pr merge` onto main) require one explicit confirmation**, even when an earlier "push" was authorised. Unreviewed changes on the default branch are exactly the class of action this rule exists to prevent.
+- **Force-push to any branch must be announced before running.** It is not the agent's place to silently rewrite history.
+- **Never skip git hooks** (`--no-verify`, `--no-gpg-sign`, etc.) unless the user has asked for it explicitly. If a hook fails, fix the underlying issue.
+- **When checkloop is driving commits inside a *target* project, the tool itself never pushes.** The user owns the decision to publish. Preserve this invariant in any future change to the commit flow.
+
+## Commit messages
+
+Every commit is exactly **two or three sentences** of plain professional English. Describe what changed and why. That's the bar — anything shorter is too generic, anything longer is doing the PR description's job.
+
+Hard rules:
+
+- No mention of Claude, AI, LLMs, "AI-assisted", or any tool-attribution phrasing. The work product stands on its own.
+- No `Co-Authored-By:` or `Signed-off-by:` trailers attributing AI tools.
+- No single-word or filler messages (`cleanup`, `wip`, `fix`, `update readme`).
+- No walls of text. If the rationale needs more than three sentences, it belongs in the PR description.
+- Set `git config user.email` to a real address. Commits authored by the default `user@hostname` account get rejected on review.
+
+## Pull requests
+
+Open one PR per concern. A bug fix and a refactor that touches the same file are two PRs unless the refactor is genuinely required to land the fix.
+
+The PR description should answer: what changed, why, and what to look at first. Test plan as a checklist. Link the issue if there is one. Don't restate the diff — the reviewer can see it.
+
+Before requesting review:
+
+```bash
+uv run python -m pytest tests/ -x -q
+uv run mypy src/checkloop/
+```
+
+Both must pass locally. CI will catch what your machine doesn't, but burning a CI cycle on something you could have caught in 8 seconds is a poor use of everyone's time.
+
+## Engineering principles
+
+These are the rules that aren't obvious from reading the code, and that have caused incidents when violated.
+
+### Edit at the source
+
+When you move or rename code, update every call site in the same change. Do not leave a `from .new_home import X  # noqa: F401 — kept for backward compat` line behind. Forwarding stubs hide the real owner of a symbol, accumulate as cruft, and signal that the split was incomplete.
+
+In the same spirit:
+
+- No `# moved to module_x` or `// see new_home.py` placeholder comments where deleted code used to live. Git history is the record. The file is not a changelog.
+- No renaming a now-unused parameter to `_unused` to telegraph intent. If it's unused, delete it from the signature.
+- No code parked behind dead conditionals "for future use". When the call site arrives, the code can arrive with it.
+
+### Don't catch what you can't handle
+
+Bare `except Exception:` in a request handler or a long-running loop is a bug-hider. Catch the specific exception you can do something useful about, and re-raise (or restructure) the rest.
+
+- Repeated catch/log/raise patterns get factored into a helper so log format and status codes don't drift across handlers.
+- Errors carry context. A traceback alone is not enough — include the operation name, relevant IDs, and the inputs that produced the failure. The on-call engineer should not need to reproduce the bug to understand it.
+- Failures are loud. Catching and swallowing is a defect.
+- Error messages tell the reader what went wrong *and* what to try next. "Connection refused" is not a usable error; "Could not reach the Claude CLI on PATH — install with `npm install -g @anthropic-ai/claude-code`" is.
+
+### Optionality lives in configuration, not in `try/except`
+
+If a feature can be disabled, that's a config flag. If a dependency is required when the feature is enabled and it's missing, that's a hard error — fail loudly with an actionable message. A `try/except ImportError: pass` that silently turns off behaviour is the wrong place to make that decision; it makes the system's actual behaviour depend on what's installed at runtime, not on what the operator chose.
+
+### Don't silence the type checker
+
+`# type: ignore` (and TypeScript's `as any`) is for genuine third-party type-stub gaps, not for shutting up an annotation that's flagging a real issue. If mypy is unhappy, the answer is to fix the type or fix the code, not to suppress the diagnostic. The same logic applies to `pytest.skip` and `xfail` — those are reserved for environmental gates (the `claude` binary not being on PATH, for instance), and the gate must be explicit with a documented install path.
+
+### Don't add what isn't requested
+
+Bug fixes don't grow into surrounding refactors. One-shot operations don't sprout helper functions. Three similar lines beat a premature abstraction. Half-finished implementations don't ship — if the call site for a new helper isn't part of the same change, the helper isn't ready to land.
+
+### Comments earn their place
+
+Default to no comments. Names should do the work. Write a comment when the *why* is non-obvious and would surprise a future reader: a hidden constraint, a workaround for a specific bug, an invariant that isn't enforced by code. Don't write comments that narrate the *what* (the next line already does that), and don't reference the current task or PR ("added for issue #123") — that information lives in the commit message and rots in the file.
+
+## Testing
+
+The full suite is fast (~8 seconds, 979+ tests). Keep it that way.
+
+- Tests run with `uv run python -m pytest tests/ -x -q`. The `-x` is intentional — fail fast.
+- Every behaviour change comes with a test that pins the new behaviour. New code without a test is incomplete; bug fixes without a regression test are an invitation to repeat the bug.
+- Don't mock what you can run cheaply. The watchdog tests use real subprocesses. The streaming tests construct real JSONL events and parse them. Mocking is for the `claude` binary itself (because invoking it spends tokens) and for OS-level signals that don't reproduce reliably in CI.
+- When you do mock, mock at the *boundary* — the subprocess, the filesystem, the clock — never the function under test. A mock that knows the internals of the code it's patching is a refactor blocker.
+- Skipping or `xfail`-ing a test to silence a failure is forbidden. Find the root cause. The same rule that bans `# type: ignore` on real type errors bans skip-marks on real test failures: both hide bugs.
+
+## Adding a check
+
+Each check is a markdown file in `checks/` with a frontmatter `id` and `label`, plus a body that becomes the prompt sent to Claude. Pick an id (lowercased, hyphenated), drop the file in `checks/`, and add it to the plans where it belongs (`execution_plans/*.toml`) with a model and idle timeout. The check registry in `checks.py` reloads from disk — no Python edit is required for the check itself, only for plan membership if needed.
+
+A few practical notes:
+
+- The body is read verbatim. If it includes phrases that match the dangerous-keyword regex in `checks.py`, the check will be skipped at runtime. Rephrase or quote the trigger words. The list of patterns is small (`drop table`, `rm -rf /`, etc.) and the false positives are easy to spot — run `uv run python -c "from checkloop.checks import looks_dangerous; print(looks_dangerous(open('checks/your_check.md').read()))"`.
+- Checks that should be available but excluded from default plans go in `_ON_DEMAND_ONLY` in `checks.py`. They're still callable via `--checks <id>` but aren't dragged in by `--plan super-exhaustive`. `migration-safety` is the worked example.
+- The frontmatter `label` shows up in the run banner and the per-check log path. Keep it short and specific.
+
+## Adding an execution plan
+
+Drop a TOML file in `execution_plans/` with a `[tier]` block (name, description) and one `[[checks]]` block per check (id, model, idle_timeout). Plans don't need to be subsets of each other, but every check id must exist in the registry. The test in `tests/test_checks.py` will catch most wiring mistakes.
+
+`super-exhaustive` is the canonical superset of every non-on-demand check. There's a test (`test_super_exhaustive_tier_includes_all_tier_checks`) that pins this — don't add a non-on-demand check without also adding it to super-exhaustive.
+
+## Touching the watchdog
+
+The idle-timeout and memory-kill logic in `process.py` has been the source of every "checkloop killed legitimate work" incident in the project's history. Two rules of thumb when changing it:
+
+- **Don't reintroduce caps that this codebase already removed.** PRs #18, #19, #20 progressively removed the no-signal idle-kill cap because every kill it produced post-PRISM-2026-05-02 was a false positive. The watchdog now defers to `--check-timeout` for tier-3 (no descendants, no CPU, no JSONL). If a future change wants to re-cap, the bar is a documented incident showing genuine hangs that escape `--check-timeout`.
+- **Watch the `find_all_descendant_pids` guard.** Walking from PID 0 or PID 1 returns every user process; signalling that result SIGKILLs the user's login session. The guard in `process.py` prevents this and has regressed twice already. Any change to descendant-walking must keep the guard and add a test that asserts the guard fires.
+
+## The agent boundary
+
+This project is built with Claude Code, runs Claude Code, and is reviewed by Claude Code. A few invariants matter:
+
+- **No AI attribution anywhere user-visible.** Commit messages, code comments, docstrings, PR descriptions, README, error messages — none of these mention Claude, AI, LLMs, or "AI-assisted". The product stands on its own.
+- **The dangerous-keyword filter is a backstop, not a policy.** It exists to refuse running prompts whose literal text would direct an LLM to do something destructive. False positives (a check prompt that mentions `DROP TABLE` while teaching Claude what to look for) get fixed by rephrasing the prompt — not by widening the filter into uselessness.
+- **When checkloop drives commits in a target repo, it never pushes.** The user reviews the scratch branch and decides. This is non-negotiable — preserve it in any change to the commit flow.
+
+## Where to read more
+
+- `README.md` — user-facing usage, plan tiers, options
+- `checks/*.md` — every check's exact prompt
+- `execution_plans/*.toml` — what runs in each tier
+- `prompt_templates/*.md` — fragments injected into every check
+- `CLAUDE.md` — short pointer to this file for agents loading project context
