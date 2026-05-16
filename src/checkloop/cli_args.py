@@ -209,6 +209,15 @@ def build_argument_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--no-caffeinate", action="store_true",
+        help=(
+            "Do not hold a macOS power assertion during the run. By default, on "
+            "macOS, checkloop runs `caffeinate` for the lifetime of the run so the "
+            "host does not idle-sleep mid-check (which suspends the active Claude "
+            "subprocess). No effect on non-macOS platforms."
+        ),
+    )
+    parser.add_argument(
         "--in-place", action="store_true",
         help=(
             "Run checkloop directly in --dir instead of cloning. Use this to review "
