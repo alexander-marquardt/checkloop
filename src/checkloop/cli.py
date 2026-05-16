@@ -44,7 +44,7 @@ from checkloop.cli_args import (
     validate_arguments,
     warn_if_mypy_unavailable,
 )
-from checkloop import telemetry
+from checkloop import power, telemetry
 from checkloop.clone import CloneError, prepare_clone
 from checkloop.monitoring import cleanup_all_sessions
 from checkloop.run_storage import create_run_dir, prune_old_runs
@@ -255,6 +255,9 @@ def main() -> None:
     original_workdir = resolve_working_directory(args.dir)
     validate_arguments(args)
     prune_old_runs()
+
+    if not args.dry_run and not args.no_caffeinate:
+        power.prevent_idle_sleep()
 
     if args.in_place:
         workdir = original_workdir

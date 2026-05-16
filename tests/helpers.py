@@ -32,6 +32,7 @@ SHARED_ARG_DEFAULTS: dict[str, Any] = dict(
     changed_files_prefix="",
     in_place=True,
     review_branch=None,
+    no_caffeinate=True,
 )
 
 

@@ -325,6 +325,11 @@ uv run checkloop --cycles 5 --convergence-threshold 0.5
                        below MB (default: 500). Safety net for swap-thrash
                        stalls that can require a hard reboot. Set to 0 to
                        disable.
+--no-caffeinate        Do not hold a macOS power assertion during the run.
+                       By default, on macOS, checkloop runs `caffeinate` for
+                       the lifetime of the run so the host does not idle-sleep
+                       mid-check (sleep suspends the active Claude subprocess
+                       and the run appears stalled). No effect off macOS.
 --dry-run              Preview without running
 --no-resume            Ignore any existing checkpoint and start fresh
 --verbose, -v          Show operational events, timing, and memory info
@@ -358,6 +363,7 @@ uv run checkloop --cycles 5 --convergence-threshold 0.5
 1. **Argument resolution** — Parses CLI flags, loads the plan file (or resolves manual check selection), and validates the target directory.
 2. **Clone preparation** (unless `--in-place`) — Makes a hardlink-backed `git clone --local` of `--dir` into `~/checkloop-runs/<target>-<iso-timestamp>/`, runs `git fetch origin --prune` in the clone, resolves the `--review-branch` ref (preferring `origin/<name>` over any local branch), and checks it out in detached-HEAD state so commits can't be pushed upstream. After the checkout, the original repo's Claude auto-memory (`~/.claude/projects/<original-slug>/memory/`) is copied into the clone's slug so the check sessions inherit project context — read-only, with any writes during the run intentionally orphaned in the clone's slug rather than persisted back into the user's authoritative memory.
 3. **Scratch branch** — Creates `<review-branch>-cl-<iso-timestamp>` (or `checkloop-<iso-timestamp>` in `--in-place` mode) off the current HEAD and switches to it. All checkloop commits land on this branch; the user's original branches are untouched.
+3a. **Power assertion** (macOS only) — Spawns `caffeinate -i -m -s` bound to checkloop's PID so the host does not idle-sleep mid-run; the assertion is released automatically when checkloop exits. Disable with `--no-caffeinate`. If `caffeinate` is not on `PATH`, checkloop prints a warning and continues without the assertion.
 4. **Pre-run warning** — Displays a 5-second countdown so the user can abort. Warns if `--dangerously-skip-permissions` is (or isn't) set.
 5. **Check execution** — For each check, builds a focused prompt (with commit-message rules appended) and invokes `claude -p <prompt> --output-format stream-json --verbose` as a subprocess.
 6. **Real-time streaming** — Streams JSONL output from the subprocess, displaying tool-use events (file reads, edits, shell commands) and assistant messages with elapsed-time prefixes.

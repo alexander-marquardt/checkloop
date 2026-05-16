@@ -108,8 +108,19 @@ class TestMainNonDryRun:
         with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--in-place", "--pause", "0"]):
             with mock.patch.object(cli, "display_pre_run_warning") as mock_warn:
                 with mock.patch.object(cli, "run_suite_with_error_handling"):
-                    cli.main()
+                    with mock.patch.object(cli.power, "prevent_idle_sleep") as mock_caffeinate:
+                        cli.main()
                 mock_warn.assert_called_once()
+                mock_caffeinate.assert_called_once()
+
+    def test_no_caffeinate_skips_power_assertion(self) -> None:
+        argv = ["checkloop", "--dir", ".", "--in-place", "--pause", "0", "--no-caffeinate"]
+        with mock.patch("sys.argv", argv):
+            with mock.patch.object(cli, "display_pre_run_warning"):
+                with mock.patch.object(cli, "run_suite_with_error_handling"):
+                    with mock.patch.object(cli.power, "prevent_idle_sleep") as mock_caffeinate:
+                        cli.main()
+        mock_caffeinate.assert_not_called()
 
     def test_plan_thorough(self, capsys: pytest.CaptureFixture[str]) -> None:
         with mock.patch("sys.argv", ["checkloop", "--dir", ".", "--in-place", "--plan", "thorough", "--dry-run", "--pause", "0"]):
