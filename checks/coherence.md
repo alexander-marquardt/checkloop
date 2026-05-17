@@ -17,6 +17,8 @@ Look for these patterns:
 
 5. **Broken call chains** — A check refactored a function signature, return type, or module structure, and a later check built on the old interface or duplicated work that the refactor already handled. Fix: ensure callers and callees are consistent after all changes.
 
+6. **Load-bearing deletions in `cleanup-ai-slop`** — Re-read the diff `cleanup-ai-slop` produced in this plan (`git show <sha>` against its commit). For every docstring, comment, log line, error handler, or piece of defensive code it deleted, ask explicitly: "did this deletion remove information that a future reader would have needed?" A docstring that explained intent ("so that X holds"), a comment that pinned an invariant ("caller must hold the lock"), a log line on an error path, a defensive check at a boundary the type system cannot cover — these are load-bearing. If a deletion was wrong, RESTORE the deleted content using `git show <commit-before-deletion>:<path>` to recover the prior version and re-apply it as your own commit with a clear message. Be especially suspicious of `cleanup-ai-slop` commits that deleted three or more docstrings in a single file with no compensating change to function names or signatures — that pattern almost always means real explanations were stripped.
+
 Do NOT undo intentional improvements. If a check correctly extracted a helper, improved a name, tightened a type, or added necessary validation, leave it alone — even if it changed a lot of code. The goal is to catch cases where checks interfered with each other, not to revert good work.
 
 Do NOT add new features, abstractions, or documentation. This check only fixes incoherence between prior changes.

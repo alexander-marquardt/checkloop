@@ -113,6 +113,16 @@ model = "opus"
 idle_timeout = 900
 
 [[checks]]
+id = "tests-for-diff"
+model = "sonnet"
+idle_timeout = 900
+
+[[checks]]
 id = "test-validate"
+model = "sonnet"
+idle_timeout = 600
+
+[[checks]]
+id = "commit-audit"
 model = "sonnet"
 idle_timeout = 600

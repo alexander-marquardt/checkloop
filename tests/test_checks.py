@@ -185,6 +185,33 @@ class TestTierConsistency:
             assert "test-fix" in tier_ids, f"test-fix missing from {tier_name}"
             assert "test-validate" in tier_ids, f"test-validate missing from {tier_name}"
 
+    def test_post_modification_checks_in_thorough_plus(self) -> None:
+        """tests-for-diff and commit-audit run after behavior-modifying checks
+        and must appear in thorough, exhaustive, and super-exhaustive. Basic is
+        intentionally minimal so they are not added there."""
+        for tier_name in ("thorough", "exhaustive", "super-exhaustive"):
+            tier_ids = checks.TIERS[tier_name]
+            assert "tests-for-diff" in tier_ids, f"tests-for-diff missing from {tier_name}"
+            assert "commit-audit" in tier_ids, f"commit-audit missing from {tier_name}"
+
+    def test_tests_for_diff_runs_before_test_validate(self) -> None:
+        """tests-for-diff writes new tests; test-validate must run after it so
+        those tests are executed in the same plan."""
+        for tier_name in ("thorough", "exhaustive", "super-exhaustive"):
+            tier_ids = list(checks.TIERS[tier_name])
+            assert tier_ids.index("tests-for-diff") < tier_ids.index("test-validate"), (
+                f"tests-for-diff must precede test-validate in {tier_name}"
+            )
+
+    def test_commit_audit_runs_after_test_validate(self) -> None:
+        """commit-audit is an advisory final report; it must run after
+        test-validate so the human sees the audit table on a green suite."""
+        for tier_name in ("thorough", "exhaustive", "super-exhaustive"):
+            tier_ids = list(checks.TIERS[tier_name])
+            assert tier_ids.index("commit-audit") > tier_ids.index("test-validate"), (
+                f"commit-audit must follow test-validate in {tier_name}"
+            )
+
     def test_check_ids_have_unique_values(self) -> None:
         """No duplicate check IDs."""
         assert len(checks.CHECK_IDS) == len(set(checks.CHECK_IDS))
