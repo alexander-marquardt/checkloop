@@ -22,6 +22,7 @@ from checkloop.checks import (
     FULL_CODEBASE_SCOPE,
     HIDE_AI_ATTRIBUTION,
     PROGRESS_ANNOUNCEMENT,
+    TESTS_FOR_BEHAVIOR_CHANGES,
     looks_dangerous,
 )
 from checkloop.commit_message import generate_commit_message
@@ -147,7 +148,8 @@ def _build_check_prompt(check: CheckDef, args: argparse.Namespace) -> str:
     if not getattr(args, "allow_ai_attribution", False):
         commit_suffix += HIDE_AI_ATTRIBUTION
     progress_suffix = "\n\n" + PROGRESS_ANNOUNCEMENT
-    prompt = scope_prefix + map_section + check["prompt"] + progress_suffix + commit_suffix
+    tests_suffix = "\n\n" + TESTS_FOR_BEHAVIOR_CHANGES
+    prompt = scope_prefix + map_section + check["prompt"] + progress_suffix + tests_suffix + commit_suffix
     return prompt
 
 
