@@ -37,7 +37,7 @@ uv run checkloop --dir ~/my-project --review-branch feature/my-work
 # Thorough plan on the review branch
 uv run checkloop --dir ~/my-project --review-branch main --plan thorough
 
-# Exhaustive — all 23 checks, repeat twice
+# Exhaustive — all 25 checks, repeat twice
 uv run checkloop --dir ~/my-project --review-branch main --plan exhaustive --cycles 2
 
 # Super-exhaustive — exhaustive plus infrastructure audits and a meta-review
@@ -108,9 +108,9 @@ Execution plans are TOML files that define which checks to run and which model t
 | Plan | Checks | Description |
 |------|--------|-------------|
 | **basic** (default) | 5 checks | Core code quality — readability, DRY, tests (plus test-fix/test-validate bookends) |
-| **thorough** | 15 checks | Adds docs, docs-accuracy, security, performance, error handling, type safety, derived-value consistency, architecture layer separation, cross-check coherence |
-| **exhaustive** | 23 checks | Everything in thorough — includes edge cases, complexity, deps, logging, concurrency, concurrency test coverage, a11y, API design, and code cleanup |
-| **super-exhaustive** | 31 checks | Exhaustive plus infrastructure audits (check-config, dead-code, observability, schema-validation, secret-leakage, feature-flags, fixture-drift) and a final **meta-review** that writes a recommendations report to `.checkloop-recommendations.md` and prints it to the terminal after the run. Meant for occasional deep audits. |
+| **thorough** | 16 checks | Adds docs, docs-accuracy, security, performance, error handling, type safety, derived-value consistency, architecture layer separation, cross-check coherence, a post-modification `tests-for-diff` pass, and a final `commit-audit` advisory |
+| **exhaustive** | 25 checks | Everything in thorough — includes edge cases, complexity, deps, logging, concurrency, concurrency test coverage, a11y, API design, and code cleanup |
+| **super-exhaustive** | 33 checks | Exhaustive plus infrastructure audits (check-config, dead-code, observability, schema-validation, secret-leakage, feature-flags, fixture-drift) and a final **meta-review** that writes a recommendations report to `.checkloop-recommendations.md` and prints it to the terminal after the run. Meant for occasional deep audits. |
 
 > `migration-safety` is shipped as an on-demand check, not included in any default plan. Run it with `--checks migration-safety` for projects that have SQL/relational migrations (Postgres, MySQL, etc.), or add it to your own plan file. It is excluded from the defaults because most projects either have no migrations directory or use schemaless stores (Elasticsearch, document DBs) where the audit doesn't apply.
 
@@ -154,7 +154,9 @@ uv run checkloop --dir ~/my-project --plan thorough --model sonnet
 | `types` | thorough | sonnet | Type annotations, replace `Any`/untyped code, runtime validation at API boundaries (Annotated/Pydantic/Zod). |
 | `derived-values` | thorough | opus | Finds frontend code that re-derives values the backend already computes. Fix is to add missing values to existing API responses — not create new API calls or recompute on the frontend. Trivially deterministic computations are excluded. |
 | `architecture-boundaries` | thorough | opus | Discovers the project's architectural layers, checks that dependencies flow in one direction, and fixes violations — upward imports, leaking internals, shared state coupling, mixed-layer modules, circular dependencies. Skips single-layer projects. |
-| `coherence` | thorough | opus | Reviews the codebase as a whole after all other checks and fixes cases where checks worked against each other — conflicting changes, cumulative over-engineering, style drift, redundant layering, broken call chains. |
+| `coherence` | thorough | opus | Reviews the codebase as a whole after all other checks and fixes cases where checks worked against each other — conflicting changes, cumulative over-engineering, style drift, redundant layering, broken call chains, and load-bearing deletions made by `cleanup-ai-slop`. |
+| `tests-for-diff` | thorough | sonnet | Runs after the behavior-modifying checks. Diffs this run against the scratch-branch base, identifies every changed unit of behavior, and writes a regression test for any unit that lacks one. The earlier `tests` check audits pre-existing coverage; this one closes the gap that opened during the run. Does not modify source code. |
+| `commit-audit` | thorough | sonnet | Final advisory pass. Classifies every commit this run produced as behavior+test / bug-fix+regression-test / readability-win / docs-only / behavior-without-test / fix-without-test / net-neutral churn, prints the table to the terminal, and writes `.checkloop-commit-audit.md` with the recommended action per commit. Does not revert or rebase. |
 | `edge-cases` | exhaustive | opus | Off-by-one, null/empty inputs, overflow, Unicode edge cases. |
 | `complexity` | exhaustive | sonnet | Flatten nested conditionals, reduce cyclomatic complexity. |
 | `deps` | exhaustive | sonnet | Remove verified-unused deps, flag vulnerable/outdated packages. |
@@ -294,7 +296,7 @@ uv run checkloop --cycles 5 --convergence-threshold 0.5
 --plan, -p PLAN        Plan name or path to a TOML plan file.
                        Pre-populated: basic, thorough, exhaustive (default: basic).
 --checks CHECK [...]   Manually select checks (overrides --plan)
---all-checks           Run all 23 checks (same as --plan exhaustive).
+--all-checks           Run all 25 checks (same as --plan exhaustive).
                        For the 32-check super-exhaustive plan, use
                        --plan super-exhaustive explicitly.
 --cycles, -c N         Repeat the full suite N times (default: 1)
@@ -495,7 +497,9 @@ checks/                   # Check definitions — one Markdown file per check
 ├── api-design.md
 ├── cleanup-ai-slop.md
 ├── coherence.md
+├── tests-for-diff.md
 ├── test-validate.md
+├── commit-audit.md
 ├── check-config.md
 ├── dead-code.md
 ├── observability.md
