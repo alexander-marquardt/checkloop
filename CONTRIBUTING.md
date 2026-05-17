@@ -133,6 +133,16 @@ uv run mypy src/checkloop/
 
 Both must pass locally. CI will catch what your machine doesn't, but burning a CI cycle on something you could have caught in 8 seconds is a poor use of everyone's time.
 
+## Reviewing & merging
+
+CI being green is necessary but not sufficient. Before clicking merge, read the full diff and check each commit individually:
+
+- **Every commit either ships a test or names why not.** A commit that changes runtime behaviour — what code returns, logs, raises, commits, sends — must include the test that pins the new behaviour in the *same* commit. A commit that is intentionally test-free (a rename of already-tested code, a docstring fix, a formatting pass, a type-annotation tightening, a genuinely untestable change in this stack) must say so explicitly in the commit body, in one short sentence that names the specific reason or missing piece: `no test added: rename only — existing coverage in tests/foo_test.py`, `no test added: docstring fix`, `no test added: no E2E rig for the upload flow`. Vague non-explanations like `no test added: hard to test` or `untestable here` are not the carve-out — they are the most common way the rule gets bypassed. Reject the commit and ask for either the test or a named gap.
+- **Drop net-neutral commits.** A commit that renames for marginal clarity, reorders without changing semantics, deletes a docstring whose deletion did not improve the file, or introduces an abstraction with one caller earns nothing in exchange for review time. Ask the author to drop or fold it. The `commit-audit` check flags these when a PR was produced by a checkloop run; trust the flag and verify.
+- **Reject AI-attribution leakage.** Commit messages, code comments, PR descriptions, README, docstrings — none of these may mention Claude, AI, LLMs, checkloop, or any tool attribution. If a `Co-Authored-By` or `Generated with X` trailer slipped through, ask for a rewrite before merging.
+- **CI must be green with no checks pending.** A flaky test is a fix-the-flake situation, not a retry-until-green situation.
+- **Recursive case.** Many PRs against this repo were produced by checkloop running against itself. When you review one, apply the same audit standards you would when reviewing checkloop's output against any other target: same test-or-named-gap rule, same net-neutral drop rule, same no-AI-attribution rule. The fact that the changes came out of checkloop does not buy them lower scrutiny — the failure modes are the same ones documented above.
+
 ## Engineering principles
 
 These are the rules that aren't obvious from reading the code, and that have caused incidents when violated.
@@ -168,6 +178,10 @@ If a feature can be disabled, that's a config flag. If a dependency is required 
 
 Bug fixes don't grow into surrounding refactors. One-shot operations don't sprout helper functions. Three similar lines beat a premature abstraction. Half-finished implementations don't ship — if the call site for a new helper isn't part of the same change, the helper isn't ready to land.
 
+### No net-neutral cosmetic churn
+
+Renaming a variable for marginal clarity, reordering arguments without changing semantics, deleting a docstring whose deletion does not improve the file, introducing an abstraction with one caller — each of these makes the diff larger without making the codebase better. If a candidate change has no observable runtime effect *and* nothing for a test to pin *and* a fresh reader of the resulting file would not find it any clearer than before, drop the change. The "Don't add what isn't requested" rule covers additions; this one covers deletions and rewrites that earn nothing in exchange for the review and merge cost. When the cleanup-ai-slop check produces commits that fit this description (a stripped docstring that was explaining intent, a removed defensive check at a real boundary), the coherence check is supposed to catch and restore them — but the reviewer is the final backstop.
+
 ### Comments earn their place
 
 Default to no comments. Names should do the work. Write a comment when the *why* is non-obvious and would surprise a future reader: a hidden constraint, a workaround for a specific bug, an invariant that isn't enforced by code. Don't write comments that narrate the *what* (the next line already does that), and don't reference the current task or PR ("added for issue #123") — that information lives in the commit message and rots in the file.
@@ -177,7 +191,7 @@ Default to no comments. Names should do the work. Write a comment when the *why*
 The full suite is fast (~8 seconds, 979+ tests). Keep it that way.
 
 - Tests run with `uv run python -m pytest tests/ -x -q`. The `-x` is intentional — fail fast.
-- Every behaviour change comes with a test that pins the new behaviour. New code without a test is incomplete; bug fixes without a regression test are an invitation to repeat the bug.
+- Every behaviour change comes with a test that pins the new behaviour. New code without a test is incomplete; bug fixes without a regression test are an invitation to repeat the bug. The only acceptable carve-out is a commit that genuinely has no observable runtime behaviour — a pure rename of already-tested code, a docstring or comment fix, a formatting pass, a type-annotation tightening on already-tested code — and even then the commit body must say so explicitly with a named reason: `no test added: rename only — existing coverage in tests/foo_test.py`, `no test added: docstring fix`. A vague `no test added: hard to test` is not the carve-out and does not satisfy this rule. For checks within checkloop itself, this is the same rule the agent operates under in target repos — see `prompt_templates/tests_for_behavior_changes.md`.
 - Don't mock what you can run cheaply. The watchdog tests use real subprocesses. The streaming tests construct real JSONL events and parse them. Mocking is for the `claude` binary itself (because invoking it spends tokens) and for OS-level signals that don't reproduce reliably in CI.
 - When you do mock, mock at the *boundary* — the subprocess, the filesystem, the clock — never the function under test. A mock that knows the internals of the code it's patching is a refactor blocker.
 - Skipping or `xfail`-ing a test to silence a failure is forbidden. Find the root cause. The same rule that bans `# type: ignore` on real type errors bans skip-marks on real test failures: both hide bugs.
