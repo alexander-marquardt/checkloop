@@ -209,6 +209,12 @@ PROGRESS_ANNOUNCEMENT: str = _load_prompt_template("progress_announcement.md")
 """Instruction asking Claude to briefly announce long-running actions before starting them,
 so the idle-timeout watchdog can distinguish productive silence from a genuine stall."""
 
+TESTS_FOR_BEHAVIOR_CHANGES: str = _load_prompt_template("tests_for_behavior_changes.md")
+"""Universal rule injected into every check: any behavior change must be accompanied
+by a test in the same commit, with an explicit no-test-needed note when the change
+is documentation/comment/formatting/rename-only. CI does not catch missing tests for
+new behavior, so the prompt has to."""
+
 
 # --- Dangerous-prompt guard ---------------------------------------------------
 # Safety net: reject check prompts that contain destructive keywords.

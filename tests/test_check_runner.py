@@ -223,6 +223,23 @@ class TestBuildCheckPromptEdgeCases:
         prompt = check_runner._build_check_prompt(check, args)
         assert prompt.startswith(FULL_CODEBASE_SCOPE)
 
+    def test_tests_for_behavior_changes_injected(self) -> None:
+        """Every assembled prompt must carry the test-with-fix rule."""
+        from checkloop.checks import TESTS_FOR_BEHAVIOR_CHANGES
+        check = CheckDef(id="test", label="Test", prompt="review")
+        args = make_suite_args()
+        prompt = check_runner._build_check_prompt(check, args)
+        assert TESTS_FOR_BEHAVIOR_CHANGES in prompt
+
+    def test_tests_for_behavior_changes_precedes_commit_suffix(self) -> None:
+        """The test-with-fix rule must sit before the commit-message rules so the
+        agent reads it before deciding what to put in the commit."""
+        from checkloop.checks import COMMIT_MESSAGE_INSTRUCTIONS, TESTS_FOR_BEHAVIOR_CHANGES
+        check = CheckDef(id="test", label="Test", prompt="review")
+        args = make_suite_args()
+        prompt = check_runner._build_check_prompt(check, args)
+        assert prompt.index(TESTS_FOR_BEHAVIOR_CHANGES) < prompt.index(COMMIT_MESSAGE_INSTRUCTIONS)
+
 
 # =============================================================================
 # Memory-kill feedback loop
