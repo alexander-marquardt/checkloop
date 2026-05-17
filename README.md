@@ -87,6 +87,18 @@ Set `CHECKLOOP_STATE_HOME=/some/other/path` to put the clones somewhere other th
 
 `--in-place` preserves the old single-directory behaviour: no clone, commits land on a `checkloop-<iso-timestamp>` scratch branch inside `--dir`, and uncommitted/untracked files in your working tree are reviewed too. Use it when you want to review in-flight work, or for non-git directories.
 
+#### Why `--dir` instead of cloning from GitHub directly?
+
+A natural question: if checkloop is going to clone the target anyway, why not just take `--repo owner/name` and clone from GitHub? The current design intentionally requires a local checkout. The trade-offs that drove that choice:
+
+- **Speed and zero network.** `git clone --local` is hardlink-backed — disk cost is effectively zero on the same filesystem, and the startup `git fetch origin --prune` runs against the *local source*, not GitHub. A fresh GitHub clone would be slower (especially on big repos) and require network on every run.
+- **No auth setup.** Reading from a local checkout works the same for public and private repos and never has to deal with HTTPS tokens, SSH keys, or GitHub App credentials. The remote URL is read once from the local repo's `git config` so the post-run flow can still reference it.
+- **Auto-memory keying.** The Claude auto-memory directory is keyed by the *local path's* slug (`~/.claude/projects/<slug-of-original-dir>/memory/`). Without a local path there is no slug to look up, and the check sessions would lose the prior-incident context, user preferences, and pending follow-ups that the user accumulated by working in the repo locally.
+- **`--in-place` needs the local checkout outright.** That mode reviews uncommitted and untracked files, which only exist on disk.
+- **Reviewing what you actually have.** Pointing at `--dir` means the review starts from whatever local state you're working from, which is usually what you actually want to review — the branch you just rebased, the staging you just pushed, the local commit you have not yet pushed. A GitHub-only model would force the round-trip of "push first, then review."
+
+If a "review a teammate's PR I haven't checked out" workflow becomes a regular need, a `--repo owner/name --review-branch <ref>` mode that does a fresh GitHub clone could be added additively. The current `--dir` mode is not replaced by that hypothetical addition; it remains the fast path.
+
 ### After a run — let Claude review and adopt the work
 
 checkloop never pushes or merges anything itself, and the clone directory is treated as read-only review material — no git operations should originate there. When the run finishes the terminal prints a single copy-paste prompt aimed at a Claude session running inside your **original** repo. That session inspects the scratch branch in the clone with `git -C <clone-dir> log/diff/show` (without fetching it into the original repo), applies project standards (`CLAUDE.md`, `AGENTS.md`), and — for the improvements that are worth keeping — re-applies them as fresh edits in the original repo on new branches, runs the project's tests and linters, then commits, pushes, opens PRs, and merges through the repo's normal workflow. The clone's own commits are never imported; only the *ideas* cross over.
