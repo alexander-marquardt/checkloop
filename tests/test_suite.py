@@ -6,6 +6,7 @@ test_suite_state.py.
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -665,3 +666,50 @@ class TestPostRunReviewPromptStandardsCoverage:
         README would silently fall off the standards cliff."""
         out = self._capture(capsys)
         assert "README.md" in out
+
+
+class TestPostRunReviewPromptRecommendationsConditional:
+    """The meta-review recommendations clause must be conditional on the file
+    actually existing in the clone. Otherwise plans that do not include
+    ``meta-review`` (basic / thorough / exhaustive) send the reviewer hunting
+    for a file that was never going to be produced."""
+
+    def _capture(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        clone_dir: str,
+    ) -> str:
+        suite._print_clone_review_via_claude(
+            clone_dir=clone_dir,
+            scratch_branch="main-cl-20260518",
+            base_short="abcdef123456",
+            pr_base="main",
+            original_workdir="/tmp/orig",
+        )
+        return capsys.readouterr().out
+
+    def test_clause_omitted_when_file_absent(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+    ) -> None:
+        """No file → no recommendations paragraph and a three-section summary."""
+        out = self._capture(capsys, str(tmp_path))
+        assert "checkloop-recommendations.md" not in out
+        assert "Recommended Follow-ups" not in out
+        assert "three sections" in out
+        assert "four sections" not in out
+
+    def test_clause_included_when_file_present(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+    ) -> None:
+        """File present → meta-review paragraph appears and the summary is
+        four sections including Recommended Follow-ups."""
+        (tmp_path / ".checkloop-recommendations.md").write_text("# Recs\n", encoding="utf-8")
+        out = self._capture(capsys, str(tmp_path))
+        assert "checkloop-recommendations.md" in out
+        assert "Recommended Follow-ups" in out
+        assert "four sections" in out
+        assert "three sections" not in out
