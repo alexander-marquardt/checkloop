@@ -691,7 +691,16 @@ def _print_clone_review_via_claude(
     in from the clone, tests it, applies project standards, and — if the work
     holds up — commits, opens a PR, and merges through the original repo's
     normal workflow.
+
+    The meta-review recommendations clause is included only when the
+    ``.checkloop-recommendations.md`` file is actually present in the clone —
+    otherwise the reviewer would be told to look for a file that was never
+    produced (the file only exists when the ``meta-review`` check ran, which
+    happens only in the ``super-exhaustive`` plan).
     """
+    recommendations_path = Path(clone_dir) / _RECOMMENDATIONS_FILENAME
+    recommendations_present = recommendations_path.is_file()
+
     review_prompt = (
         f"A checkloop run produced a scratch branch {scratch_branch} inside a "
         f"sibling clone at {clone_dir} (built off {pr_base} at {base_short}). "
@@ -721,26 +730,39 @@ def _print_clone_review_via_claude(
         f"improvement, push it, open a PR, and merge it through this repo's "
         f"normal workflow. All pushes/PRs/merges happen from this repo, never "
         f"from {clone_dir}.\n\n"
-        f"Also check whether {clone_dir}/.checkloop-recommendations.md "
-        f"exists. If it does, the meta-review check wrote it during the run "
-        f"with prioritised suggestions for domain-specific checks or tests "
-        f"the generic suite cannot cover. Read it. These are advisory — they "
-        f"deliberately propose follow-up work the suite did not do — so do "
-        f"not implement them as part of this review unless I ask you to. "
-        f"Just surface the contents in your final summary so I can decide.\n\n"
-        f"When you are done, print a summary with four sections: "
-        f"**Accepted** — for each change you re-applied, one bullet naming "
-        f"the file(s) or area touched, the new branch it landed on, and a "
-        f"one-line reason it was worth keeping; **Rejected** — for each "
-        f"change you skipped, one bullet naming the file(s) or area and a "
-        f"one-line reason it was wrong, redundant, or lower quality; "
-        f"**Deferred** — anything you were unsure about so I can decide; "
-        f"and **Recommended Follow-ups** — a condensed restatement of the "
-        f"meta-review recommendations from .checkloop-recommendations.md "
-        f"(or 'none — recommendations file not present' if it was not "
-        f"written), so the recommendations carry forward into this session "
-        f"instead of staying behind in the clone."
     )
+
+    if recommendations_present:
+        review_prompt += (
+            f"The meta-review check ran during this run and wrote "
+            f"{recommendations_path} with prioritised suggestions for "
+            f"domain-specific checks or tests the generic suite cannot cover. "
+            f"Read it. These are advisory — they deliberately propose "
+            f"follow-up work the suite did not do — so do not implement them "
+            f"as part of this review unless I ask you to. Just surface the "
+            f"contents in your final summary so I can decide.\n\n"
+            f"When you are done, print a summary with four sections: "
+            f"**Accepted** — for each change you re-applied, one bullet naming "
+            f"the file(s) or area touched, the new branch it landed on, and a "
+            f"one-line reason it was worth keeping; **Rejected** — for each "
+            f"change you skipped, one bullet naming the file(s) or area and a "
+            f"one-line reason it was wrong, redundant, or lower quality; "
+            f"**Deferred** — anything you were unsure about so I can decide; "
+            f"and **Recommended Follow-ups** — a condensed restatement of the "
+            f"meta-review recommendations from .checkloop-recommendations.md, "
+            f"so the recommendations carry forward into this session instead "
+            f"of staying behind in the clone."
+        )
+    else:
+        review_prompt += (
+            f"When you are done, print a summary with three sections: "
+            f"**Accepted** — for each change you re-applied, one bullet naming "
+            f"the file(s) or area touched, the new branch it landed on, and a "
+            f"one-line reason it was worth keeping; **Rejected** — for each "
+            f"change you skipped, one bullet naming the file(s) or area and a "
+            f"one-line reason it was wrong, redundant, or lower quality; "
+            f"**Deferred** — anything you were unsure about so I can decide."
+        )
 
     print(f"  {BOLD}Next step — paste this into a Claude session in your original repo:{RESET}\n")
     print(f"  {DIM}cd {original_workdir} && claude{RESET}\n")
