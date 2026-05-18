@@ -240,6 +240,21 @@ class TestBuildCheckPromptEdgeCases:
         prompt = check_runner._build_check_prompt(check, args)
         assert prompt.index(TESTS_FOR_BEHAVIOR_CHANGES) < prompt.index(COMMIT_MESSAGE_INSTRUCTIONS)
 
+    def test_scope_prefix_names_contributing_and_readme_fallback(self) -> None:
+        """The universal prompt prefix must explicitly name CONTRIBUTING.md
+        alongside CLAUDE.md and AGENTS.md, and offer a README fallback for
+        projects whose rules live there. Naming CONTRIBUTING.md explicitly was
+        added after observing that "or similar policy file" was being read past
+        without picking up the most important standards document for many
+        projects."""
+        check = CheckDef(id="test", label="Test", prompt="review")
+        args = make_suite_args()
+        prompt = check_runner._build_check_prompt(check, args)
+        assert "CONTRIBUTING.md" in prompt
+        assert "CLAUDE.md" in prompt
+        assert "AGENTS.md" in prompt
+        assert "README.md" in prompt
+
 
 # =============================================================================
 # Memory-kill feedback loop

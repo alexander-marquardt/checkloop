@@ -624,3 +624,44 @@ class TestMultiCycleConvergenceEarlyStop:
         assert "Cycle 2" not in out
 
 
+
+
+# =============================================================================
+# _print_clone_review_via_claude — post-run review prompt
+# =============================================================================
+
+class TestPostRunReviewPromptStandardsCoverage:
+    """The post-run prompt must point the reviewer at every standards document
+    a project might use, not only CLAUDE.md / AGENTS.md. CONTRIBUTING.md is
+    where most projects keep the test-with-fix, no-AI-attribution, and
+    commit-message rules — exactly what the review-and-adopt session needs to
+    enforce."""
+
+    def _capture(self, capsys: pytest.CaptureFixture[str]) -> str:
+        suite._print_clone_review_via_claude(
+            clone_dir="/tmp/clone",
+            scratch_branch="main-cl-20260518",
+            base_short="abcdef123456",
+            pr_base="main",
+            original_workdir="/tmp/orig",
+        )
+        return capsys.readouterr().out
+
+    def test_names_contributing_md(self, capsys: pytest.CaptureFixture[str]) -> None:
+        assert "CONTRIBUTING.md" in self._capture(capsys)
+
+    def test_names_claude_and_agents(self, capsys: pytest.CaptureFixture[str]) -> None:
+        out = self._capture(capsys)
+        assert "CLAUDE.md" in out
+        assert "AGENTS.md" in out
+
+    def test_names_cursorrules_and_similar(self, capsys: pytest.CaptureFixture[str]) -> None:
+        out = self._capture(capsys)
+        assert ".cursorrules" in out
+
+    def test_readme_fallback_clause(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """When none of the policy files exist, the prompt instructs a README
+        skim — without that fallback, projects that keep all their rules in
+        README would silently fall off the standards cliff."""
+        out = self._capture(capsys)
+        assert "README.md" in out
