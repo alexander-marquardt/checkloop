@@ -8,7 +8,7 @@ How to apply:
 1. Before changing code, look for the existing test that covers the current behavior. If none exists, write one against today's behavior so the gap is visible in the diff.
 2. Make the code change.
 3. Update or add tests so they pass against the new behavior, and would have failed against the old one. Use the project's existing test framework — do not introduce a new one.
-4. Run the test suite locally and confirm the new test passes and no other tests broke.
+4. Run the **full** test suite locally — not just the new test you wrote — and confirm it is green before committing. If a test that was passing before your changes now fails, you MUST either fix the regression in this same commit or roll back the change. Do not commit a broken intermediate state. Other commits later in this run will assume each prior commit was tested and green; a broken commit in the middle of the series leaves every subsequent commit unbisectable and forces the human reviewer to manually identify which commits introduced and fixed the failure.
 5. Stage and commit code and tests together. Do not split them into separate commits, and do not leave the test for a follow-up commit.
 
 If the change has genuinely no observable runtime behavior — documentation-only, comment-only, formatting-only, pure rename of already-tested code, type-annotation-only on already-tested code — the test requirement does not apply, but you MUST say so explicitly in the commit message body, in one short sentence (e.g. "no test added: rename only — existing coverage in tests/foo.test.ts", "no test added: docstring fix"). Without that note the change looks like a behavior change that quietly skipped its test, which is the exact problem this rule prevents.

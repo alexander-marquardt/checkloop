@@ -58,16 +58,29 @@ def _looks_like_garbage(message: str) -> bool:
 
 def generate_commit_message(
     diff_text: str, workdir: str, *, skip_permissions: bool = False, model: str | None = None,
-    claude_command: str = "claude",
+    claude_command: str = "claude", check_id: str | None = None,
 ) -> str | None:
     """Ask Claude to write a commit message summarizing a diff.
 
+    When *check_id* is provided, the resulting message's subject line is
+    prefixed with ``[<check_id>] `` so downstream consumers can bucket the
+    run's commits by theme without rereading every diff. The prefix is
+    asked for in the prompt and also enforced after the fact in case the
+    LLM omits it.
+
     Returns the generated message, or None on any failure.
     """
+    prefix = f"[{check_id}] " if check_id else ""
     prompt = (
         "Here is a git diff of uncommitted changes. Write a commit message for these changes.\n"
         "The commit message must be 2-3 sentences describing what was changed and why.\n"
-        "Do NOT mention Claude, AI, checkloop, or any AI tools.\n"
+        + (
+            f"The subject line MUST start with the prefix '{prefix}' so downstream tools "
+            "can bucket commits by theme — keep the prefix exact, then a single space, "
+            "then your subject.\n"
+            if prefix else ""
+        )
+        + "Do NOT mention Claude, AI, checkloop, or any AI tools.\n"
         "Do NOT add Co-Authored-By or Signed-off-by trailers.\n"
         "Reply with ONLY the commit message text, nothing else.\n\n"
         f"```diff\n{diff_text}\n```"
@@ -93,6 +106,9 @@ def generate_commit_message(
                 message[:120],
             )
             return None
+        if prefix and not message.startswith(prefix):
+            logger.info("LLM omitted the %r prefix — prepending it", prefix)
+            message = prefix + message
         logger.info("Generated commit message: %s", message[:120])
         return message or None
     except subprocess.TimeoutExpired:
