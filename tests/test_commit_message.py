@@ -53,6 +53,42 @@ class TestGenerateCommitMessage:
             msg = commit_message.generate_commit_message("diff", "/tmp")
         assert msg is None
 
+    def test_check_id_prepended_when_llm_omits_prefix(self) -> None:
+        """The LLM is asked to use the prefix, but if it forgets the wrapper
+        must inject it so downstream bucketing can rely on the invariant."""
+        result = mock.MagicMock(returncode=0, stdout="Tighten the validator for /api/posts.\n", stderr="")
+        with mock.patch("subprocess.run", return_value=result):
+            msg = commit_message.generate_commit_message(
+                "diff", "/tmp", check_id="security",
+            )
+        assert msg == "[security] Tighten the validator for /api/posts."
+
+    def test_check_id_left_alone_when_llm_already_prefixed(self) -> None:
+        """If the LLM follows the prompt, the wrapper must not double-prefix."""
+        result = mock.MagicMock(
+            returncode=0,
+            stdout="[security] Tighten the validator for /api/posts.\n",
+            stderr="",
+        )
+        with mock.patch("subprocess.run", return_value=result):
+            msg = commit_message.generate_commit_message(
+                "diff", "/tmp", check_id="security",
+            )
+        assert msg == "[security] Tighten the validator for /api/posts."
+
+    def test_check_id_prompt_includes_prefix_instruction(self) -> None:
+        result = mock.MagicMock(returncode=0, stdout="[readability] Rename d to user_document.\n", stderr="")
+        with mock.patch("subprocess.run", return_value=result) as mock_run:
+            commit_message.generate_commit_message("diff", "/tmp", check_id="readability")
+        prompt = mock_run.call_args[0][0][-1]
+        assert "[readability] " in prompt
+
+    def test_no_check_id_means_no_prefix(self) -> None:
+        result = mock.MagicMock(returncode=0, stdout="A plain message with no prefix.\n", stderr="")
+        with mock.patch("subprocess.run", return_value=result):
+            msg = commit_message.generate_commit_message("diff", "/tmp")
+        assert msg == "A plain message with no prefix."
+
 
 class TestLooksLikeGarbage:
     """Tests for _looks_like_garbage() message validation."""

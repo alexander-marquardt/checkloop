@@ -49,15 +49,27 @@ from checkloop.terminal import (
 logger = logging.getLogger(__name__)
 
 
-def _commit_with_generated_message(workdir: str, args: argparse.Namespace, fallback: str) -> None:
-    """Commit any uncommitted changes using a Claude-generated message, or fallback."""
+def _commit_with_generated_message(
+    workdir: str, args: argparse.Namespace, fallback: str, *, check_id: str | None = None,
+) -> None:
+    """Commit any uncommitted changes using a Claude-generated message, or fallback.
+
+    *check_id* is forwarded to the commit-message generator so the subject is
+    prefixed with ``[<check_id>] `` for downstream bucketing. The fallback
+    string is also prefixed when *check_id* is provided, so the prefix
+    invariant holds even when the LLM call fails.
+    """
     if not has_uncommitted_changes(workdir):
         return
     diff = get_uncommitted_diff(workdir)
     skip = getattr(args, "dangerously_skip_permissions", False)
     model = getattr(args, "model", None)
     claude_cmd = getattr(args, "claude_command", "claude")
-    message = generate_commit_message(diff, workdir, skip_permissions=skip, model=model, claude_command=claude_cmd) or fallback
+    prefixed_fallback = f"[{check_id}] {fallback}" if check_id else fallback
+    message = generate_commit_message(
+        diff, workdir, skip_permissions=skip, model=model,
+        claude_command=claude_cmd, check_id=check_id,
+    ) or prefixed_fallback
     git_commit_all(workdir, message)
 
 
@@ -216,7 +228,10 @@ def _run_memory_fix(
             print_status("Memory-fix check completed.", GREEN)
 
         if is_git and not args.dry_run:
-            _commit_with_generated_message(workdir, args, "Fix excessive memory usage in test suite")
+            _commit_with_generated_message(
+                workdir, args, "Fix excessive memory usage in test suite",
+                check_id="memory-fix",
+            )
             print_status("  Committed memory-fix changes.", GREEN)
     except Exception as exc:
         logger.error("Memory-fix follow-up failed: %s", exc, exc_info=True)
@@ -354,7 +369,10 @@ def run_single_check(
         print_status(f"Check '{check['id']}' exited with code {result.exit_code}. Continuing...", YELLOW)
 
     if is_git and not args.dry_run:
-        _commit_with_generated_message(workdir, args, f"Apply {check['id']} check improvements")
+        _commit_with_generated_message(
+            workdir, args, f"Apply {check['id']} check improvements",
+            check_id=check["id"],
+        )
     made_changes, lines_changed, change_pct = _report_check_changes(workdir, check["id"], sha_before)
     elapsed = time.time() - check_start
     logger.info("Check '%s' completed: made_changes=%s, lines_changed=%s, duration=%.1fs",

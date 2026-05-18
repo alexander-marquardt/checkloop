@@ -240,6 +240,35 @@ class TestBuildCheckPromptEdgeCases:
         prompt = check_runner._build_check_prompt(check, args)
         assert prompt.index(TESTS_FOR_BEHAVIOR_CHANGES) < prompt.index(COMMIT_MESSAGE_INSTRUCTIONS)
 
+    def test_universal_rule_requires_full_test_suite_before_commit(self) -> None:
+        """Every prompt must instruct the agent to run the full suite (not just
+        the new test) and reject committing a broken intermediate state — the
+        per-commit hygiene rule that closes the "bisect goes through a broken
+        middle commit" gap. Pin the load-bearing phrase rather than the whole
+        paragraph so wording is allowed to drift without breaking the test."""
+        check = CheckDef(id="test", label="Test", prompt="review")
+        args = make_suite_args()
+        prompt = check_runner._build_check_prompt(check, args)
+        assert "full" in prompt and "test suite" in prompt
+        assert "broken intermediate state" in prompt
+
+    def test_commit_instructions_require_check_id_prefix(self) -> None:
+        """Every commit subject must be prefixed with [<check-id>] so a
+        consumer can bucket a long run's commits by theme without rereading
+        every diff."""
+        check = CheckDef(id="test", label="Test", prompt="review")
+        args = make_suite_args()
+        prompt = check_runner._build_check_prompt(check, args)
+        assert "[<check-id>]" in prompt
+
+    def test_commit_instructions_request_depends_on_trailer(self) -> None:
+        """The agent must add a Depends-on: trailer when a commit relies on
+        code introduced by an earlier commit in the same run."""
+        check = CheckDef(id="test", label="Test", prompt="review")
+        args = make_suite_args()
+        prompt = check_runner._build_check_prompt(check, args)
+        assert "Depends-on:" in prompt
+
     def test_scope_prefix_names_contributing_and_readme_fallback(self) -> None:
         """The universal prompt prefix must explicitly name CONTRIBUTING.md
         alongside CLAUDE.md and AGENTS.md, and offer a README fallback for
