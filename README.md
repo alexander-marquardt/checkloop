@@ -249,6 +249,8 @@ The `prompt_templates/` directory contains boilerplate injected into every check
 - `full_codebase_scope.md` — prepended to every check (unless `--changed-only` is used)
 - `commit_message_instructions.md` — appended to every check
 
+In addition, at the very top of every check prompt, checkloop **injects the target project's binding rules verbatim** from `CLAUDE.md`, `AGENTS.md`, and `CONTRIBUTING.md` (whichever exist, in that priority order). Each file is capped at 8 KB so a long `CONTRIBUTING.md` does not bloat every prompt. The injected block is wrapped in a `PROJECT-SPECIFIC RULES` header that tells the agent these rules override any generic check guidance. This means project-specific rules — no-AI-attribution, test-for-every-behaviour-change, no-net-neutral-churn, proprietary-data scoping — are physically present in the agent's context without depending on the agent to side-quest a read of the standards file.
+
 ## Why Multi-Check Works
 
 A single "review everything" prompt overwhelms the model. Dimension-specific checks let it focus deeply on one concern at a time. And cycling produces compounding improvements:
