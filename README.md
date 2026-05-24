@@ -370,6 +370,13 @@ uv run checkloop --cycles 5 --convergence-threshold 0.5
 --allow-ai-attribution Allow AI tool mentions and Co-Authored-By trailers
                        in commit messages. By default, commit messages omit
                        any reference to AI tools.
+--require-base-fresh DURATION
+                       Reject the run if the review base commit is older
+                       than DURATION (e.g. 30m, 12h, 1d, 1w). Guards against
+                       starting a review against a stale base where
+                       extractions and refactors will need manual
+                       re-application against current upstream HEAD. Pass
+                       'ignore' or omit the flag to disable the check.
 ```
 
 ## How It Works

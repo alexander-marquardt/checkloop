@@ -33,6 +33,7 @@ SHARED_ARG_DEFAULTS: dict[str, Any] = dict(
     in_place=True,
     review_branch=None,
     no_caffeinate=True,
+    require_base_fresh=None,
 )
 
 
