@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import argparse
 import logging
+import re
 import shutil
 import sys
 import time
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -546,6 +548,69 @@ def _print_summary(outcomes: list[CheckOutcome], total_elapsed: str) -> None:
 # --- Error-handling wrapper ---------------------------------------------------
 
 _RECOMMENDATIONS_FILENAME = ".checkloop-recommendations.md"
+_COMMIT_AUDIT_FILENAME = ".checkloop-commit-audit.md"
+
+# Matches lines like "Classification: B" in the commit-audit report. The check's
+# documented format (checks/commit-audit.md → step 3) writes one of A-G per commit.
+_CLASSIFICATION_RE = re.compile(r"^Classification:\s*([A-G])\b", re.MULTILINE)
+
+# Categories that need reviewer attention before the PR merges:
+#   B = behaviour change without a test
+#   D = bug fix without a regression test
+#   G = net-neutral churn the reviewer should drop or fold
+_COMMIT_AUDIT_FLAGGED = ("B", "D", "G")
+
+
+def _print_commit_audit_highlight(
+    workdir: str, suite_start_time: float, dry_run: bool,
+) -> None:
+    """Surface the commit-audit classification counts in the terminal.
+
+    The `commit-audit` check writes `.checkloop-commit-audit.md` classifying every
+    commit in the run as one of A-G.  Operators reading only the final summary
+    table will miss the audit unless we lift its key counts (B / D / G — the
+    "needs reviewer attention" categories) into the run's closing output.  This
+    function reads the audit file (if fresh — same staleness rule as
+    `_print_recommendations`), parses the `Classification:` lines, and prints a
+    one-line highlight before the meta-review recommendations.  Silent when the
+    file is absent, stale, or contains no parseable classifications.
+    """
+    if dry_run:
+        return
+    path = Path(workdir) / _COMMIT_AUDIT_FILENAME
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        logger.debug("Could not stat %s: %s", path, exc)
+        return
+    if stat.st_mtime < suite_start_time:
+        return
+    try:
+        body = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        logger.warning("Could not read %s: %s", path, exc)
+        return
+    classifications = _CLASSIFICATION_RE.findall(body)
+    if not classifications:
+        return
+    counts = Counter(classifications)
+    total = sum(counts.values())
+    flagged = sum(counts.get(cat, 0) for cat in _COMMIT_AUDIT_FLAGGED)
+    plural = "" if total == 1 else "s"
+    if flagged == 0:
+        msg = f"Commit audit: {total} commit{plural}, none flagged."
+        print(f"\n{BOLD}{GREEN}  {msg}{RESET}")
+        return
+    breakdown = ", ".join(
+        f"{counts[cat]} {cat}" for cat in _COMMIT_AUDIT_FLAGGED if counts.get(cat)
+    )
+    msg = (
+        f"Commit audit: {total} commit{plural}, {flagged} flagged for review "
+        f"({breakdown}). See {_COMMIT_AUDIT_FILENAME}."
+    )
+    print(f"\n{BOLD}{YELLOW}  {msg}{RESET}")
 
 
 def _print_recommendations(workdir: str, suite_start_time: float, dry_run: bool) -> None:
@@ -845,6 +910,7 @@ def run_suite_with_error_handling(
         logger.warning("Suite interrupted by user after %s", elapsed)
         print_status(f"\nInterrupted after {elapsed}. Partial results may have been applied.", YELLOW)
         _print_summary(all_outcomes, elapsed)
+        _print_commit_audit_highlight(workdir, suite_start_time, args.dry_run)
         _print_recommendations(workdir, suite_start_time, args.dry_run)
         _print_scratch_branch_summary(
             workdir,
@@ -865,6 +931,7 @@ def run_suite_with_error_handling(
         elapsed = format_duration(time.time() - suite_start_time)
         print_status(f"\nUnexpected error after {elapsed}. Partial results may have been applied.", RED)
         _print_summary(all_outcomes, elapsed)
+        _print_commit_audit_highlight(workdir, suite_start_time, args.dry_run)
         _print_recommendations(workdir, suite_start_time, args.dry_run)
         _print_scratch_branch_summary(
             workdir,
@@ -882,6 +949,7 @@ def run_suite_with_error_handling(
                 suite_elapsed, len(selected_checks), num_cycles)
     _print_summary(all_outcomes, suite_elapsed)
     print_banner(f"All done! ({suite_elapsed} total)", GREEN)
+    _print_commit_audit_highlight(workdir, suite_start_time, args.dry_run)
     _print_recommendations(workdir, suite_start_time, args.dry_run)
     _print_scratch_branch_summary(
         workdir,
