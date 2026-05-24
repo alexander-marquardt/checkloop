@@ -15,6 +15,7 @@ import sys
 import time
 from pathlib import Path
 
+from checkloop import base_freshness
 from checkloop.checks import (
     CHECK_IDS,
     CHECKS,
@@ -226,6 +227,16 @@ def build_argument_parser() -> argparse.ArgumentParser:
             "branch but they modify the user's working checkout."
         ),
     )
+    parser.add_argument(
+        "--require-base-fresh", default=None, metavar="DURATION",
+        help=(
+            "Reject the run if the review base commit is older than DURATION "
+            "(e.g. 30m, 12h, 1d, 1w). Guards against starting a review against "
+            "a stale base where extractions and refactors will need manual "
+            "re-application against current upstream HEAD. Pass 'ignore' or "
+            "omit the flag to disable the check."
+        ),
+    )
 
     return parser
 
@@ -301,6 +312,15 @@ def validate_arguments(args: argparse.Namespace) -> None:
         )
     if args.in_place and args.review_branch:
         fatal("--in-place and --review-branch are mutually exclusive")
+    # Parse --require-base-fresh into a seconds count (None = disabled) so the
+    # suite orchestrator doesn't have to re-parse the string at run time.
+    args.require_base_fresh_seconds = None
+    raw_fresh = getattr(args, "require_base_fresh", None)
+    if raw_fresh and raw_fresh != base_freshness.IGNORE_TOKEN:
+        try:
+            args.require_base_fresh_seconds = base_freshness.parse_duration(raw_fresh)
+        except base_freshness.FreshnessParseError as exc:
+            fatal(f"--require-base-fresh: {exc}")
 
 
 def resolve_changed_files_prefix(args: argparse.Namespace, workdir: str) -> str:

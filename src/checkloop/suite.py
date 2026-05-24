@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from checkloop import base_freshness
 from checkloop.check_runner import CheckOutcome as CheckOutcome, run_single_check
 from checkloop.checkpoint import (
     CheckpointData,
@@ -392,6 +393,17 @@ def _run_check_suite(
         # committing anything: the pre-run snapshot of the user's uncommitted
         # work must land on the scratch branch, not on their original branch.
         _attach_to_scratch_branch(workdir, state, review_branch=getattr(args, "review_branch", None))
+        # Enforce --require-base-fresh now, before any check runs, so the operator
+        # gets the failure inline with the pre-run setup rather than after waiting
+        # for the first check to start.  Skips silently when the flag is unset.
+        require_fresh_seconds = getattr(args, "require_base_fresh_seconds", None)
+        if require_fresh_seconds and state.scratch_base_sha:
+            base_freshness.enforce_base_freshness(
+                workdir=workdir,
+                base_sha=state.scratch_base_sha,
+                max_age_seconds=require_fresh_seconds,
+                review_branch=getattr(args, "review_branch", None),
+            )
         _commit_uncommitted_changes(workdir, args.dangerously_skip_permissions, getattr(args, "model", None), getattr(args, "claude_command", "claude"))
     # Expose scratch-branch info on args so the error-handling wrapper can
     # surface the review/merge/discard instructions in the post-run summary

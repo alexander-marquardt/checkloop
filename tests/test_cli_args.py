@@ -175,6 +175,27 @@ class TestValidateArguments:
     def test_valid_arguments_no_exit(self) -> None:
         cli_args.validate_arguments(make_suite_args(idle_timeout=1, convergence_threshold=0.0))  # should not raise
 
+    def test_require_base_fresh_none_leaves_seconds_none(self) -> None:
+        args = make_suite_args(require_base_fresh=None)
+        cli_args.validate_arguments(args)
+        assert args.require_base_fresh_seconds is None
+
+    def test_require_base_fresh_ignore_leaves_seconds_none(self) -> None:
+        args = make_suite_args(require_base_fresh="ignore")
+        cli_args.validate_arguments(args)
+        assert args.require_base_fresh_seconds is None
+
+    def test_require_base_fresh_valid_duration_sets_seconds(self) -> None:
+        args = make_suite_args(require_base_fresh="12h")
+        cli_args.validate_arguments(args)
+        assert args.require_base_fresh_seconds == 12 * 3600
+
+    def test_require_base_fresh_invalid_duration_exits(self) -> None:
+        args = make_suite_args(require_base_fresh="forever")
+        with pytest.raises(SystemExit) as exc_info:
+            cli_args.validate_arguments(args)
+        assert exc_info.value.code == 1
+
 
 class TestValidateArgumentsEdgeCases:
     """Edge case tests for validate_arguments()."""
