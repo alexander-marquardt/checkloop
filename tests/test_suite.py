@@ -609,6 +609,103 @@ class TestPrintRecommendations:
         assert ".checkloop-recommendations.md" in out
 
 
+class TestPrintCommitAuditHighlight:
+    """Tests for _print_commit_audit_highlight() commit-audit summary surfacing."""
+
+    def test_missing_file_prints_nothing(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: "object",
+    ) -> None:
+        suite._print_commit_audit_highlight(str(tmp_path), suite_start_time=0.0, dry_run=False)
+        assert capsys.readouterr().out == ""
+
+    def test_dry_run_prints_nothing(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: "object",
+    ) -> None:
+        audit = tmp_path / ".checkloop-commit-audit.md"
+        audit.write_text("## abc1234 — Some commit\nClassification: B\n")
+        suite._print_commit_audit_highlight(str(tmp_path), suite_start_time=0.0, dry_run=True)
+        assert capsys.readouterr().out == ""
+
+    def test_stale_file_is_skipped(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: "object",
+    ) -> None:
+        import os
+        audit = tmp_path / ".checkloop-commit-audit.md"
+        audit.write_text("Classification: G\n")
+        old_mtime = audit.stat().st_mtime - 3600
+        os.utime(audit, (old_mtime, old_mtime))
+        suite._print_commit_audit_highlight(
+            str(tmp_path), suite_start_time=old_mtime + 60, dry_run=False,
+        )
+        assert capsys.readouterr().out == ""
+
+    def test_no_classifications_prints_nothing(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: "object",
+    ) -> None:
+        # File exists but has no parseable `Classification:` lines — e.g. partial write.
+        audit = tmp_path / ".checkloop-commit-audit.md"
+        audit.write_text("# Commit audit report\n\n(no commits this run)\n")
+        suite._print_commit_audit_highlight(
+            str(tmp_path), suite_start_time=0.0, dry_run=False,
+        )
+        assert capsys.readouterr().out == ""
+
+    def test_all_clean_run_prints_positive_line(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: "object",
+    ) -> None:
+        audit = tmp_path / ".checkloop-commit-audit.md"
+        audit.write_text(
+            "## abc1 — fix\nClassification: A\n\n"
+            "## abc2 — fix\nClassification: C\n\n"
+            "## abc3 — readability\nClassification: E\n",
+        )
+        suite._print_commit_audit_highlight(
+            str(tmp_path), suite_start_time=0.0, dry_run=False,
+        )
+        out = capsys.readouterr().out
+        assert "Commit audit:" in out
+        assert "3 commits, none flagged" in out
+
+    def test_flagged_commits_print_breakdown(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: "object",
+    ) -> None:
+        # 1 B, 2 D, 1 G, plus 3 unflagged A's = 7 total, 4 flagged.
+        audit_body = (
+            "Classification: A\n"
+            "Classification: A\n"
+            "Classification: A\n"
+            "Classification: B\n"
+            "Classification: D\n"
+            "Classification: D\n"
+            "Classification: G\n"
+        )
+        (tmp_path / ".checkloop-commit-audit.md").write_text(audit_body)
+        suite._print_commit_audit_highlight(
+            str(tmp_path), suite_start_time=0.0, dry_run=False,
+        )
+        out = capsys.readouterr().out
+        assert "7 commits, 4 flagged for review" in out
+        # Breakdown is ordered B / D / G (the documented "flagged" order):
+        assert "1 B, 2 D, 1 G" in out
+        assert ".checkloop-commit-audit.md" in out
+
+    def test_only_flagged_category_omits_zero_counts(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: "object",
+    ) -> None:
+        # Only G's — the breakdown must not include "0 B" or "0 D".
+        (tmp_path / ".checkloop-commit-audit.md").write_text(
+            "Classification: G\nClassification: G\n",
+        )
+        suite._print_commit_audit_highlight(
+            str(tmp_path), suite_start_time=0.0, dry_run=False,
+        )
+        out = capsys.readouterr().out
+        assert "2 commits, 2 flagged for review" in out
+        assert "(2 G)" in out
+        assert "0 B" not in out
+        assert "0 D" not in out
+
+
 class TestMultiCycleConvergenceEarlyStop:
     """Integration test for convergence causing early cycle termination."""
 
