@@ -108,15 +108,43 @@ A few rules that keep automated agents (and tired humans) from doing things that
 
 ## Commit messages
 
-Every commit is exactly **two or three sentences** of plain professional English. Describe what changed and why. That's the bar — anything shorter is too generic, anything longer is doing the PR description's job.
+The minimum bar is **two or three sentences** of plain professional English describing what changed and why — never a single-word message or filler (`cleanup`, `wip`, `update readme`). For commits where every change was mechanical and self-evident from the diff (a typo fix, a dependency bump, a rename of already-tested code with no behaviour change), the minimum is also the maximum — keep it tight, the diff carries the rest.
 
-Hard rules:
+For any commit where a non-trivial call was made — anywhere the spec was ambiguous, the implementation diverged from the obvious shape, an alternative was rejected, or an open question remains — expand the body to capture the **audit trail**. The aim is that a maintainer (or your future self) reading the commit alone, six months from now, can reconstruct what you were thinking *at the moment of the commit*. PR descriptions tell the cross-commit story; the commit body has to survive squash and rebase and still read coherently from `git log`.
+
+The categories worth surfacing in the body, when they apply:
+
+- **Design decisions** — where the spec or requirement was ambiguous and a call had to be made. Name the ambiguity, name the call, name the constraint that pointed to it. *Example: "The spec didn't say whether unknown rule types should fail loudly or be silently ignored; chose fail-loudly so SI deployments catch typo'd rule names in CI rather than in production."*
+- **Derivations** — where the implementation diverged from the obvious or spec'd shape and why. Don't make a future reader hunt through unrelated documents to discover the divergence. *Example: "Diverges from the schema in `docs/05-query-rewriting.md` by adding a `precedence` field on `FilterGroup`; the schema doesn't say how overlapping groups resolve, and precedence is the cheapest way to make the existing tests pass without a wider refactor."*
+- **Tradeoffs** — what alternatives were considered and why this one was selected. Naming the rejected option is what makes this an audit trail rather than an advertisement. *Example: "Considered a Lua-script vs MULTI/EXEC for the atomic decrement. Picked the script for the smaller round-trip at the cost of one extra deploy step (`SCRIPT LOAD` on every Redis restart) which `lifespan.py` now handles."*
+- **Open questions** — anything you'd want a maintainer to sign off on, revisit, or change later. Prefix them with `Open question:` on their own line so `git log --grep "Open question:"` finds them. Surfacing a known uncertainty in the commit is much cheaper than discovering it in production. *Example: "Open question: the 60-bucket retention may be too tight under traffic spikes that span the cleanup cron interval — revisit once we have a week of production data via `ratelimit_evictions_total`."*
+- **Rationale** — why this approach is the right one, framed as the *why* the code itself can't express. The code shows the *how*; the rationale is the constraint, threat model, past incident, or trade-off that justifies the shape. If you can't write the rationale, the design isn't load-bearing yet and probably shouldn't ship.
+
+Use the labels (`Design decisions:`, `Derivations:`, `Tradeoffs:`, `Open question:`, `Rationale:`) on their own line so the body stays greppable from `git log`. Not every label needs to appear in every non-trivial commit — only those that earned their keep on this particular change. Anything else useful for a future reader to understand the moment-of-implementation thinking belongs in the body too, even if it doesn't fit a named category. The pair rule of thumb: if you'd be annoyed to discover a teammate had made this decision without telling you, write it down.
+
+### Hard rules (regardless of length)
 
 - No mention of Claude, AI, LLMs, "AI-assisted", or any tool-attribution phrasing. The work product stands on its own.
 - No `Co-Authored-By:` or `Signed-off-by:` trailers attributing AI tools.
 - No single-word or filler messages (`cleanup`, `wip`, `fix`, `update readme`).
-- No walls of text. If the rationale needs more than three sentences, it belongs in the PR description.
+- No restating the diff. "I edited `foo.py` and added a helper to `bar.py`" is doing the diff's job; reviewers can read the diff. The body's job is to explain what the diff doesn't show.
 - Set `git config user.email` to a real address. Commits authored by the default `user@hostname` account get rejected on review.
+
+### Examples
+
+**Trivial commit — the 2–3 sentence floor is also the ceiling:**
+
+> Fix a regex backreference that misnumbered after the previous capture-group reorder. The CI failure surfaced as a flaky parse on Windows-style line endings; the fix is correct on both platforms.
+
+**Non-trivial commit — full audit trail:**
+
+> Replace the in-process token-bucket rate limiter with a Redis-backed sliding-window implementation. Host-level fairness across replicas is the only way the documented SI rate-limit contract holds; the previous in-process limiter let a misbehaving tenant exceed the documented limit by a factor of *N* replicas.
+>
+> Design decisions: 1-second bucket granularity with 60-bucket retention, not the more common fixed-window or leaky-bucket variants. Fixed window permits a 2× burst at the boundary; leaky bucket masks the burst pattern that triggers the auto-scaler. Both are wrong for our threat model.
+>
+> Tradeoffs: considered Lua-script atomicity vs MULTI/EXEC. Picked the script (smaller round-trip, atomic by Redis semantics) at the cost of one extra deploy step (`SCRIPT LOAD` on every Redis restart) which `lifespan.py` now handles.
+>
+> Open question: 60-bucket retention may be too tight under traffic spikes that span the cleanup cron interval. Want to revisit once we have a week of production data — instrumented via `ratelimit_evictions_total`.
 
 ## Pull requests
 
