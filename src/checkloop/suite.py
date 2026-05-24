@@ -431,8 +431,17 @@ def _run_check_suite(
             print_status(f"  Project map ready ({len(map_text)} chars)", GREEN)
         # Store on args so _build_check_prompt can access it.
         args.project_map = map_text
+        # Pre-load the project's binding rules from CLAUDE.md / AGENTS.md /
+        # CONTRIBUTING.md once per run, so every check prompt gets the rules
+        # physically prepended rather than having to rediscover them.
+        from checkloop.project_rules import load_project_rules
+        rules_text = load_project_rules(workdir)
+        if rules_text:
+            print_status(f"  Project rules ready ({len(rules_text)} chars)", GREEN)
+        args.project_rules = rules_text
     else:
         args.project_map = ""
+        args.project_rules = ""
     convergence_enabled = convergence_threshold > 0 and is_git
     check_ids = [c["id"] for c in selected_checks]
     if all_outcomes is None:

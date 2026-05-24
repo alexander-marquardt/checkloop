@@ -184,6 +184,7 @@ class TestPromptInjection:
         args = mock.MagicMock()
         args.changed_files_prefix = ""
         args.project_map = "This is the project structure."
+        args.project_rules = ""
 
         prompt = _build_check_prompt(check, args)
         assert "This is the project structure." in prompt
@@ -197,7 +198,42 @@ class TestPromptInjection:
         args = mock.MagicMock()
         args.changed_files_prefix = ""
         args.project_map = ""
+        args.project_rules = ""
 
         prompt = _build_check_prompt(check, args)
         assert "project's structure" not in prompt
         assert "Do the thing." in prompt
+
+    def test_project_rules_prepended_at_top(self) -> None:
+        # When project_rules is set, the rule block must appear BEFORE the
+        # scope prefix — that's the whole point of the injection.
+        from checkloop.check_runner import _build_check_prompt
+        from checkloop.checks import CheckDef
+
+        check: CheckDef = {"id": "test", "label": "Test", "prompt": "Do the thing."}
+        args = mock.MagicMock()
+        args.changed_files_prefix = ""
+        args.project_map = ""
+        args.project_rules = (
+            "=== PROJECT-SPECIFIC RULES ===\nNo AI-attribution lines.\n=== END ===\n"
+        )
+
+        prompt = _build_check_prompt(check, args)
+        assert "PROJECT-SPECIFIC RULES" in prompt
+        assert "No AI-attribution lines." in prompt
+        # Rules must come before the check body.
+        assert prompt.index("PROJECT-SPECIFIC RULES") < prompt.index("Do the thing.")
+
+    def test_project_rules_empty_does_not_inject_block(self) -> None:
+        # When project_rules is empty, no rule block appears in the prompt.
+        from checkloop.check_runner import _build_check_prompt
+        from checkloop.checks import CheckDef
+
+        check: CheckDef = {"id": "test", "label": "Test", "prompt": "Do the thing."}
+        args = mock.MagicMock()
+        args.changed_files_prefix = ""
+        args.project_map = ""
+        args.project_rules = ""
+
+        prompt = _build_check_prompt(check, args)
+        assert "PROJECT-SPECIFIC RULES" not in prompt

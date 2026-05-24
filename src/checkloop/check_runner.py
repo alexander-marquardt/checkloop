@@ -145,10 +145,14 @@ _MEMORY_FIX_PROMPT = (
 def _build_check_prompt(check: CheckDef, args: argparse.Namespace) -> str:
     """Assemble the full prompt for a check from its definition and CLI args.
 
-    Prepends the scope prefix (--changed-only file list or the default
-    "review ALL code" instruction), injects the project map if available,
-    and appends commit-message rules.
+    Prepends the project's binding rules (CLAUDE.md / AGENTS.md / CONTRIBUTING.md
+    content) so they are present in the agent's context unconditionally, then
+    the scope prefix (--changed-only file list or the default "review ALL code"
+    instruction), then the project map if available, then the check body, and
+    finally the commit-message rules.  The rules go FIRST because they override
+    any generic guidance later in the prompt.
     """
+    project_rules = getattr(args, "project_rules", "")
     changed_files_prefix = getattr(args, "changed_files_prefix", "")
     scope_prefix = changed_files_prefix or FULL_CODEBASE_SCOPE
     project_map = getattr(args, "project_map", "")
@@ -161,7 +165,10 @@ def _build_check_prompt(check: CheckDef, args: argparse.Namespace) -> str:
         commit_suffix += HIDE_AI_ATTRIBUTION
     progress_suffix = "\n\n" + PROGRESS_ANNOUNCEMENT
     tests_suffix = "\n\n" + TESTS_FOR_BEHAVIOR_CHANGES
-    prompt = scope_prefix + map_section + check["prompt"] + progress_suffix + tests_suffix + commit_suffix
+    prompt = (
+        project_rules + scope_prefix + map_section + check["prompt"]
+        + progress_suffix + tests_suffix + commit_suffix
+    )
     return prompt
 
 
