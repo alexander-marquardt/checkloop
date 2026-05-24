@@ -16,6 +16,22 @@ Make the replacement only when ALL of the following are true:
 
 When in doubt, leave the code alone. The cost of a silently-changed behaviour is much higher than the benefit of a tidier block.
 
+## The micro-refactor bar
+
+A micro-refactor (≤10 lines, no observable behaviour change, no testability win) is only landable when it removes a *genuinely confusing* construct. Apply this test before making the change:
+
+- **Would a reader who has never seen this swap before notice that the new code reads more clearly?** If yes, land it. If no, skip it.
+
+Concrete examples:
+
+- LAND: `if x is not None and x != "": …` → `if x: …` *when* the variable is known to be a string and `None` would already short-circuit at the type level. The original is easy to misread; the new form is one obvious idiom.
+- LAND: `arr.filter(p)[0]` → `arr.find(p)` — the original returns `undefined` for empty, throws or returns `undefined` depending on engine for the index, and is a known footgun.
+- SKIP: a 3-line `for … append(f(x))` loop → list comprehension. Both forms are universally read; the comprehension is shorter but doesn't make the loop clearer to a reader who could already follow it.
+- SKIP: `for x in xs: ... else: ...` → `next((x for x in xs if …), default)`. Stylistic preference; both forms work; the rewrite churns a diff for no reader-visible win.
+- SKIP: collapsing a two-line variable + return into a one-liner. No clarity gain, no behaviour change, no test win — just churn.
+
+If the change is ≤10 lines, has no test consequence, and you cannot point to a reader who would actually misread the original, it is net-neutral churn. Do not commit it.
+
 ## Python targets (illustrative, not exhaustive)
 
 - Multi-step `os.path.dirname(os.path.dirname(os.path.abspath(__file__)))` chains used to compute a single relative path → `pathlib.Path(__file__).resolve().parent.parent`, but only if the project already uses `pathlib` elsewhere. Otherwise leave it.
