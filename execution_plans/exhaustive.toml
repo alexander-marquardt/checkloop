@@ -73,6 +73,11 @@ model = "sonnet"
 idle_timeout = 600
 
 [[checks]]
+id = "idiomatic"
+model = "sonnet"
+idle_timeout = 600
+
+[[checks]]
 id = "deps"
 model = "sonnet"
 idle_timeout = 600
@@ -99,6 +104,11 @@ idle_timeout = 600
 
 [[checks]]
 id = "api-design"
+model = "sonnet"
+idle_timeout = 600
+
+[[checks]]
+id = "rationale"
 model = "sonnet"
 idle_timeout = 600
 

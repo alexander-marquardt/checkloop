@@ -18,6 +18,11 @@ model = "sonnet"
 idle_timeout = 600
 
 [[checks]]
+id = "idiomatic"
+model = "sonnet"
+idle_timeout = 600
+
+[[checks]]
 id = "tests"
 model = "sonnet"
 idle_timeout = 600
