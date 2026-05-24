@@ -37,7 +37,7 @@ uv run checkloop --dir ~/my-project --review-branch feature/my-work
 # Thorough plan on the review branch
 uv run checkloop --dir ~/my-project --review-branch main --plan thorough
 
-# Exhaustive — all 25 checks, repeat twice
+# Exhaustive — all 27 checks, repeat twice
 uv run checkloop --dir ~/my-project --review-branch main --plan exhaustive --cycles 2
 
 # Super-exhaustive — exhaustive plus infrastructure audits and a meta-review
@@ -120,9 +120,9 @@ Execution plans are TOML files that define which checks to run and which model t
 | Plan | Checks | Description |
 |------|--------|-------------|
 | **basic** (default) | 5 checks | Core code quality — readability, DRY, tests (plus test-fix/test-validate bookends) |
-| **thorough** | 16 checks | Adds docs, docs-accuracy, security, performance, error handling, type safety, derived-value consistency, architecture layer separation, cross-check coherence, a post-modification `tests-for-diff` pass, and a final `commit-audit` advisory |
-| **exhaustive** | 25 checks | Everything in thorough — includes edge cases, complexity, deps, logging, concurrency, concurrency test coverage, a11y, API design, and code cleanup |
-| **super-exhaustive** | 33 checks | Exhaustive plus infrastructure audits (check-config, dead-code, observability, schema-validation, secret-leakage, feature-flags, fixture-drift) and a final **meta-review** that writes a recommendations report to `.checkloop-recommendations.md` and prints it to the terminal after the run. Meant for occasional deep audits. |
+| **thorough** | 17 checks | Adds docs, docs-accuracy, security, performance, error handling, type safety, derived-value consistency, architecture layer separation, idiomatic implementation, cross-check coherence, a post-modification `tests-for-diff` pass, and a final `commit-audit` advisory |
+| **exhaustive** | 27 checks | Everything in thorough — includes edge cases, complexity, idiomatic implementation, deps, logging, concurrency, concurrency test coverage, a11y, API design, rationale capture, and code cleanup |
+| **super-exhaustive** | 35 checks | Exhaustive plus infrastructure audits (check-config, dead-code, observability, schema-validation, secret-leakage, feature-flags, fixture-drift) and a final **meta-review** that writes a recommendations report to `.checkloop-recommendations.md` and prints it to the terminal after the run. Meant for occasional deep audits. |
 
 > `migration-safety` is shipped as an on-demand check, not included in any default plan. Run it with `--checks migration-safety` for projects that have SQL/relational migrations (Postgres, MySQL, etc.), or add it to your own plan file. It is excluded from the defaults because most projects either have no migrations directory or use schemaless stores (Elasticsearch, document DBs) where the audit doesn't apply.
 
@@ -171,12 +171,14 @@ uv run checkloop --dir ~/my-project --plan thorough --model sonnet
 | `commit-audit` | thorough | sonnet | Final advisory pass. Classifies every commit this run produced as behavior+test / bug-fix+regression-test / readability-win / docs-only / behavior-without-test / fix-without-test / net-neutral churn, prints the table to the terminal, and writes `.checkloop-commit-audit.md` with the recommended action per commit. Does not revert or rebase. |
 | `edge-cases` | exhaustive | opus | Off-by-one, null/empty inputs, overflow, Unicode edge cases. |
 | `complexity` | exhaustive | sonnet | Flatten nested conditionals, reduce cyclomatic complexity. |
+| `idiomatic` | thorough | sonnet | Replaces verbose, hand-rolled code with the language's built-in / stdlib equivalent when behaviour is exactly preserved — e.g. `os.path` chains → `pathlib`, `try/except KeyError` → `dict.get`, index loops → `enumerate`/`zip`. Narrower than `complexity` (control flow) and `readability` (naming). No new dependencies. |
 | `deps` | exhaustive | sonnet | Remove verified-unused deps, flag vulnerable/outdated packages. |
 | `logging` | exhaustive | sonnet | Structured logging at entry points. No debug logging on hot paths. |
 | `concurrency` | exhaustive | opus | Race conditions, missing locks, async/await correctness. |
 | `concurrency-testing` | exhaustive | opus | Flags multi-user projects (web apps, APIs, e-commerce) that lack tests simulating concurrent access to shared state. Writes correctness-under-concurrency tests for critical operations (inventory, balances, reservations). Skips single-user projects. |
 | `accessibility` | exhaustive | sonnet | Semantic HTML, ARIA, keyboard nav, colour contrast (WCAG AA). |
 | `api-design` | exhaustive | sonnet | Consistent naming, HTTP methods, error formats, pagination. |
+| `rationale` | exhaustive | sonnet | Ensures every non-trivial module, function, config knob, complex code block, and invariant-pinning test carries a brief explanation of *why* it exists — placed in a docstring, code comment, or doc file as appropriate. Investigates via `git log`/blame/PR references before writing; leaves `TODO(rationale): …` markers and reports them as gaps when the rationale can't be recovered. Documentation-only — no code changes. |
 | `test-validate` | bookend | sonnet | Re-runs the full test suite after all checks. Fixes any regressions. Always runs last. |
 | `cleanup-ai-slop` | exhaustive | sonnet | Removes unnecessary noise: redundant docstrings, unnecessary logging, misleading error handling, coverage-driven tests. |
 | `check-config` | super-exhaustive | sonnet | Audits that the project's test, lint, type-check, and CI infrastructure match the stack. Scaffolds Playwright for browser-facing apps that lack E2E coverage, wires up coverage gates, and ensures CI runs the tools that exist locally. |
@@ -308,8 +310,8 @@ uv run checkloop --cycles 5 --convergence-threshold 0.5
 --plan, -p PLAN        Plan name or path to a TOML plan file.
                        Pre-populated: basic, thorough, exhaustive (default: basic).
 --checks CHECK [...]   Manually select checks (overrides --plan)
---all-checks           Run all 25 checks (same as --plan exhaustive).
-                       For the 32-check super-exhaustive plan, use
+--all-checks           Run all 27 checks (same as --plan exhaustive).
+                       For the 35-check super-exhaustive plan, use
                        --plan super-exhaustive explicitly.
 --cycles, -c N         Repeat the full suite N times (default: 1)
 --idle-timeout SECS    Kill after N seconds of silence (default: 600). The
@@ -499,6 +501,7 @@ checks/                   # Check definitions — one Markdown file per check
 ├── types.md
 ├── edge-cases.md
 ├── complexity.md
+├── idiomatic.md
 ├── derived-values.md
 ├── architecture-boundaries.md
 ├── deps.md
@@ -507,6 +510,7 @@ checks/                   # Check definitions — one Markdown file per check
 ├── concurrency-testing.md
 ├── accessibility.md
 ├── api-design.md
+├── rationale.md
 ├── cleanup-ai-slop.md
 ├── coherence.md
 ├── tests-for-diff.md
