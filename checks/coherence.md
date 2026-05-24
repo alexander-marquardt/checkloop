@@ -23,4 +23,13 @@ Do NOT undo intentional improvements. If a check correctly extracted a helper, i
 
 Do NOT add new features, abstractions, or documentation. This check only fixes incoherence between prior changes.
 
+Before flagging any cross-layer inconsistency, read the project's `CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING.md`, and any `ARCHITECTURE.md` or `docs/architecture/` file. Several patterns that *look* like incoherence are in fact deliberate architectural parities, and the project docs say so explicitly. Do NOT flag any of these when they are documented or otherwise visibly intentional:
+
+- **Frontend recompute / cross-check** — the frontend independently computes a value the backend also computes, specifically to compare and surface divergence. The duplication is the consistency check; collapsing one side onto the other destroys the property. See the same carve-out in `derived-values`.
+- **Adapter / proxy parity** — a pair of modules (commonly `*_adapter` + `*_proxy`, `local_*` + `remote_*`, sync + async variants) that expose the same interface across an in-process vs network boundary. The repeated signatures are the contract that lets callers swap transports without changing call sites. See the same carve-out in `dry`.
+- **Library / HTTP parity** — a library API and an HTTP endpoint that exposes the same operations. The two surfaces look redundant in isolation, but the parity is what lets one codebase serve both in-process callers and remote callers.
+- **Defense-in-depth validation** — input validated at the framework layer AND again at a service boundary, by design. This is not redundant layering when the inner boundary is a trust seam (e.g. a worker that may receive jobs from sources other than the API).
+
+When you see one of these patterns, do not "fix" it. Note it in the report as a recognised parity and move on. If the project docs do not mention the pattern explicitly but the code makes the intent obvious (matching method-by-method signatures across two files, a `crossCheck` helper, an `*_adapter` + `*_proxy` pair imported via a transport flag), treat the structural signal as documentation.
+
 Run the test suite after making any fixes to ensure nothing broke.

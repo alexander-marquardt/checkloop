@@ -11,7 +11,8 @@ Every byte crossing into the system from the outside — HTTP request bodies, qu
    - Message/queue consumers (SQS, Kafka, Redis streams, RabbitMQ)
    - File/upload processors
    - Responses from external APIs that the code deserializes and uses
-   - Environment variable and config-file parsing at startup
+   - Environment variable parsing at startup
+   - **Config files** read at startup or on reload — TOML, YAML, JSON, INI, `.env` files, `*.config.{js,ts}` modules, plugin/extension manifests, and any user-editable file whose contents are loaded into application state. A `toml.load(path)` or `yaml.safe_load(f)` whose result is indexed with raw `cfg["section"]["key"]` is a boundary with no schema, even though nothing crosses the network. The failure mode is a typo or missing key that crashes at first use instead of at boot, and a malformed value type (string where an int was expected) that silently misbehaves.
 
 2. **For each boundary, check for a schema.** Acceptable shapes:
    - **TypeScript/JavaScript:** Zod, Yup, io-ts, Joi, ArkType, Valibot. `req.body as MyType` is NOT validation — it's a type assertion.
@@ -26,7 +27,7 @@ Every byte crossing into the system from the outside — HTTP request bodies, qu
 
 4. **Check external API responses.** When the code deserializes a response from Stripe/GitHub/etc. and uses fields from it, it should tolerate missing fields and schema drift. A `response.json()["amount"]` that crashes when the external API adds/removes fields is brittle. Parse external responses through a schema that accepts "extra" fields but fails loudly on missing required ones.
 
-5. **Check env/config parsing.** App startup is a boundary too. Config should be parsed through a schema (Pydantic Settings, Zod `.parse(process.env)`, `envconfig` in Go) so missing/malformed env vars fail at boot, not at first use.
+5. **Check env/config parsing.** App startup is a boundary too. Config should be parsed through a schema (Pydantic Settings, Zod `.parse(process.env)`, `envconfig` in Go) so missing/malformed env vars fail at boot, not at first use. The same rule applies to file-based config: a project that loads `config.toml` / `settings.yaml` / `plugin.json` and threads the raw dict through the codebase has the same drift and typo risk as raw `process.env` access. Wrap the loaded structure in the project's existing schema library (Pydantic model for Python, Zod schema for TS, a `Config` struct with `serde` for Rust, etc.) at the point of load. Where a file is structurally a config but is *intentionally* validated lazily — e.g. a plugin manifest where the host validates only the fields it consumes, leaving plugin-specific keys free-form — flag it for review rather than fixing; that is a design choice, not an omission.
 
 6. **Check webhook signatures.** Webhook receivers must verify the signature header before parsing the body. If a Stripe/GitHub/Slack webhook handler reads the body without a signature check, that's a high-severity gap — flag and fix.
 

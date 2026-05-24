@@ -10,12 +10,14 @@ Tests often mock functions, classes, or HTTP responses that the real code has si
    - JavaScript/TypeScript: `jest.mock`, `jest.spyOn`, `vi.mock`, `vi.spyOn`, `sinon.stub`, MSW handlers, `nock` interceptors, manual `__mocks__/` directories
    - Go: interface-based test doubles, `httptest.NewServer` recordings
    - Fixture files: `fixtures/`, `__fixtures__/`, JSON responses checked in for replay
+   - Search/index DSL fixtures: Elasticsearch / OpenSearch query bodies, aggregation specs, index mappings, and stored response samples — these reference field paths (`user.profile.email`, `events.timestamp`, nested `properties` keys) that drift when the index mapping changes
 
 2. **For each mock, verify the mocked target still exists:**
    - `patch("module.Class.method")` — does `method` still exist on `Class`? Did it get renamed?
    - `jest.mock("../api")` with `mockReturnValue({...})` — does the shape still match the real `api` export?
    - Fixture file `fixtures/stripe_charge.json` — does the field set still match what the real Stripe library returns for the current API version?
    - HTTP recording at `https://api.example.com/v1/users` — does that URL still exist, and is the response shape current?
+   - Elasticsearch / OpenSearch fixtures — does every field path referenced in a `query`, `term`, `match`, `range`, `bool`, `aggs`, `sort`, `script`, or `_source` clause still exist in the current index mapping? Field renames (e.g. `user_email` → `user.email`), type changes (`keyword` → `text`), and nested-vs-flattened migrations break ES fixtures silently because the query still parses — it just returns zero hits. Cross-reference field paths against the project's mapping files (`mappings/*.json`, index-template definitions, or the live mapping if a snapshot is checked in) and any field-name constants in the source. Pay particular attention to multi-field names (`title.raw`, `title.english`), nested-path prefixes (`comments.author.id`), and runtime fields whose definitions live on the index, not in the query.
 
 3. **Find silently passing mocks:** the worst kind of drift. A test like:
    ```python
@@ -25,6 +27,8 @@ Tests often mock functions, classes, or HTTP responses that the real code has si
        assert result.username == "Alice"
    ```
    If `fetch_user` now returns `{"user_id": ..., "display_name": ...}`, the real callers of `get_profile` break, but this test still passes because `fake` returns whatever it was told to. Fix: use `spec=fetch_user` / `autospec=True` / `jest.MockedClass` / strict TypeScript on the mock's shape, so mock signatures match real ones.
+
+   The same failure mode hits Elasticsearch / OpenSearch tests harder than most: a query against a field that no longer exists in the mapping does not raise — it parses, runs, and returns an empty result set, which a test asserting `len(hits) == 0` will happily accept. When the mocked or fixture-backed ES client is involved, the query is never executed against a real mapping at all and the drift is invisible. Pin field paths against the current mapping (or a checked-in mapping snapshot) and add at least one assertion that fails when the field path is wrong — e.g. assert the response is non-empty for a fixture document you also indexed, or assert against the parsed query body that the field path equals an expected value sourced from a shared constants module.
 
 4. **Check mock depth.** Tests that mock four layers deep (`patch("a.b.c.d")`) are brittle to any rename anywhere in the chain. Prefer mocking the outermost seam (the HTTP client or the public function under test's direct dependency), not an internal helper.
 
@@ -43,6 +47,7 @@ Tests often mock functions, classes, or HTTP responses that the real code has si
 - Replace deep-chain mocks with mocks at the outermost reasonable seam.
 - Add missing interaction assertions where the mock's purpose was to verify a call.
 - Fix leaking mocks with explicit teardown.
+- Update Elasticsearch / OpenSearch query fixtures whose field paths no longer exist in the current mapping; where the project keeps field-name constants in source, switch the test to reference those constants so a future rename trips the test instead of silently returning zero hits.
 
 **What not to do:**
 - Do NOT rewrite tests wholesale — fix the specific drift.
