@@ -7,6 +7,8 @@ This is an ADVISORY check. It MUST NOT modify source code, MUST NOT add or remov
 
 1. **List this run's commits.** Identify the scratch branch and its base commit (the same way `tests-for-diff` does). Use `git log --oneline <base>..HEAD` to list them. If there is no scratch branch or there are no commits, report this and stop without writing anything.
 
+   When you need to know which check produced a given commit (for the report's bucketing), look at two signals on each commit in this order: (a) a `Check: <check-id>` trailer in the body — the format the commit-message instructions now mandate, format-independent of subject convention — and (b) a `[<check-id>] ` prefix on the subject line, which older runs and runs against repos with a bracket-prefix convention still use. Either signal is authoritative when present; commits with neither are ungrouped and should be flagged in the report as missing provenance.
+
 2. **Classify each commit as exactly one of these categories:**
 
    - **A — Behavior change + test.** The commit changes runtime behavior and the same commit adds or updates a test that pins the new behavior.
