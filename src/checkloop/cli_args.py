@@ -228,6 +228,17 @@ def build_argument_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--no-fetch-upstream", action="store_true",
+        help=(
+            "Skip the network fetch from the real remote that runs after the clone is "
+            "set up. By default, when a clone-mode run has a real remote configured "
+            "(typically GitHub), checkloop fetches from it once at startup so the "
+            "scratch branch is based on current upstream HEAD rather than the user's "
+            "possibly-stale local mirror. Pass this flag to keep the run fully offline "
+            "and review against whatever the local source has cached."
+        ),
+    )
+    parser.add_argument(
         "--require-base-fresh", default=None, metavar="DURATION",
         help=(
             "Reject the run if the review base commit is older than DURATION "

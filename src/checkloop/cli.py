@@ -264,7 +264,11 @@ def main() -> None:
         run_dir = create_run_dir(workdir)
     else:
         try:
-            clone_dir = prepare_clone(original_workdir, args.review_branch)
+            clone_dir = prepare_clone(
+                original_workdir,
+                args.review_branch,
+                fetch_upstream=not getattr(args, "no_fetch_upstream", False),
+            )
         except CloneError as exc:
             fatal(f"Could not prepare clone: {exc}")
         workdir = str(clone_dir)
