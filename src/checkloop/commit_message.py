@@ -90,10 +90,10 @@ def generate_commit_message(
         cmd.append("--dangerously-skip-permissions")
     if model:
         cmd += ["--model", model]
-    cmd += ["-p", prompt]
+    cmd.append("-p")
     logger.info("Generating commit message for uncommitted changes (diff_len=%d)", len(diff_text))
     try:
-        result = _run_cmd(cmd, workdir)
+        result = _run_cmd(cmd, workdir, prompt)
         if result.returncode != 0:
             logger.warning("Commit message generation failed (rc=%d): %s",
                            result.returncode, result.stderr[:200])
@@ -119,8 +119,15 @@ def generate_commit_message(
         return None
 
 
-def _run_cmd(cmd: list[str], workdir: str) -> subprocess.CompletedProcess[str]:
-    """Run *cmd*, falling back to an interactive shell if the binary isn't found.
+def _run_cmd(cmd: list[str], workdir: str, prompt: str) -> subprocess.CompletedProcess[str]:
+    """Run *cmd* with *prompt* fed on stdin, falling back to an interactive shell
+    if the binary isn't found.
+
+    The prompt is passed via stdin rather than argv because diffs can be large
+    enough to push the combined argv+envp past the kernel's ``ARG_MAX``
+    (~256 KiB on macOS), and exec() then fails with ``E2BIG`` — surfacing as
+    ``OSError: [Errno 7] Argument list too long``. claude reads the prompt
+    from stdin when ``-p`` is used without a positional prompt argument.
 
     Shell aliases (e.g. ``claude-bedrock`` aliased to
     ``CLAUDE_CODE_USE_BEDROCK=1 claude``) aren't visible to a direct
@@ -133,7 +140,7 @@ def _run_cmd(cmd: list[str], workdir: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             cmd,
             cwd=workdir,
-            stdin=subprocess.DEVNULL,
+            input=prompt,
             capture_output=True,
             text=True,
             timeout=_COMMIT_MSG_TIMEOUT,
@@ -146,7 +153,7 @@ def _run_cmd(cmd: list[str], workdir: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [shell, "-ic", shlex.join(cmd)],
             cwd=workdir,
-            stdin=subprocess.DEVNULL,
+            input=prompt,
             capture_output=True,
             text=True,
             timeout=_COMMIT_MSG_TIMEOUT,

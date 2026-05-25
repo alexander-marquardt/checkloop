@@ -80,7 +80,7 @@ class TestGenerateCommitMessage:
         result = mock.MagicMock(returncode=0, stdout="[readability] Rename d to user_document.\n", stderr="")
         with mock.patch("subprocess.run", return_value=result) as mock_run:
             commit_message.generate_commit_message("diff", "/tmp", check_id="readability")
-        prompt = mock_run.call_args[0][0][-1]
+        prompt = mock_run.call_args.kwargs["input"]
         assert "[readability] " in prompt
 
     def test_no_check_id_means_no_prefix(self) -> None:
@@ -88,6 +88,39 @@ class TestGenerateCommitMessage:
         with mock.patch("subprocess.run", return_value=result):
             msg = commit_message.generate_commit_message("diff", "/tmp")
         assert msg == "A plain message with no prefix."
+
+    def test_prompt_is_passed_via_stdin_not_argv(self) -> None:
+        """Regression: a large diff used to be embedded in argv via -p <prompt>,
+        which exec()'d with ``[Errno 7] Argument list too long`` once argv+envp
+        crossed ``ARG_MAX`` (~256 KiB on macOS).  The diff must arrive on stdin,
+        so argv stays bounded regardless of diff size."""
+        big_diff = "x" * 600_000
+        result = mock.MagicMock(returncode=0, stdout="Summarize the bulk update across the touched modules.", stderr="")
+        with mock.patch("subprocess.run", return_value=result) as mock_run:
+            commit_message.generate_commit_message(big_diff, "/tmp")
+        argv = mock_run.call_args.args[0]
+        stdin_payload = mock_run.call_args.kwargs["input"]
+        assert big_diff in stdin_payload
+        assert all(big_diff not in arg for arg in argv)
+        # The argv size must not scale with the diff — pin a tight bound that
+        # would catch any future regression that smuggles content back into it.
+        assert sum(len(arg) for arg in argv) < 1024
+
+    def test_stdin_payload_survives_shell_fallback(self) -> None:
+        """When the direct exec raises FileNotFoundError (alias case), the
+        retry through ``$SHELL -ic`` must still pipe the prompt on stdin —
+        re-embedding it in the shell command line would re-introduce the
+        ARG_MAX failure mode."""
+        big_diff = "y" * 400_000
+        ok = mock.MagicMock(returncode=0, stdout="Tighten the fallback handling for shell alias users.", stderr="")
+        with mock.patch("subprocess.run", side_effect=[FileNotFoundError(), ok]) as mock_run:
+            commit_message.generate_commit_message(big_diff, "/tmp")
+        # Two calls: direct then shell -ic fallback.  Both must pipe via input=.
+        assert mock_run.call_count == 2
+        for call in mock_run.call_args_list:
+            argv = call.args[0]
+            assert big_diff in call.kwargs["input"]
+            assert all(big_diff not in arg for arg in argv)
 
 
 class TestLooksLikeGarbage:
