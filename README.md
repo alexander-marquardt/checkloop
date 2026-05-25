@@ -379,6 +379,13 @@ uv run checkloop --cycles 5 --convergence-threshold 0.5
                        extractions and refactors will need manual
                        re-application against current upstream HEAD. Pass
                        'ignore' or omit the flag to disable the check.
+--no-fetch-upstream    Skip the network fetch from the real remote that runs
+                       after clone-mode setup. By default, when a real
+                       remote (typically GitHub) is configured, checkloop
+                       fetches from it once at startup so the scratch branch
+                       is based on current upstream HEAD rather than the
+                       user's possibly-stale local mirror. Pass this flag to
+                       keep the run fully offline.
 ```
 
 ## How It Works

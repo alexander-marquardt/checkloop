@@ -216,6 +216,7 @@ def prepare_clone(
     review_branch: str,
     *,
     timestamp: str | None = None,
+    fetch_upstream: bool = True,
 ) -> Path:
     """Clone *workdir* and check out *review_branch* in the clone.
 
@@ -224,10 +225,21 @@ def prepare_clone(
       1. Verify *workdir* is a git repo (cloning a non-git dir is meaningless).
       2. Reserve the clone path under ``get_runs_root()``.
       3. ``git clone --local`` with hardlinks (near-zero disk).
-      4. ``git fetch origin --prune`` in the clone (best effort).
-      5. Resolve *review_branch* to a ref (prefers ``origin/<name>``).
-      6. ``git checkout --detach <ref>`` so checkloop's commits don't push back.
-      7. Import the original repo's Claude auto-memory into the clone's slug
+      4. ``git fetch origin --prune`` in the clone — first pass, against the
+         local source (no network), so the clone has all of the user's
+         local-only commits and branches.
+      5. Rewrite ``origin`` to the source repo's real remote URL.
+      6. If *fetch_upstream* is true and a remote URL was set, ``git fetch
+         origin --prune`` again — second pass, now against the real remote
+         (typically GitHub).  This updates the clone's ``origin/<branch>``
+         refs to reflect current upstream, so the scratch branch we are
+         about to fork is based on real upstream HEAD rather than on the
+         user's possibly-stale local mirror.  Best-effort: a network or
+         auth failure falls back to the locally-fetched state with a warning.
+      7. Resolve *review_branch* to a ref (prefers ``origin/<name>``, which
+         now reflects upstream after step 6).
+      8. ``git checkout --detach <ref>`` so checkloop's commits don't push back.
+      9. Import the original repo's Claude auto-memory into the clone's slug
          (read-only; best effort) so check sessions inherit project context.
 
     Returns the clone directory path.  Raises :class:`CloneError` on any
@@ -249,11 +261,22 @@ def prepare_clone(
     logger.info("Cloned %s → %s", src, dst)
 
     _fetch_origin(dst)
+    # Rewrite origin to the source's real remote URL before the second fetch
+    # so the network fetch (if requested) hits the actual upstream — typically
+    # GitHub — rather than re-fetching from the local source path.
+    upstream_url = _rewrite_origin_to_source_remote(src, dst)
+    if fetch_upstream and upstream_url is not None:
+        # Second fetch, now against the real remote.  Without this, the
+        # clone's origin/<branch> refs reflect only what the user's local
+        # source had at clone time — which may be days behind real upstream.
+        # The scratch branch we are about to fork would then be based on a
+        # stale commit, and every extraction or refactor the run produces
+        # against that base would need manual re-application by the human
+        # reviewer once they adopt the work into the up-to-date repo.
+        logger.info("Fetching from upstream %s to refresh origin/* refs", upstream_url)
+        _fetch_origin(dst)
+    # Ref resolution AFTER both fetches so origin/<branch> reflects upstream.
     ref = _resolve_review_ref(dst, review_branch)
-    # Rewrite origin to the source's real remote URL AFTER the local fetch and
-    # ref resolution — both operations rely on the fetched origin/* refs, and
-    # doing the swap last means the startup path never touches the network.
-    _rewrite_origin_to_source_remote(src, dst)
     _checkout_ref(dst, ref)
     logger.info("Checked out %s in clone (detached)", ref)
 

@@ -161,6 +161,55 @@ class TestPrepareClone:
         )
         assert out.stdout.strip() == "git@github.com:user/repo.git"
 
+    def test_fetches_upstream_after_url_rewrite_by_default(self, tmp_path: Path) -> None:
+        # The default behaviour: when source has a remote URL, prepare_clone
+        # fetches twice — first from the local source (to capture local-only
+        # state), then from the rewritten upstream URL (to capture any
+        # commits that landed upstream since the user last pulled locally).
+        src = tmp_path / "src"
+        _init_git_repo(src)
+        subprocess.run(
+            ["git", "-C", str(src), "remote", "add", "origin", "git@github.com:user/repo.git"],
+            check=True, capture_output=True,
+        )
+
+        with mock.patch.object(clone, "_fetch_origin", wraps=clone._fetch_origin) as spy:
+            clone.prepare_clone(str(src), "main", timestamp="2026-04-21T10-00-00Z")
+
+        # Expect two fetches: one before the rewrite, one after.
+        assert spy.call_count == 2
+
+    def test_no_fetch_upstream_skips_the_second_fetch(self, tmp_path: Path) -> None:
+        # With fetch_upstream=False, only the first fetch runs (the local
+        # source fetch).  The clone stays offline / local-only.
+        src = tmp_path / "src"
+        _init_git_repo(src)
+        subprocess.run(
+            ["git", "-C", str(src), "remote", "add", "origin", "git@github.com:user/repo.git"],
+            check=True, capture_output=True,
+        )
+
+        with mock.patch.object(clone, "_fetch_origin", wraps=clone._fetch_origin) as spy:
+            clone.prepare_clone(
+                str(src), "main", timestamp="2026-04-21T10-00-00Z", fetch_upstream=False,
+            )
+
+        assert spy.call_count == 1
+
+    def test_no_upstream_url_skips_the_second_fetch(self, tmp_path: Path) -> None:
+        # When the source has no remote configured, the URL rewrite is a no-op
+        # and there is no real upstream to fetch from.  Only the local fetch runs,
+        # regardless of fetch_upstream — the flag is conditional on a remote URL.
+        src = tmp_path / "src"
+        _init_git_repo(src)  # no remote
+
+        with mock.patch.object(clone, "_fetch_origin", wraps=clone._fetch_origin) as spy:
+            clone.prepare_clone(
+                str(src), "main", timestamp="2026-04-21T10-00-00Z", fetch_upstream=True,
+            )
+
+        assert spy.call_count == 1
+
     def test_leaves_origin_local_when_source_has_no_remote(self, tmp_path: Path) -> None:
         # Source has no "origin" — the clone's origin is left pointing at the source path.
         src = tmp_path / "src"
