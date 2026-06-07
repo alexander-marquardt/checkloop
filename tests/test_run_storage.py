@@ -117,6 +117,32 @@ class TestPruneOldRuns:
         assert run_storage.prune_old_runs(max_age_days=14) == 0
         assert stray.exists()
 
+    def test_prints_progress_while_pruning(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        runs = tmp_path / "checkloop-runs"
+        runs.mkdir()
+        old = runs / "proj-old"
+        old.mkdir()
+        old_mtime = time.time() - (30 * 24 * 60 * 60)
+        os.utime(old, (old_mtime, old_mtime))
+
+        assert run_storage.prune_old_runs(max_age_days=14) == 1
+
+        out = capsys.readouterr().out
+        assert "Pruning 1 run dir(s)" in out
+        assert "removing proj-old" in out
+        assert "done (1 removed)" in out
+
+    def test_silent_when_nothing_to_prune(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        runs = tmp_path / "checkloop-runs"
+        runs.mkdir()
+        (runs / "proj-fresh").mkdir()
+        assert run_storage.prune_old_runs(max_age_days=14) == 0
+        assert capsys.readouterr().out == ""
+
     def test_custom_max_age(self, tmp_path: Path) -> None:
         runs = tmp_path / "checkloop-runs"
         runs.mkdir()

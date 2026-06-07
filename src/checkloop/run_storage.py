@@ -89,12 +89,12 @@ def prune_old_runs(max_age_days: int = _DEFAULT_MAX_AGE_DAYS) -> int:
     if not root.exists():
         return 0
     cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).timestamp()
-    removed = 0
     try:
         entries = list(root.iterdir())
     except OSError as exc:
         logger.debug("Could not list runs root %s: %s", root, exc)
         return 0
+    expired = []
     for entry in entries:
         if not entry.is_dir():
             continue
@@ -102,14 +102,28 @@ def prune_old_runs(max_age_days: int = _DEFAULT_MAX_AGE_DAYS) -> int:
             mtime = entry.stat().st_mtime
         except OSError:
             continue
-        if mtime >= cutoff:
-            continue
+        if mtime < cutoff:
+            expired.append(entry)
+    if not expired:
+        return 0
+    # Run dirs in clone mode are full repo clones (often with node_modules etc.),
+    # so a single rmtree can take a minute-plus.  Announce each delete so a
+    # fresh `checkloop` invocation doesn't look hung during startup pruning.
+    print(
+        f"Pruning {len(expired)} run dir(s) older than {max_age_days} days "
+        f"from {root} ...",
+        flush=True,
+    )
+    removed = 0
+    for entry in sorted(expired):
+        print(f"  removing {entry.name} ...", flush=True)
         try:
             shutil.rmtree(entry)
             removed += 1
             logger.debug("Pruned old run dir: %s", entry.name)
         except OSError as exc:
             logger.debug("Could not remove %s: %s", entry, exc)
+    print(f"  done ({removed} removed)", flush=True)
     if removed:
         logger.info("Pruned %d run dir(s) older than %d days", removed, max_age_days)
     return removed
