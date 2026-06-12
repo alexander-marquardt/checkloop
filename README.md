@@ -135,12 +135,13 @@ Use `--checks` to pick individual checks, or `--all-checks` as a shortcut for `-
 Each plan file specifies which Claude model to use for each check. The pre-populated plans assign models based on the cognitive demands of each task:
 
 - **Sonnet** (faster, used for most checks) — pattern-matching tasks like readability, DRY, tests, docs, docs-accuracy, error handling, types, complexity, deps, logging, accessibility, API design, and code cleanup.
-- **Opus** (deeper reasoning, used selectively) — multi-layer analysis tasks like security, concurrency, concurrency test coverage, performance, edge cases, and cross-check coherence, where subtle issues span multiple code layers.
+- **Opus** (deeper reasoning, used selectively) — multi-layer analysis tasks like security, concurrency, concurrency test coverage, performance, and edge cases, where subtle issues span multiple code layers. Security checks stay on Opus deliberately — Fable's cyber safety classifiers can decline a security-focused prompt and return an empty result.
+- **Fable 5** (`claude-fable-5` — deepest reasoning, used for the cross-cutting boundary checks) — the whole-codebase, source-of-truth analyses where layer boundaries are at stake: `architecture-boundaries`, `derived-values`, `coherence`, and `meta-review`. These reason about which layer *owns* a value (e.g. a frontend that should consume a backend-computed value rather than re-derive it), where the extra capability most changes the verdict. Fable costs roughly 2.6× Opus per check and runs longer turns (hence the larger idle timeouts on those checks), so it is reserved for this cluster rather than applied across the board.
 
-The `--model` flag overrides the per-check model for all checks:
+The `--model` flag overrides the per-check model for all checks (it accepts aliases like `sonnet`/`opus` or full IDs like `claude-fable-5`):
 
 ```bash
-# Use plan defaults (sonnet for most, opus for security/concurrency/perf/edge-cases)
+# Use plan defaults (sonnet for most; opus for security/concurrency/perf/edge-cases; fable for the boundary checks)
 uv run checkloop --dir ~/my-project --plan thorough
 
 # Force all checks to opus (slower but deeper analysis everywhere)
@@ -164,9 +165,9 @@ uv run checkloop --dir ~/my-project --plan thorough --model sonnet
 | `perf` | thorough | opus | N+1 queries, O(N²) algorithms, blocking I/O, unnecessary allocations. Selective caching for expensive repeated computations. |
 | `errors` | thorough | sonnet | Centralized error handling for external services. Only where code can meaningfully respond. No wrapping code that can't fail. |
 | `types` | thorough | sonnet | Type annotations, replace `Any`/untyped code, runtime validation at API boundaries (Annotated/Pydantic/Zod). |
-| `derived-values` | thorough | opus | Finds frontend code that re-derives values the backend already computes. Fix is to add missing values to existing API responses — not create new API calls or recompute on the frontend. Trivially deterministic computations are excluded. |
-| `architecture-boundaries` | thorough | opus | Discovers the project's architectural layers, checks that dependencies flow in one direction, and fixes violations — upward imports, leaking internals, shared state coupling, mixed-layer modules, circular dependencies. Skips single-layer projects. |
-| `coherence` | thorough | opus | Reviews the codebase as a whole after all other checks and fixes cases where checks worked against each other — conflicting changes, cumulative over-engineering, style drift, redundant layering, broken call chains, and load-bearing deletions made by `cleanup-ai-slop`. |
+| `derived-values` | thorough | fable | Finds frontend code that re-derives values the backend already computes. Fix is to add missing values to existing API responses — not create new API calls or recompute on the frontend. Trivially deterministic computations are excluded. |
+| `architecture-boundaries` | thorough | fable | Discovers the project's architectural layers, checks that dependencies flow in one direction, and fixes violations — upward imports, leaking internals, shared state coupling, mixed-layer modules, circular dependencies, and source-of-truth inversion (a higher layer recomputing/synthesizing/overriding a value the lower layer authoritatively produces, even when the import direction is legal). Skips single-layer projects. |
+| `coherence` | thorough | fable | Reviews the codebase as a whole after all other checks and fixes cases where checks worked against each other — conflicting changes, cumulative over-engineering, style drift, redundant layering, broken call chains, and load-bearing deletions made by `cleanup-ai-slop`. |
 | `tests-for-diff` | thorough | sonnet | Runs after the behavior-modifying checks. Diffs this run against the scratch-branch base, identifies every changed unit of behavior, and writes a regression test for any unit that lacks one. The earlier `tests` check audits pre-existing coverage; this one closes the gap that opened during the run. Does not modify source code. |
 | `commit-audit` | thorough | sonnet | Final advisory pass. Classifies every commit this run produced as behavior+test / bug-fix+regression-test / readability-win / docs-only / behavior-without-test / fix-without-test / net-neutral churn, prints the table to the terminal, and writes `.checkloop-commit-audit.md` with the recommended action per commit. Does not revert or rebase. |
 | `edge-cases` | exhaustive | opus | Off-by-one, null/empty inputs, overflow, Unicode edge cases. |
@@ -189,7 +190,7 @@ uv run checkloop --dir ~/my-project --plan thorough --model sonnet
 | `migration-safety` | on-demand | opus | Reviews database migrations for locking risk, concurrent-index creation, destructive-change staging, chunked backfills, rollback paths, and transaction-boundary correctness. Run with `--checks migration-safety` for projects with SQL/relational migrations; not in any default plan. |
 | `feature-flags` | super-exhaustive | sonnet | Finds ghost flags (referenced, not defined), orphan flags (defined, not referenced), fully-rolled-out flags with dormant branches, and conflicting flag gates. |
 | `fixture-drift` | super-exhaustive | sonnet | Finds test mocks and recorded fixtures that no longer match the real code or external APIs — silently-passing mocks, deep-chain patches, stale HTTP recordings, leaking mocks without teardown. |
-| `meta-review` | super-exhaustive | opus | Reads the codebase and the set of existing checks, then writes `.checkloop-recommendations.md` with prioritised suggestions for domain-specific checks or tests that the generic suite doesn't cover. No code changes. The report is printed to the terminal after the run completes. |
+| `meta-review` | super-exhaustive | fable | Reads the codebase and the set of existing checks, then writes `.checkloop-recommendations.md` with prioritised suggestions for domain-specific checks or tests that the generic suite doesn't cover. No code changes. The report is printed to the terminal after the run completes. |
 
 ## Writing Your Own Plan Files
 
