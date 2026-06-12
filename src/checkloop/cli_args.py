@@ -64,7 +64,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
             f"  thorough    basic + {', '.join(cid for cid in TIER_THOROUGH if cid not in TIER_BASIC)}",
             f"  exhaustive  thorough + {', '.join(cid for cid in TIER_EXHAUSTIVE if cid not in TIER_THOROUGH)}",
             "",
-            "Each plan file specifies a per-check model (sonnet or opus).",
+            "Each plan file specifies a per-check model (sonnet, opus, or claude-fable-5).",
             "Use --model to override all checks to a single model.",
             "",
             "All available checks (use with --checks to override plan):",

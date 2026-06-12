@@ -79,13 +79,13 @@ idle_timeout = 600
 
 [[checks]]
 id = "derived-values"
-model = "opus"
-idle_timeout = 600
+model = "claude-fable-5"
+idle_timeout = 1200
 
 [[checks]]
 id = "architecture-boundaries"
-model = "opus"
-idle_timeout = 900
+model = "claude-fable-5"
+idle_timeout = 1200
 
 [[checks]]
 id = "edge-cases"
@@ -154,8 +154,8 @@ idle_timeout = 600
 
 [[checks]]
 id = "coherence"
-model = "opus"
-idle_timeout = 900
+model = "claude-fable-5"
+idle_timeout = 1200
 
 [[checks]]
 id = "tests-for-diff"
@@ -174,5 +174,5 @@ idle_timeout = 600
 
 [[checks]]
 id = "meta-review"
-model = "opus"
-idle_timeout = 900
+model = "claude-fable-5"
+idle_timeout = 1200
