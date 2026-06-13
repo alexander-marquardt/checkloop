@@ -34,6 +34,14 @@ class StreamObserver:
 
     compacting: bool = False
 
+    result_is_error: bool = False
+    """Whether the terminal ``result`` event reported ``is_error: true``."""
+
+    result_text: str = ""
+    """Text of the terminal ``result`` event's ``result`` field.  Used to
+    classify a model-unavailability failure (gated/region-locked model) so the
+    caller can retry on a fallback model — see ``process._is_model_unavailable_result``."""
+
 _BASH_DISPLAY_LIMIT = 80  # max chars shown for bash commands in tool summaries
 
 _FILE_PATH_TOOL_NAMES: set[str] = {"read", "read_file", "edit", "edit_file", "write", "write_file"}
@@ -128,6 +136,10 @@ def _update_observer(event: dict[str, Any], observer: StreamObserver) -> None:
         and event.get("status") == "compacting"
     )
     observer.compacting = is_compacting
+    if event.get("type") == "result":
+        observer.result_is_error = bool(event.get("is_error", False))
+        result_text = event.get("result")
+        observer.result_text = result_text if isinstance(result_text, str) else ""
 
 
 def _print_event(

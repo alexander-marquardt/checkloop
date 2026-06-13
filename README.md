@@ -138,6 +138,10 @@ Each plan file specifies which Claude model to use for each check. The pre-popul
 - **Opus** (deeper reasoning, used selectively) — multi-layer analysis tasks like security, concurrency, concurrency test coverage, performance, and edge cases, where subtle issues span multiple code layers. Security checks stay on Opus deliberately — Fable's cyber safety classifiers can decline a security-focused prompt and return an empty result.
 - **Fable 5** (`claude-fable-5` — deepest reasoning, used for the cross-cutting boundary checks) — the whole-codebase, source-of-truth analyses where layer boundaries are at stake: `architecture-boundaries`, `derived-values`, `coherence`, and `meta-review`. These reason about which layer *owns* a value (e.g. a frontend that should consume a backend-computed value rather than re-derive it), where the extra capability most changes the verdict. Fable costs roughly 2.6× Opus per check and runs longer turns (hence the larger idle timeouts on those checks), so it is reserved for this cluster rather than applied across the board.
 
+### Automatic model fallback
+
+Fable 5 is not available to every account or region. When a check's configured model is unavailable, checkloop **automatically falls back** to a still-available model (Opus first, then Sonnet) for that check, prints a one-line warning, and keeps going — so a gated model degrades gracefully instead of leaving the check silently empty. The unavailable-model attempt fails in milliseconds with no tokens spent, so the fallback costs effectively nothing. The committed plans therefore keep Fable as the *preferred* model for the boundary checks; where it isn't accessible they run on Opus instead, with the same source-of-truth prompt. A global `--model` override is treated as an explicit choice and is never second-guessed.
+
 The `--model` flag overrides the per-check model for all checks (it accepts aliases like `sonnet`/`opus` or full IDs like `claude-fable-5`):
 
 ```bash

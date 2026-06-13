@@ -14,6 +14,39 @@ import pytest
 from checkloop import streaming
 
 
+class TestObserverResultCapture:
+    """Tests for _update_observer() capturing terminal result error state."""
+
+    def test_captures_is_error_and_text(self) -> None:
+        observer = streaming.StreamObserver()
+        streaming._update_observer(
+            {"type": "result", "is_error": True,
+             "result": "Claude Fable 5 is currently unavailable."},
+            observer,
+        )
+        assert observer.result_is_error is True
+        assert "unavailable" in observer.result_text
+
+    def test_success_result_not_error(self) -> None:
+        observer = streaming.StreamObserver()
+        streaming._update_observer(
+            {"type": "result", "is_error": False, "result": "Done"}, observer)
+        assert observer.result_is_error is False
+        assert observer.result_text == "Done"
+
+    def test_non_result_event_leaves_defaults(self) -> None:
+        observer = streaming.StreamObserver()
+        streaming._update_observer({"type": "assistant"}, observer)
+        assert observer.result_is_error is False
+        assert observer.result_text == ""
+
+    def test_non_string_result_text_coerced_to_empty(self) -> None:
+        observer = streaming.StreamObserver()
+        streaming._update_observer(
+            {"type": "result", "is_error": True, "result": None}, observer)
+        assert observer.result_text == ""
+
+
 class TestSummariseToolUse:
     """Tests for _summarise_tool_use() tool event formatting."""
 

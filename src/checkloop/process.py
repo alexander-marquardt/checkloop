@@ -63,6 +63,10 @@ class CheckResult:
 
     exit_code: int
     kill_reason: str | None = None
+    model_unavailable: bool = False
+    """True when the run failed specifically because the requested model is
+    gated/unavailable for this account or region (not a normal check failure).
+    ``run_claude`` uses this to retry on a fallback model."""
 
 DEFAULT_IDLE_TIMEOUT = 600
 """Seconds of silence before consulting forgiveness signals (default for
@@ -117,6 +121,54 @@ output without disrupting the current operation.
 
 _READ_CHUNK_SIZE = 8192  # bytes per stdout read during streaming
 _DRAIN_CHUNK_SIZE = 65536  # bytes per read when draining after process exit
+
+
+# --- Model-unavailability fallback -------------------------------------------
+
+DEFAULT_MODEL_FALLBACK_CHAIN: tuple[str, ...] = ("opus", "sonnet")
+"""Models tried, in order, when a requested model is unavailable for this
+account/region.  ``opus`` first because it is the closest capability match to
+the premium models that get gated (e.g. ``claude-fable-5``); ``sonnet`` as the
+last resort.  ``default_model_fallbacks`` filters out the requested model so a
+check never "falls back" to the model that just failed."""
+
+_MODEL_UNAVAILABLE_MARKERS: tuple[str, ...] = (
+    "is currently unavailable",
+    "may not exist or you may not have access",
+    "you may not have access",
+    "not have access to it",
+    "issue with the selected model",
+    "do not have access to",
+    "don't have access to",
+)
+"""Substrings (matched case-insensitively against the CLI's terminal ``result``
+text) that identify a model-availability failure rather than an ordinary check
+failure.  The exact wording has already changed once between releases
+("...may not have access..." → "...is currently unavailable..."), so detection
+is intentionally tolerant — match on any known marker."""
+
+
+def default_model_fallbacks(model: str | None) -> list[str]:
+    """Return the ordered fallback models to try if *model* is unavailable.
+
+    Excludes *model* itself so a failing model is never retried as its own
+    fallback.  Returns an empty list when *model* is None (the CLI default
+    model is used, and there is nothing specific to fall back from)."""
+    if not model:
+        return []
+    return [m for m in DEFAULT_MODEL_FALLBACK_CHAIN if m != model]
+
+
+def _is_model_unavailable_result(is_error: bool, result_text: str) -> bool:
+    """Classify a terminal ``result`` event as a model-availability failure.
+
+    Requires both the SDK's ``is_error`` flag *and* a recognised marker in the
+    result text, so a normal non-zero check (a failed task, a kill) is never
+    mistaken for a gated model and does not trigger a model fallback."""
+    if not is_error or not result_text:
+        return False
+    lowered = result_text.lower()
+    return any(marker in lowered for marker in _MODEL_UNAVAILABLE_MARKERS)
 _MAX_BUFFER_SIZE = 10 * 1024 * 1024  # 10 MB safety cap on JSONL output buffer
 _PROCESS_WAIT_TIMEOUT = 5
 _MEMORY_CHECK_INTERVAL = 10
@@ -806,6 +858,7 @@ def _stream_process_output(
     accumulated_descendant_pids: set[int] | None = None,
     raw_log_file: IO[bytes] | None = None,
     system_free_floor_mb: int = 0,
+    observer: StreamObserver | None = None,
 ) -> tuple[float, str | None]:
     """Stream and display JSONL output from the Claude process.
 
@@ -839,7 +892,8 @@ def _stream_process_output(
     last_cpu_sample: tuple[float, float] | None = None  # (wall_time, cumulative CPU seconds)
     output_buffer = bytearray()
     kill_reason: str | None = None
-    observer = StreamObserver()
+    if observer is None:
+        observer = StreamObserver()
 
     try:
         while True:
@@ -1034,6 +1088,7 @@ def run_claude(
     max_memory_mb: int = DEFAULT_MAX_MEMORY_MB,
     system_free_floor_mb: int = DEFAULT_SYSTEM_FREE_FLOOR_MB,
     model: str | None = None,
+    model_fallbacks: list[str] | None = None,
     claude_command: str = DEFAULT_CLAUDE_COMMAND,
     raw_log_file: IO[bytes] | None = None,
 ) -> CheckResult:
@@ -1078,13 +1133,39 @@ def run_claude(
         print(f"  Prompt: {truncated}")
         return CheckResult(exit_code=0)
 
-    return _execute_claude_process(
-        cmd, workdir,
-        idle_timeout=idle_timeout, debug=debug,
-        check_timeout=check_timeout, max_memory_mb=max_memory_mb,
-        system_free_floor_mb=system_free_floor_mb,
-        raw_log_file=raw_log_file,
-    )
+    # Try the requested model, then each fallback in turn. A fallback is only
+    # consumed when the failure is specifically a model-availability error
+    # (gated/region-locked model); a normal non-zero exit or a watchdog kill is
+    # returned as-is. The unavailable-model attempt fails in milliseconds with
+    # no tokens spent, so retrying costs effectively nothing.
+    attempts = [model] + [m for m in (model_fallbacks or []) if m and m != model]
+    result = CheckResult(exit_code=-1)
+    for i, attempt_model in enumerate(attempts):
+        if attempt_model == model:
+            attempt_cmd = cmd
+        else:
+            attempt_cmd = _build_claude_command(prompt, skip_permissions, attempt_model, claude_command)
+            a_idx = attempt_cmd.index("-p") if "-p" in attempt_cmd else len(attempt_cmd)
+            print_status(f"$ {' '.join(attempt_cmd[:a_idx])} -p [prompt omitted]", DIM)
+        result = _execute_claude_process(
+            attempt_cmd, workdir,
+            idle_timeout=idle_timeout, debug=debug,
+            check_timeout=check_timeout, max_memory_mb=max_memory_mb,
+            system_free_floor_mb=system_free_floor_mb,
+            raw_log_file=raw_log_file,
+        )
+        if not result.model_unavailable:
+            return result
+        next_model = attempts[i + 1] if i + 1 < len(attempts) else None
+        if next_model is not None:
+            logger.warning("Model %r is unavailable — falling back to %r", attempt_model, next_model)
+            print_status(
+                f"  ⚠ model '{attempt_model}' unavailable — falling back to '{next_model}'", YELLOW)
+        else:
+            logger.warning("Model %r is unavailable and no fallback model is left", attempt_model)
+            print_status(
+                f"  ⚠ model '{attempt_model}' unavailable and no fallback model is left", YELLOW)
+    return result
 
 
 def _execute_claude_process(
@@ -1113,6 +1194,7 @@ def _execute_claude_process(
     # processes can be killed at teardown even if they're no longer in the
     # tree when _kill_process_group runs.
     known_descendants: set[int] = set()
+    observer = StreamObserver()
     try:
         check_start_time, kill_reason = _stream_process_output(
             process, idle_timeout, debug,
@@ -1121,6 +1203,7 @@ def _execute_claude_process(
             accumulated_descendant_pids=known_descendants,
             raw_log_file=raw_log_file,
             system_free_floor_mb=system_free_floor_mb,
+            observer=observer,
         )
 
         try:
@@ -1146,7 +1229,16 @@ def _execute_claude_process(
     if kill_reason is not None:
         logger.warning("Check killed: reason=%s, exit_code=%d, pid=%d",
                        kill_reason, exit_code, process.pid)
-    return CheckResult(exit_code=exit_code, kill_reason=kill_reason)
+    # A model-availability failure is only treated as such when the process was
+    # not killed by the watchdog — a kill that happens to leave is_error set
+    # should report the kill reason, not masquerade as a gated model.
+    model_unavailable = (
+        kill_reason is None
+        and _is_model_unavailable_result(observer.result_is_error, observer.result_text)
+    )
+    return CheckResult(
+        exit_code=exit_code, kill_reason=kill_reason, model_unavailable=model_unavailable,
+    )
 
 
 def _report_check_exit_status(process: subprocess.Popen[bytes], check_start_time: float) -> int:
