@@ -1345,3 +1345,121 @@ class TestFormatQuietStatus:
         line = process._format_quiet_status("0m30s", work, quiet_seconds=20, free_mb=5000.0)
         assert "tree" not in line
         assert "host free 5000MB" in line
+
+
+class TestModelUnavailableDetection:
+    """Tests for _is_model_unavailable_result() classification."""
+
+    def test_real_fable_unavailable_message(self) -> None:
+        assert process._is_model_unavailable_result(
+            True, "Claude Fable 5 is currently unavailable. Learn more: https://x") is True
+
+    def test_legacy_no_access_message(self) -> None:
+        assert process._is_model_unavailable_result(
+            True,
+            "There's an issue with the selected model (claude-fable-5). "
+            "It may not exist or you may not have access to it.",
+        ) is True
+
+    def test_is_error_false_is_not_unavailable(self) -> None:
+        # Same text but is_error False → not a model-availability failure.
+        assert process._is_model_unavailable_result(
+            False, "Claude Fable 5 is currently unavailable.") is False
+
+    def test_unrelated_error_text_is_not_unavailable(self) -> None:
+        assert process._is_model_unavailable_result(True, "Tests failed: 3 errors") is False
+
+    def test_empty_text(self) -> None:
+        assert process._is_model_unavailable_result(True, "") is False
+
+
+class TestDefaultModelFallbacks:
+    """Tests for default_model_fallbacks() chain construction."""
+
+    def test_fable_falls_back_to_opus_then_sonnet(self) -> None:
+        assert process.default_model_fallbacks("claude-fable-5") == ["opus", "sonnet"]
+
+    def test_opus_falls_back_to_sonnet(self) -> None:
+        assert process.default_model_fallbacks("opus") == ["sonnet"]
+
+    def test_sonnet_falls_back_to_opus(self) -> None:
+        assert process.default_model_fallbacks("sonnet") == ["opus"]
+
+    def test_none_has_no_fallbacks(self) -> None:
+        assert process.default_model_fallbacks(None) == []
+
+
+class TestRunClaudeModelFallback:
+    """Tests for run_claude()'s automatic fallback when a model is unavailable."""
+
+    def test_falls_back_to_next_model(self, capsys: pytest.CaptureFixture[str]) -> None:
+        calls: list[list[str]] = []
+
+        def fake_exec(cmd: list[str], workdir: str, **_: object) -> process.CheckResult:
+            calls.append(cmd)
+            if "claude-fable-5" in cmd:
+                return process.CheckResult(exit_code=1, model_unavailable=True)
+            return process.CheckResult(exit_code=0)
+
+        with mock.patch.object(process, "_execute_claude_process", side_effect=fake_exec):
+            result = process.run_claude(
+                "prompt", "/tmp", model="claude-fable-5", model_fallbacks=["opus"])
+        assert result.exit_code == 0
+        assert result.model_unavailable is False
+        assert len(calls) == 2
+        assert "--model" in calls[1] and "opus" in calls[1]
+        assert "falling back to 'opus'" in capsys.readouterr().out
+
+    def test_no_fallback_when_first_model_available(self) -> None:
+        with mock.patch.object(
+            process, "_execute_claude_process",
+            return_value=process.CheckResult(exit_code=0),
+        ) as m:
+            result = process.run_claude(
+                "p", "/tmp", model="opus", model_fallbacks=["sonnet"])
+        assert result.exit_code == 0
+        assert m.call_count == 1
+
+    def test_no_fallback_on_ordinary_failure(self) -> None:
+        # exit_code 1 but model_unavailable False → a real check failure, no retry.
+        with mock.patch.object(
+            process, "_execute_claude_process",
+            return_value=process.CheckResult(exit_code=1, model_unavailable=False),
+        ) as m:
+            result = process.run_claude(
+                "p", "/tmp", model="claude-fable-5", model_fallbacks=["opus"])
+        assert result.exit_code == 1
+        assert m.call_count == 1
+
+    def test_exhausts_all_fallbacks(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with mock.patch.object(
+            process, "_execute_claude_process",
+            return_value=process.CheckResult(exit_code=1, model_unavailable=True),
+        ) as m:
+            result = process.run_claude(
+                "p", "/tmp", model="claude-fable-5", model_fallbacks=["opus", "sonnet"])
+        assert result.model_unavailable is True
+        assert m.call_count == 3  # fable, opus, sonnet
+        assert "no fallback model is left" in capsys.readouterr().out
+
+    def test_requested_model_deduped_from_fallbacks(self) -> None:
+        # model=opus with opus also in the fallback list must not retry opus twice.
+        def fake_exec(cmd: list[str], workdir: str, **_: object) -> process.CheckResult:
+            if "sonnet" in cmd:
+                return process.CheckResult(exit_code=0)
+            return process.CheckResult(exit_code=1, model_unavailable=True)
+
+        with mock.patch.object(process, "_execute_claude_process", side_effect=fake_exec) as m:
+            result = process.run_claude(
+                "p", "/tmp", model="opus", model_fallbacks=["opus", "sonnet"])
+        assert result.exit_code == 0
+        assert m.call_count == 2  # opus, sonnet — opus never tried as its own fallback
+
+    def test_no_fallbacks_means_single_attempt(self) -> None:
+        with mock.patch.object(
+            process, "_execute_claude_process",
+            return_value=process.CheckResult(exit_code=1, model_unavailable=True),
+        ) as m:
+            result = process.run_claude("p", "/tmp", model="claude-fable-5")
+        assert result.model_unavailable is True
+        assert m.call_count == 1

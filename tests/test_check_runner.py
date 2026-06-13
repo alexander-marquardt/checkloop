@@ -17,6 +17,28 @@ from tests.helpers import make_check, make_suite_args
 # run_single_check
 # =============================================================================
 
+class TestInvokeClaudeModelFallback:
+    """Tests that _invoke_claude wires up automatic model fallback correctly."""
+
+    def test_per_check_model_gets_default_fallbacks(self) -> None:
+        args = make_suite_args(dry_run=False)
+        with mock.patch.object(
+            check_runner, "run_claude", return_value=CheckResult(exit_code=0),
+        ) as m:
+            check_runner._invoke_claude("prompt", "/tmp", args, model="claude-fable-5")
+        assert m.call_args.kwargs["model"] == "claude-fable-5"
+        assert m.call_args.kwargs["model_fallbacks"] == ["opus", "sonnet"]
+
+    def test_global_model_override_disables_fallback(self) -> None:
+        # A global --model override is an explicit user choice — don't second-guess it.
+        args = make_suite_args(dry_run=False, model="opus")
+        with mock.patch.object(
+            check_runner, "run_claude", return_value=CheckResult(exit_code=0),
+        ) as m:
+            check_runner._invoke_claude("prompt", "/tmp", args, model="opus")
+        assert m.call_args.kwargs["model_fallbacks"] == []
+
+
 class TestRunSingleCheck:
     """Tests for run_single_check()."""
 

@@ -35,7 +35,7 @@ from checkloop.git import (
     has_uncommitted_changes,
 )
 from checkloop import telemetry
-from checkloop.process import KILL_REASON_MEMORY, CheckResult, run_claude
+from checkloop.process import KILL_REASON_MEMORY, CheckResult, default_model_fallbacks, run_claude
 from checkloop.terminal import (
     CYAN,
     GREEN,
@@ -186,6 +186,13 @@ def _invoke_claude(
     effective_model = model or getattr(args, "model", None)
     effective_idle_timeout = idle_timeout_override if idle_timeout_override is not None else args.idle_timeout
     claude_cmd = getattr(args, "claude_command", "claude")
+    # When a per-check model is gated for this account/region (e.g. Fable is
+    # not available everywhere), fall back to a still-available model rather
+    # than letting the check silently produce nothing. A global --model
+    # override is taken as an explicit choice and is not second-guessed.
+    model_fallbacks = (
+        [] if getattr(args, "model", None) else default_model_fallbacks(effective_model)
+    )
     return run_claude(
         prompt,
         workdir,
@@ -197,6 +204,7 @@ def _invoke_claude(
         max_memory_mb=args.max_memory_mb,
         system_free_floor_mb=getattr(args, "system_free_floor_mb", 0),
         model=effective_model,
+        model_fallbacks=model_fallbacks,
         claude_command=claude_cmd,
         raw_log_file=raw_log_file,
     )
