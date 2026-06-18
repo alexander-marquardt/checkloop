@@ -1,6 +1,6 @@
 # Contributing to checkloop
 
-This document is the single source of truth for how work happens in this repository — engineering conventions, testing expectations, commit and PR mechanics, and the project-specific philosophies that aren't obvious from the code alone. Read it before opening a PR; if something here conflicts with what you find in a file, the file is wrong and a fix is welcome.
+This document is the single source of truth for how work happens in this repository — engineering conventions, testing expectations, commit and PR mechanics, and the project-specific philosophies that aren't obvious from the code alone. Read it twice per non-trivial change: once before you start, so the constraints are fresh, and once before you open the PR, auditing your own diff against the rules that apply. CI and the checks catch their narrow targets; the wider class — a value derived twice, a papered-over symptom, a missing regression test, a doc that restates instead of links — only surfaces when a human reads the diff against this doc. If something here conflicts with what you find in a file, the file is wrong and a fix is welcome.
 
 ## What checkloop is
 
@@ -175,6 +175,16 @@ CI being green is necessary but not sufficient. Before clicking merge, read the 
 
 These are the rules that aren't obvious from reading the code, and that have caused incidents when violated.
 
+### Single source of truth for a derived value
+
+When the same logical value or answer is needed in more than one place, every consumer derives it from **one** source — one helper, one record, one parse. Never stand up two independent code paths that each compute "the same" thing. Two paths that look identical today drift tomorrow — one side gains a clause, the other rounds differently — and the drift is silent until it surfaces as a lie: a run that reports a check as run when it was skipped, a status line that disagrees with the telemetry, two counts that don't match.
+
+Build for correct-by-construction, not by discipline. If a value already exists somewhere — a parsed config field, a recorded run/checkpoint state, the resolved check list — *read it*; do not recompute it. The review question is not "did I keep the copies in sync?" but "is this value still produced in more than one place?" If it is, collapse it to one before shipping.
+
+Checkloop examples: the ordered check list is expanded once in `checks.py` and read everywhere downstream — the CLI must not re-derive selection/ordering and the suite re-derive it again from the same plan. A run's resume/checkpoint state lives in `checkpoint.py`; consumers read that, they don't reconstruct "which checks already ran" by re-scanning the run directory in parallel. A config value parsed in `cli_args.py` is passed down, not re-parsed from `sys.argv` deeper in.
+
+A second computation is allowed **only** as a drift-detection cross-check — never as a second path whose output is actually used. You may repeat a derivation locally to *detect* disagreement (warn on mismatch, defer to the one source), but the value that drives behaviour always comes from the single source. If you find you genuinely cannot share the one derivation, that is a design smell to reconcile, not paper over.
+
 ### Edit at the source
 
 When you move or rename code, update every call site in the same change. Do not leave a `from .new_home import X  # noqa: F401 — kept for backward compat` line behind. Forwarding stubs hide the real owner of a symbol, accumulate as cruft, and signal that the split was incomplete.
@@ -216,6 +226,29 @@ One carve-out: a rename that fixes a name that *lies* (its value contradicts the
 
 Default to no comments. Names should do the work. Write a comment when the *why* is non-obvious and would surprise a future reader: a hidden constraint, a workaround for a specific bug, an invariant that isn't enforced by code. Don't write comments that narrate the *what* (the next line already does that), and don't reference the current task or PR ("added for issue #123") — that information lives in the commit message and rots in the file.
 
+### Names are explicit, descriptive, accurate, and consistent
+
+A name is the cheapest documentation in the codebase and the most expensive to get wrong: a misleading name is trusted as truth by every caller until one of them rides it straight into a bug. (The `readability` check already enforces a version of this on *target* code; this is the same standard for checkloop's own source.) Every identifier — variable, function, frontmatter key, plan field — should:
+
+- **Say what the thing is**, not what it vaguely relates to. No abbreviations the reader has to expand.
+- **Predict its own shape and role** from the name alone, without opening the definition.
+- **Match what the code actually computes.** A name that lies is a correctness hazard: if `idle_timeout` is being used as a hard wall-clock cap, one of the name or the behaviour is wrong — fix it, don't leave them disagreeing.
+- **Be consistent — one concept, one name, everywhere.** The same idea must not be `check` in one module, `step` in another, and `pass` in a third.
+
+When you reach for a second name for a concept that already has one, stop: reuse the existing name. If the existing one is wrong, rename it everywhere rather than coining a synonym beside it. A concept carried under several disagreeing names is the same defect as a value derived in several places (see "Single source of truth" above) — the representations drift exactly where they differ.
+
+### Prefer explicit over implicit
+
+Behaviour-shaping values are declared explicitly — in the plan TOML, in the check frontmatter, in the CLI argument — not reconstructed at runtime from convention or silently defaulted via fall-through. A reader should be able to predict what a run does from the plan and arguments without tracing the code. If a plan omits a model or idle timeout, surface the default that gets applied rather than letting an unstated convention decide silently. This is the general form of the `try/except` rule above: optionality and defaults are config the operator can see, not behaviour that depends on what happens to be installed or on a heuristic buried in a code path.
+
+### No papered-over solutions
+
+Fix the root cause, not the symptom. If a check run fails because the prompt is malformed, fix the prompt — don't add a downstream filter that hides the bad output. If the watchdog misfires, fix the signal logic — don't pad the timeout to mask it. A workaround that suppresses a symptom leaves the underlying defect in place to resurface elsewhere, and usually hides the data-model flaw that produced it. This is the broad principle behind the specific bans above (don't swallow exceptions, don't silence the type checker): suppressing the visible failure is not the same as fixing what's broken.
+
+### New functionality mirrors existing behavior for the analogous case
+
+When you add something that resembles a feature checkloop already has, give it the **same** behaviour as the established case unless there's a concrete reason to diverge. Someone who has learned how one check, plan field, or CLI flag behaves shouldn't have to re-learn a divergent rule for its near-twin. Before inventing a behaviour — or surfacing it as an open question for a reviewer to decide — find the analogous shipped piece and follow its idiom: a new check's frontmatter and plan wiring match the existing checks, a new telemetry field follows the existing JSONL shape, a new flag's default follows the sibling flag's convention. Divergence is allowed but must be justified in the PR body ("differs from X because …"); silent divergence is the defect.
+
 ## Testing
 
 The full suite is fast (~8 seconds, 979+ tests). Keep it that way.
@@ -256,6 +289,24 @@ This project is built with Claude Code, runs Claude Code, and is reviewed by Cla
 - **No AI attribution anywhere user-visible.** Commit messages, code comments, docstrings, PR descriptions, README, error messages — none of these mention Claude, AI, LLMs, or "AI-assisted". The product stands on its own.
 - **The dangerous-keyword filter is a backstop, not a policy.** It exists to refuse running prompts whose literal text would direct an LLM to do something destructive. False positives (a check prompt that mentions `DROP TABLE` while teaching Claude what to look for) get fixed by rephrasing the prompt — not by widening the filter into uselessness.
 - **When checkloop drives commits in a target repo, it never pushes.** The user reviews the scratch branch and decides. This is non-negotiable — preserve it in any change to the commit flow.
+
+## Documentation
+
+Checkloop's docs live in three places that each have a job: `README.md` (user-facing usage), the per-check `checks/*.md` and `prompt_templates/*.md` (the exact text sent to Claude), and this CONTRIBUTING (how work happens here).
+
+### One canonical home per concept — prefer linking over restating
+
+Each concept has one place that explains it in full; other docs point to that place rather than re-explaining it. The failure mode this prevents is drift: when the same fact lives in the README *and* a check body *and* here, a later edit updates one of them and the others quietly go stale, and the next reader who lands on a stale copy gets the wrong answer with no mechanical way to tell which copy is canonical.
+
+This is a **preference, not an absolute.** A brief orienting mention next to the link — naming the two or three items a reader needs right here, or a sentence of context so the pointer makes sense in place — is fine and often clearer than a bare "see X." What to avoid is the *full restatement*: the duplicated table, the re-explained multi-paragraph walkthrough, the second copy of a list that will drift from the first. As a concrete example, the "how a run works" walkthrough is owned by this file; the README gives the user-facing version and links across rather than maintaining a second authoritative copy of the same step sequence. When you're about to document something in a second file, ask whether a pointer (plus a sentence of local framing) would do — if so, write that instead of a fresh copy.
+
+### Document the why, not just the how
+
+Comments, docstrings, and commit bodies should capture the non-obvious **why** — a constraint, a rejected alternative, a workaround for a specific failure — not narrate the **what** (the code already shows that). The *how* is recoverable by reading the code; the *why* is gone forever if it isn't written down. The watchdog tier-3 policy is the model: the value of that comment is "every kill this cap produced was a false positive (PRs #18–#20)," not "this is the idle timeout." When you touch a file and can't answer "why is this shaped this way?" from its comments or git history, investigate (`git log`, the PR, the issue) before changing it, and record what you learned. This extends "Comments earn their place" above from *whether* to comment to *what* the comment must carry.
+
+## Deferred recommendations become tracked issues
+
+A finding from a review pass — or any out-of-scope idea that surfaces mid-change — that is genuinely useful but not being implemented now gets a GitHub issue filed before the PR merges, not dropped and not inlined as a `# TODO` that rots in the file. The decision is binary: useful and doing it now → ship it in the PR; useful but not now → file an issue (what, why, why-not-now, acceptance criteria, a link back to where it came from) and cite it in the PR; not useful → discard, and note the rejection in the PR so it isn't re-raised. The issue is the durable record; a PR summary or someone's memory is not.
 
 ## Where to read more
 
