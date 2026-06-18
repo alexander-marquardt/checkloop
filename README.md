@@ -160,7 +160,7 @@ uv run checkloop --dir ~/my-project --plan thorough --model sonnet
 | Check | Plan | Model | What it does |
 |-------|------|-------|-------------|
 | `test-fix` | bookend | sonnet | Runs the existing test suite and fixes any failures in source code. Always runs first. |
-| `readability` | basic | sonnet | Naming, function size, module/class docstrings for design strategy. Avoids rename churn. No behaviour changes. |
+| `readability` | basic | sonnet | Naming (fixes names that lie or are overloaded across layers; avoids cosmetic rename churn), function size, module/class docstrings for design strategy. No behaviour changes. |
 | `dry` | basic | sonnet | Finds repeated logic, extracts helpers, separates mixed concerns into focused modules. |
 | `tests` | basic | sonnet | Behaviour-driven tests for happy paths, edge cases, complex logic correctness. Unit tests with mocks, integration tests separately. |
 | `docs` | thorough | sonnet | README, config docs. Module-level docstrings for design strategy, class docstrings for intent. Function docstrings only where name+signature don't tell the full story. |
