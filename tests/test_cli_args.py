@@ -338,6 +338,17 @@ class TestResolveSelectedChecks:
         assert args.check_efforts["security"] == "xhigh"
         assert args.check_efforts["test-fix"] == "high"
 
+    def test_on_demand_super_exhaustive_check_keeps_its_model_and_effort(self) -> None:
+        # contributing-conformance is registered and lives only in
+        # super-exhaustive; run on-demand it must still resolve to its intended
+        # model/effort via the super-exhaustive fallback, not default to sonnet.
+        assert "contributing-conformance" in checks.CHECK_IDS
+        args = argparse.Namespace(
+            all_checks=False, checks=["contributing-conformance"], plan=None)
+        cli_args.resolve_selected_checks(args)
+        assert args.check_models["contributing-conformance"] == "claude-fable-5"
+        assert args.check_efforts["contributing-conformance"] == "xhigh"
+
 
 # =============================================================================
 # resolve_working_directory

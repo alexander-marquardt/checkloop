@@ -566,6 +566,83 @@ class TestPrintScratchBranchSummary:
         assert "<your-branch>" in out
 
 
+class TestPrintContributingAudit:
+    """Tests for _print_contributing_audit() conformance output surfacing."""
+
+    def test_missing_file_prints_nothing(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: "object",
+    ) -> None:
+        suite._print_contributing_audit(str(tmp_path), suite_start_time=0.0, dry_run=False)
+        assert capsys.readouterr().out == ""
+
+    def test_dry_run_prints_nothing(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: "object",
+    ) -> None:
+        audit = tmp_path / ".checkloop-contributing-audit.md"
+        audit.write_text("# CONTRIBUTING Conformance Audit\nViolations found: 1\n")
+        suite._print_contributing_audit(str(tmp_path), suite_start_time=0.0, dry_run=True)
+        assert capsys.readouterr().out == ""
+
+    def test_stale_file_is_skipped(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: "object",
+    ) -> None:
+        import os
+        audit = tmp_path / ".checkloop-contributing-audit.md"
+        audit.write_text("# Stale audit from earlier run\n")
+        old_mtime = audit.stat().st_mtime - 3600
+        os.utime(audit, (old_mtime, old_mtime))
+        suite._print_contributing_audit(str(tmp_path), suite_start_time=old_mtime + 60, dry_run=False)
+        assert capsys.readouterr().out == ""
+
+    def test_fresh_file_is_printed(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: "object",
+    ) -> None:
+        audit = tmp_path / ".checkloop-contributing-audit.md"
+        audit.write_text(
+            "# CONTRIBUTING Conformance Audit\nViolations found: 1\n\n"
+            "## Violation 1 — Studio rewrites an Engine value\n"
+        )
+        suite._print_contributing_audit(str(tmp_path), suite_start_time=0.0, dry_run=False)
+        out = capsys.readouterr().out
+        assert "CONTRIBUTING Conformance" in out
+        assert "Studio rewrites an Engine value" in out
+        assert ".checkloop-contributing-audit.md" in out
+
+
+class TestPostRunReviewPromptConformanceConditional:
+    """The CONTRIBUTING-conformance clause must be conditional on the audit file
+    existing, and — unlike the advisory meta-review clause — must instruct the
+    reviewer to evaluate and act on each flagged violation."""
+
+    def _capture(self, capsys: pytest.CaptureFixture[str], clone_dir: str) -> str:
+        suite._print_clone_review_via_claude(
+            clone_dir=clone_dir,
+            scratch_branch="main-cl-20260518",
+            base_short="abcdef123456",
+            pr_base="main",
+            original_workdir="/tmp/orig",
+        )
+        return capsys.readouterr().out
+
+    def test_clause_omitted_when_file_absent(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: Path,
+    ) -> None:
+        out = self._capture(capsys, str(tmp_path))
+        assert "checkloop-contributing-audit.md" not in out
+        assert "**Conformance**" not in out
+
+    def test_clause_included_and_actionable_when_file_present(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: Path,
+    ) -> None:
+        (tmp_path / ".checkloop-contributing-audit.md").write_text("# Audit\n", encoding="utf-8")
+        out = self._capture(capsys, str(tmp_path))
+        assert "checkloop-contributing-audit.md" in out
+        assert "**Conformance**" in out
+        # Actionable, not merely advisory: the reviewer must evaluate and gate.
+        assert "evaluate each flagged violation" in out
+        assert "do NOT adopt" in out
+
+
 class TestPrintRecommendations:
     """Tests for _print_recommendations() meta-review output surfacing."""
 
@@ -790,23 +867,25 @@ class TestPostRunReviewPromptRecommendationsConditional:
         capsys: pytest.CaptureFixture[str],
         tmp_path: Path,
     ) -> None:
-        """No file → no recommendations paragraph and a three-section summary."""
+        """No file → no recommendations paragraph; base summary sections only."""
         out = self._capture(capsys, str(tmp_path))
         assert "checkloop-recommendations.md" not in out
         assert "Recommended Follow-ups" not in out
-        assert "three sections" in out
-        assert "four sections" not in out
+        assert "**Conformance**" not in out
+        # Base sections are always present.
+        assert "**Accepted**" in out
+        assert "**Rejected**" in out
+        assert "**Deferred**" in out
 
     def test_clause_included_when_file_present(
         self,
         capsys: pytest.CaptureFixture[str],
         tmp_path: Path,
     ) -> None:
-        """File present → meta-review paragraph appears and the summary is
-        four sections including Recommended Follow-ups."""
+        """File present → meta-review paragraph appears and the summary gains a
+        Recommended Follow-ups section."""
         (tmp_path / ".checkloop-recommendations.md").write_text("# Recs\n", encoding="utf-8")
         out = self._capture(capsys, str(tmp_path))
         assert "checkloop-recommendations.md" in out
         assert "Recommended Follow-ups" in out
-        assert "four sections" in out
-        assert "three sections" not in out
+        assert "**Accepted**" in out  # base sections still present

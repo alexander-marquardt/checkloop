@@ -575,6 +575,7 @@ def _print_summary(outcomes: list[CheckOutcome], total_elapsed: str) -> None:
 
 _RECOMMENDATIONS_FILENAME = ".checkloop-recommendations.md"
 _COMMIT_AUDIT_FILENAME = ".checkloop-commit-audit.md"
+_CONTRIBUTING_AUDIT_FILENAME = ".checkloop-contributing-audit.md"
 
 # Matches lines like "Classification: B" in the commit-audit report. The check's
 # documented format (checks/commit-audit.md → step 3) writes one of A-G per commit.
@@ -668,6 +669,42 @@ def _print_recommendations(workdir: str, suite_start_time: float, dry_run: bool)
     print(f"\n{BOLD}{CYAN}{'─' * 72}{RESET}")
     print(f"{BOLD}{CYAN}  Meta-Review Recommendations{RESET}")
     print(f"{BOLD}{CYAN}{'─' * 72}{RESET}\n")
+    print(body.rstrip())
+    print(f"\n{DIM}(Saved to {path}){RESET}\n")
+
+
+def _print_contributing_audit(workdir: str, suite_start_time: float, dry_run: bool) -> None:
+    """Print the CONTRIBUTING-conformance audit if it was written during this run.
+
+    The ``contributing-conformance`` check writes
+    ``.checkloop-contributing-audit.md`` at the target project root only when it
+    found at least one violation of the project's own contributor rules.  We
+    surface the whole report in the terminal after the final summary so the
+    operator sees the flagged violations without remembering the filename, and
+    the clone-mode review prompt additionally tells the downstream review agent
+    to evaluate each one.  Only prints when the file's mtime is newer than
+    *suite_start_time*, to avoid resurfacing a stale report from an earlier run.
+    """
+    if dry_run:
+        return
+    path = Path(workdir) / _CONTRIBUTING_AUDIT_FILENAME
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        logger.debug("Could not stat %s: %s", path, exc)
+        return
+    if stat.st_mtime < suite_start_time:
+        return
+    try:
+        body = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        logger.warning("Could not read %s: %s", path, exc)
+        return
+    print(f"\n{BOLD}{YELLOW}{'─' * 72}{RESET}")
+    print(f"{BOLD}{YELLOW}  CONTRIBUTING Conformance — violations flagged for review{RESET}")
+    print(f"{BOLD}{YELLOW}{'─' * 72}{RESET}\n")
     print(body.rstrip())
     print(f"\n{DIM}(Saved to {path}){RESET}\n")
 
@@ -783,14 +820,17 @@ def _print_clone_review_via_claude(
     holds up — commits, opens a PR, and merges through the original repo's
     normal workflow.
 
-    The meta-review recommendations clause is included only when the
-    ``.checkloop-recommendations.md`` file is actually present in the clone —
-    otherwise the reviewer would be told to look for a file that was never
-    produced (the file only exists when the ``meta-review`` check ran, which
-    happens only in the ``super-exhaustive`` plan).
+    Two clauses are appended conditionally, each only when its report file is
+    actually present in the clone (so the reviewer is never sent after a file
+    that was never produced): the CONTRIBUTING-conformance clause — which tells
+    the reviewer to *evaluate and act on* each flagged violation, since a
+    confirmed house-rule violation is a reason to withhold or fix a change —
+    and the meta-review recommendations clause, which is purely advisory.
     """
     recommendations_path = Path(clone_dir) / _RECOMMENDATIONS_FILENAME
     recommendations_present = recommendations_path.is_file()
+    conformance_path = Path(clone_dir) / _CONTRIBUTING_AUDIT_FILENAME
+    conformance_present = conformance_path.is_file()
 
     review_prompt = (
         f"A checkloop run produced a scratch branch {scratch_branch} inside a "
@@ -823,6 +863,24 @@ def _print_clone_review_via_claude(
         f"from {clone_dir}.\n\n"
     )
 
+    # Conformance clause — actionable: the reviewer must evaluate each flagged
+    # violation and either fix the change to comply or drop it. Distinct from the
+    # advisory meta-review clause below, which proposes follow-up work to surface,
+    # not to act on.
+    if conformance_present:
+        review_prompt += (
+            f"This run audited its own diff against the project's contributor "
+            f"rules and recorded the violations it found in {conformance_path}. "
+            f"Read it and evaluate each flagged violation against the actual "
+            f"change and the rule it cites. For every violation you agree is "
+            f"real, do NOT adopt the offending change as-is — either rework it "
+            f"to comply with the rule before re-applying it, or drop it; for any "
+            f"you judge a false positive, say so and proceed. A confirmed "
+            f"CONTRIBUTING violation is not an optional style note — it is "
+            f"exactly what a human reviewer would block the merge on, so treat "
+            f"it as a gate on adopting that change.\n\n"
+        )
+
     if recommendations_present:
         review_prompt += (
             f"The meta-review check ran during this run and wrote "
@@ -832,28 +890,39 @@ def _print_clone_review_via_claude(
             f"follow-up work the suite did not do — so do not implement them "
             f"as part of this review unless I ask you to. Just surface the "
             f"contents in your final summary so I can decide.\n\n"
-            f"When you are done, print a summary with four sections: "
-            f"**Accepted** — for each change you re-applied, one bullet naming "
-            f"the file(s) or area touched, the new branch it landed on, and a "
-            f"one-line reason it was worth keeping; **Rejected** — for each "
-            f"change you skipped, one bullet naming the file(s) or area and a "
-            f"one-line reason it was wrong, redundant, or lower quality; "
-            f"**Deferred** — anything you were unsure about so I can decide; "
-            f"and **Recommended Follow-ups** — a condensed restatement of the "
-            f"meta-review recommendations from .checkloop-recommendations.md, "
-            f"so the recommendations carry forward into this session instead "
-            f"of staying behind in the clone."
         )
-    else:
-        review_prompt += (
-            f"When you are done, print a summary with three sections: "
-            f"**Accepted** — for each change you re-applied, one bullet naming "
-            f"the file(s) or area touched, the new branch it landed on, and a "
-            f"one-line reason it was worth keeping; **Rejected** — for each "
-            f"change you skipped, one bullet naming the file(s) or area and a "
-            f"one-line reason it was wrong, redundant, or lower quality; "
-            f"**Deferred** — anything you were unsure about so I can decide."
+
+    # Compose the closing summary from a base set of sections plus one optional
+    # section per report file present, so the section list always matches what
+    # the reviewer was actually asked to do.
+    sections = [
+        "**Accepted** — for each change you re-applied, one bullet naming the "
+        "file(s) or area touched, the new branch it landed on, and a one-line "
+        "reason it was worth keeping",
+        "**Rejected** — for each change you skipped, one bullet naming the "
+        "file(s) or area and a one-line reason it was wrong, redundant, or "
+        "lower quality",
+        "**Deferred** — anything you were unsure about so I can decide",
+    ]
+    if conformance_present:
+        sections.append(
+            "**Conformance** — for each violation in "
+            ".checkloop-contributing-audit.md, one bullet stating whether it "
+            "was real and, if so, what you did about it (reworked to comply, or "
+            "dropped the change), or why you overrode it as a false positive"
         )
+    if recommendations_present:
+        sections.append(
+            "**Recommended Follow-ups** — a condensed restatement of the "
+            "meta-review recommendations from .checkloop-recommendations.md, so "
+            "they carry forward into this session instead of staying behind in "
+            "the clone"
+        )
+    review_prompt += (
+        "When you are done, print a summary with these sections: "
+        + "; ".join(sections)
+        + "."
+    )
 
     print(f"  {BOLD}Next step — paste this into a Claude session in your original repo:{RESET}\n")
     print(f"  {DIM}cd {original_workdir} && claude{RESET}\n")
@@ -937,6 +1006,7 @@ def run_suite_with_error_handling(
         print_status(f"\nInterrupted after {elapsed}. Partial results may have been applied.", YELLOW)
         _print_summary(all_outcomes, elapsed)
         _print_commit_audit_highlight(workdir, suite_start_time, args.dry_run)
+        _print_contributing_audit(workdir, suite_start_time, args.dry_run)
         _print_recommendations(workdir, suite_start_time, args.dry_run)
         _print_scratch_branch_summary(
             workdir,
@@ -958,6 +1028,7 @@ def run_suite_with_error_handling(
         print_status(f"\nUnexpected error after {elapsed}. Partial results may have been applied.", RED)
         _print_summary(all_outcomes, elapsed)
         _print_commit_audit_highlight(workdir, suite_start_time, args.dry_run)
+        _print_contributing_audit(workdir, suite_start_time, args.dry_run)
         _print_recommendations(workdir, suite_start_time, args.dry_run)
         _print_scratch_branch_summary(
             workdir,
@@ -976,6 +1047,7 @@ def run_suite_with_error_handling(
     _print_summary(all_outcomes, suite_elapsed)
     print_banner(f"All done! ({suite_elapsed} total)", GREEN)
     _print_commit_audit_highlight(workdir, suite_start_time, args.dry_run)
+    _print_contributing_audit(workdir, suite_start_time, args.dry_run)
     _print_recommendations(workdir, suite_start_time, args.dry_run)
     _print_scratch_branch_summary(
         workdir,
