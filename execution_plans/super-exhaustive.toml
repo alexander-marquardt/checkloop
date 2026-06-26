@@ -207,6 +207,12 @@ idle_timeout = 600
 effort = "medium"
 
 [[checks]]
+id = "contributing-conformance"
+model = "claude-fable-5"
+idle_timeout = 1200
+effort = "xhigh"
+
+[[checks]]
 id = "meta-review"
 model = "claude-fable-5"
 idle_timeout = 1200

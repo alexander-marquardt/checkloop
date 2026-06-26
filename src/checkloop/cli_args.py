@@ -416,16 +416,21 @@ def resolve_selected_checks(args: argparse.Namespace) -> list[CheckDef]:
 
     # Build per-check model map from the plan config.
     # For checks added via --checks that are not in the active plan, fall back
-    # to the exhaustive plan's model assignment, then to "sonnet" as a safe
-    # default.  This prevents ad-hoc checks from inheriting the outer Claude
-    # Code session's model (which may be a non-standard cross-region profile).
+    # to the super-exhaustive plan's assignment, then to "sonnet" as a safe
+    # default.  super-exhaustive is the most complete plan (a strict superset of
+    # exhaustive), so an on-demand check such as `meta-review` or
+    # `contributing-conformance` — which live only in super-exhaustive — still
+    # gets its intended model/effort instead of silently dropping to sonnet.
+    # This also prevents ad-hoc checks from inheriting the outer Claude Code
+    # session's model (which may be a non-standard cross-region profile).
+    defaults_plan = PLAN_CONFIGS["super-exhaustive"]
     check_models: dict[str, str] = {}
     if plan_config:
         check_models = plan_config.model_map()
-    exhaustive_models = PLAN_CONFIGS["exhaustive"].model_map()
+    fallback_models = defaults_plan.model_map()
     for check_id in selected_ids:
         if check_id not in check_models:
-            check_models[check_id] = exhaustive_models.get(check_id, "sonnet")
+            check_models[check_id] = fallback_models.get(check_id, "sonnet")
     args.check_models = check_models
 
     # Per-check idle timeout overrides from plan files. Checks without an
@@ -433,10 +438,10 @@ def resolve_selected_checks(args: argparse.Namespace) -> list[CheckDef]:
     check_idle_timeouts: dict[str, int] = {}
     if plan_config:
         check_idle_timeouts = plan_config.idle_timeout_map()
-    exhaustive_timeouts = PLAN_CONFIGS["exhaustive"].idle_timeout_map()
+    fallback_timeouts = defaults_plan.idle_timeout_map()
     for check_id in selected_ids:
-        if check_id not in check_idle_timeouts and check_id in exhaustive_timeouts:
-            check_idle_timeouts[check_id] = exhaustive_timeouts[check_id]
+        if check_id not in check_idle_timeouts and check_id in fallback_timeouts:
+            check_idle_timeouts[check_id] = fallback_timeouts[check_id]
     args.check_idle_timeouts = check_idle_timeouts
 
     # Per-check effort overrides from plan files. Checks without one use the
@@ -444,10 +449,10 @@ def resolve_selected_checks(args: argparse.Namespace) -> list[CheckDef]:
     check_efforts: dict[str, str] = {}
     if plan_config:
         check_efforts = plan_config.effort_map()
-    exhaustive_efforts = PLAN_CONFIGS["exhaustive"].effort_map()
+    fallback_efforts = defaults_plan.effort_map()
     for check_id in selected_ids:
-        if check_id not in check_efforts and check_id in exhaustive_efforts:
-            check_efforts[check_id] = exhaustive_efforts[check_id]
+        if check_id not in check_efforts and check_id in fallback_efforts:
+            check_efforts[check_id] = fallback_efforts[check_id]
     args.check_efforts = check_efforts
 
     logger.info("Selected %d checks: %s", len(selected), [check["id"] for check in selected])
