@@ -39,6 +39,34 @@ class TestInvokeClaudeModelFallback:
         assert m.call_args.kwargs["model_fallbacks"] == []
 
 
+class TestInvokeClaudeEffort:
+    """Tests that _invoke_claude threads reasoning effort to run_claude."""
+
+    def test_per_check_effort_passed_through(self) -> None:
+        args = make_suite_args(dry_run=False)
+        with mock.patch.object(
+            check_runner, "run_claude", return_value=CheckResult(exit_code=0),
+        ) as m:
+            check_runner._invoke_claude("prompt", "/tmp", args, effort="xhigh")
+        assert m.call_args.kwargs["effort"] == "xhigh"
+
+    def test_global_effort_used_when_no_per_check(self) -> None:
+        args = make_suite_args(dry_run=False, effort="low")
+        with mock.patch.object(
+            check_runner, "run_claude", return_value=CheckResult(exit_code=0),
+        ) as m:
+            check_runner._invoke_claude("prompt", "/tmp", args)
+        assert m.call_args.kwargs["effort"] == "low"
+
+    def test_no_effort_anywhere_passes_none(self) -> None:
+        args = make_suite_args(dry_run=False)
+        with mock.patch.object(
+            check_runner, "run_claude", return_value=CheckResult(exit_code=0),
+        ) as m:
+            check_runner._invoke_claude("prompt", "/tmp", args)
+        assert m.call_args.kwargs["effort"] is None
+
+
 class TestRunSingleCheck:
     """Tests for run_single_check()."""
 

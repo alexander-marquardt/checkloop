@@ -45,6 +45,20 @@ class TestBuildClaudeCommand:
         cmd = process._build_claude_command("review 'code' with \"quotes\" & $vars", skip_permissions=False)
         assert "review 'code' with \"quotes\" & $vars" in cmd
 
+    def test_with_effort(self) -> None:
+        cmd = process._build_claude_command("review", skip_permissions=False, effort="xhigh")
+        assert cmd[cmd.index("--effort") + 1] == "xhigh"
+
+    def test_without_effort_omits_flag(self) -> None:
+        cmd = process._build_claude_command("review", skip_permissions=False)
+        assert "--effort" not in cmd
+
+    def test_model_and_effort_together(self) -> None:
+        cmd = process._build_claude_command(
+            "review", skip_permissions=True, model="opus", effort="medium")
+        assert cmd[cmd.index("--model") + 1] == "opus"
+        assert cmd[cmd.index("--effort") + 1] == "medium"
+
 
 class TestSanitizedEnv:
     """Tests for SANITIZED_ENV — environment stripping for subprocesses."""
@@ -1463,3 +1477,29 @@ class TestRunClaudeModelFallback:
             result = process.run_claude("p", "/tmp", model="claude-fable-5")
         assert result.model_unavailable is True
         assert m.call_count == 1
+
+    def test_effort_threaded_into_command(self) -> None:
+        with mock.patch.object(
+            process, "_execute_claude_process",
+            return_value=process.CheckResult(exit_code=0),
+        ) as m:
+            process.run_claude("p", "/tmp", model="opus", effort="medium")
+        cmd = m.call_args.args[0]
+        assert cmd[cmd.index("--effort") + 1] == "medium"
+
+    def test_effort_carried_into_fallback_command(self) -> None:
+        calls: list[list[str]] = []
+
+        def fake_exec(cmd: list[str], workdir: str, **_: object) -> process.CheckResult:
+            calls.append(cmd)
+            if "claude-fable-5" in cmd:
+                return process.CheckResult(exit_code=1, model_unavailable=True)
+            return process.CheckResult(exit_code=0)
+
+        with mock.patch.object(process, "_execute_claude_process", side_effect=fake_exec):
+            process.run_claude(
+                "p", "/tmp", model="claude-fable-5", model_fallbacks=["opus"], effort="xhigh")
+        # Both the primary and the fallback command carry the same effort.
+        assert calls[0][calls[0].index("--effort") + 1] == "xhigh"
+        assert calls[1][calls[1].index("--effort") + 1] == "xhigh"
+        assert "opus" in calls[1]

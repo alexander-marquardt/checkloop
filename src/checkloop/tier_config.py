@@ -13,6 +13,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+# Valid Claude effort levels accepted by the `claude` CLI's --effort flag.
+# An unknown value is ignored by the CLI (falls back to the default effort),
+# but we validate at plan-parse time so typos surface as a clear error rather
+# than silently running at the default.
+VALID_EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
+
+
 @dataclass(frozen=True)
 class PlanCheckEntry:
     """A single check entry within a plan, specifying the check ID and model."""
@@ -20,6 +27,7 @@ class PlanCheckEntry:
     id: str
     model: str
     idle_timeout: int | None = None  # Per-check idle timeout override (seconds)
+    effort: str | None = None  # Per-check reasoning effort (--effort); None = CLI default
 
 
 @dataclass(frozen=True)
@@ -41,6 +49,10 @@ class PlanConfig:
     def idle_timeout_map(self) -> dict[str, int]:
         """Return a mapping of check ID to idle timeout (only for checks with overrides)."""
         return {entry.id: entry.idle_timeout for entry in self.checks if entry.idle_timeout is not None}
+
+    def effort_map(self) -> dict[str, str]:
+        """Return a mapping of check ID to effort level (only for checks that set one)."""
+        return {entry.id: entry.effort for entry in self.checks if entry.effort is not None}
 
 
 # Pre-populated plan names, matching the TOML filenames in execution_plans/.
@@ -95,13 +107,21 @@ def _parse_plan_toml(data: dict[str, object]) -> PlanConfig:
         check_id = item.get("id")
         model = item.get("model", "sonnet")
         idle_timeout = item.get("idle_timeout")
+        effort = item.get("effort")
         if not isinstance(check_id, str) or not check_id:
             raise ValueError("Each [[checks]] entry must have a non-empty 'id'")
         if not isinstance(model, str) or not model:
             raise ValueError(f"Check '{check_id}' has invalid 'model' value")
         if idle_timeout is not None and not isinstance(idle_timeout, int):
             raise ValueError(f"Check '{check_id}' has invalid 'idle_timeout' value (must be integer)")
-        entries.append(PlanCheckEntry(id=check_id, model=model, idle_timeout=idle_timeout))
+        if effort is not None and effort not in VALID_EFFORT_LEVELS:
+            raise ValueError(
+                f"Check '{check_id}' has invalid 'effort' value {effort!r} "
+                f"(must be one of {', '.join(VALID_EFFORT_LEVELS)})"
+            )
+        entries.append(
+            PlanCheckEntry(id=check_id, model=model, idle_timeout=idle_timeout, effort=effort)
+        )
 
     return PlanConfig(name=name, description=description, checks=entries)
 

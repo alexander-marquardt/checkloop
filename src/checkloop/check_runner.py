@@ -181,10 +181,13 @@ def _invoke_claude(
     *,
     model: str | None = None,
     idle_timeout_override: int | None = None,
+    effort: str | None = None,
     raw_log_file: IO[bytes] | None = None,
 ) -> CheckResult:
     effective_model = model or getattr(args, "model", None)
     effective_idle_timeout = idle_timeout_override if idle_timeout_override is not None else args.idle_timeout
+    # Per-check effort, with a global --effort override taking precedence.
+    effective_effort = effort or getattr(args, "effort", None)
     claude_cmd = getattr(args, "claude_command", "claude")
     # When a per-check model is gated for this account/region (e.g. Fable is
     # not available everywhere), fall back to a still-available model rather
@@ -205,6 +208,7 @@ def _invoke_claude(
         system_free_floor_mb=getattr(args, "system_free_floor_mb", 0),
         model=effective_model,
         model_fallbacks=model_fallbacks,
+        effort=effective_effort,
         claude_command=claude_cmd,
         raw_log_file=raw_log_file,
     )
@@ -308,6 +312,7 @@ def run_single_check(
     cycle: int = 1,
     model: str | None = None,
     idle_timeout_override: int | None = None,
+    effort: str | None = None,
 ) -> CheckOutcome:
     """Execute a single check.
 
@@ -365,7 +370,8 @@ def run_single_check(
     try:
         result = _invoke_claude(
             prompt, workdir, args,
-            model=model, idle_timeout_override=idle_timeout_override, raw_log_file=raw_log,
+            model=model, idle_timeout_override=idle_timeout_override, effort=effort,
+            raw_log_file=raw_log,
         )
     except Exception as exc:
         logger.error("Check '%s' raised an unexpected exception: %s", check["id"], exc, exc_info=True)

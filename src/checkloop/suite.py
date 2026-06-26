@@ -317,7 +317,9 @@ def _run_single_cycle(
     outcomes: list[CheckOutcome] = []
     check_models: dict[str, str] = getattr(args, "check_models", {})
     check_idle_timeouts: dict[str, int] = getattr(args, "check_idle_timeouts", {})
+    check_efforts: dict[str, str] = getattr(args, "check_efforts", {})
     global_model: str | None = getattr(args, "model", None)
+    global_effort: str | None = getattr(args, "effort", None)
     for i, check in enumerate(active_checks[start_index:], start=start_index):
         # Only pause between checks, not before the first one we actually run.
         if i > start_index:
@@ -330,6 +332,8 @@ def _run_single_cycle(
         per_check_model = global_model or check_models.get(check["id"])
         # Per-check idle timeout override, falling back to global --idle-timeout.
         per_check_idle_timeout = check_idle_timeouts.get(check["id"])
+        # Per-check effort from tier config, overridden by --effort if specified.
+        per_check_effort = global_effort or check_efforts.get(check["id"])
         # Refresh the project map in case the previous check added, renamed,
         # or removed files.  ensure_project_map is a cheap fingerprint-compare
         # no-op when git ls-files is unchanged and only regenerates when the
@@ -347,6 +351,7 @@ def _run_single_cycle(
             check, workdir, args, step_label,
             is_git=is_git, cycle=cycle, model=per_check_model,
             idle_timeout_override=per_check_idle_timeout,
+            effort=per_check_effort,
         )
         outcomes.append(outcome)
         if outcome.made_changes:

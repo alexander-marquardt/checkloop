@@ -155,6 +155,24 @@ uv run checkloop --dir ~/my-project --plan thorough --model opus
 uv run checkloop --dir ~/my-project --plan thorough --model sonnet
 ```
 
+## Per-Check Reasoning Effort
+
+Separately from the model, each check can set a **reasoning effort** level (`low`, `medium`, `high`, `xhigh`, `max`) via an `effort` key in the plan file — passed straight through to the `claude` CLI's `--effort` flag. Effort controls how much the model thinks and how many tool calls it makes; it is *not* monotonic (cranking everything to `max` tends to overthink and rarely beats `xhigh` for these task shapes), so the plans tune it per check rather than running everything at the CLI default:
+
+- **`medium`** — the mechanical, pattern-matching checks (readability, DRY, idiomatic, docs, types, deps, logging, etc.). These don't need deep deliberation, so `medium` saves tokens and time at little cost to recall. This is the bulk of every run.
+- **`high`** — the deeper Opus reasoning checks (perf, edge-cases, concurrency-testing, observability) and the `test-fix` bookend.
+- **`xhigh`** — the correctness-critical and source-of-truth checks where extra deliberation earns its keep: `security`, `concurrency`, and the boundary cluster (`architecture-boundaries`, `derived-values`, `coherence`, `meta-review`).
+
+Checks that set no `effort` use the CLI default. The `--effort <level>` flag overrides every check at once — `--effort medium` for a fast, cheap pass, `--effort xhigh` to push the whole suite deeper:
+
+```bash
+# Plan defaults: medium for mechanical checks, high/xhigh for the reasoning ones
+uv run checkloop --dir ~/my-project --plan thorough
+
+# Force a fast, cheaper pass — every check at medium effort
+uv run checkloop --dir ~/my-project --plan thorough --effort medium
+```
+
 ## Available Checks
 
 | Check | Plan | Model | What it does |
@@ -198,7 +216,7 @@ uv run checkloop --dir ~/my-project --plan thorough --model sonnet
 
 ## Writing Your Own Plan Files
 
-You can write your own plan files to define any combination of checks and model assignments. A plan file is a TOML file:
+You can write your own plan files to define any combination of checks, model assignments, and effort levels. A plan file is a TOML file. Each `[[checks]]` entry takes an `id` (required), a `model`, an optional `idle_timeout` (seconds), and an optional `effort` (`low`/`medium`/`high`/`xhigh`/`max`); omitted fields use sensible defaults:
 
 ```toml
 [tier]
@@ -208,22 +226,27 @@ description = "Security-focused review with deep analysis"
 [[checks]]
 id = "test-fix"
 model = "sonnet"
+effort = "high"
 
 [[checks]]
 id = "security"
 model = "opus"
+effort = "xhigh"
 
 [[checks]]
 id = "concurrency"
 model = "opus"
+effort = "xhigh"
 
 [[checks]]
 id = "edge-cases"
 model = "opus"
+effort = "high"
 
 [[checks]]
 id = "test-validate"
 model = "sonnet"
+effort = "medium"
 ```
 
 Point `--plan` at it:

@@ -27,7 +27,13 @@ from checkloop.checks import (
     TIER_THOROUGH,
     TIERS,
 )
-from checkloop.tier_config import BUILTIN_PLAN_NAMES, PlanConfig, load_builtin_plan, load_plan_file
+from checkloop.tier_config import (
+    BUILTIN_PLAN_NAMES,
+    VALID_EFFORT_LEVELS,
+    PlanConfig,
+    load_builtin_plan,
+    load_plan_file,
+)
 from checkloop.git import (
     build_changed_files_prefix,
     detect_default_branch,
@@ -183,6 +189,14 @@ def build_argument_parser() -> argparse.ArgumentParser:
             "Claude model override for ALL checks. Accepts aliases (e.g. 'sonnet', 'opus') "
             "or full model IDs (e.g. 'claude-sonnet-4-6'). When omitted, each check uses "
             "the model specified in the plan file."
+        ),
+    )
+    parser.add_argument(
+        "--effort", default=None, choices=list(VALID_EFFORT_LEVELS), metavar="LEVEL",
+        help=(
+            "Reasoning-effort override for ALL checks (low, medium, high, xhigh, max). "
+            "When omitted, each check uses the effort specified in the plan file, or the "
+            "claude CLI default when the plan sets none."
         ),
     )
     parser.add_argument(
@@ -425,10 +439,23 @@ def resolve_selected_checks(args: argparse.Namespace) -> list[CheckDef]:
             check_idle_timeouts[check_id] = exhaustive_timeouts[check_id]
     args.check_idle_timeouts = check_idle_timeouts
 
+    # Per-check effort overrides from plan files. Checks without one use the
+    # claude CLI default effort (unless --effort overrides all checks).
+    check_efforts: dict[str, str] = {}
+    if plan_config:
+        check_efforts = plan_config.effort_map()
+    exhaustive_efforts = PLAN_CONFIGS["exhaustive"].effort_map()
+    for check_id in selected_ids:
+        if check_id not in check_efforts and check_id in exhaustive_efforts:
+            check_efforts[check_id] = exhaustive_efforts[check_id]
+    args.check_efforts = check_efforts
+
     logger.info("Selected %d checks: %s", len(selected), [check["id"] for check in selected])
     logger.info("Per-check models: %s", check_models)
     if check_idle_timeouts:
         logger.info("Per-check idle timeouts: %s", check_idle_timeouts)
+    if check_efforts:
+        logger.info("Per-check efforts: %s", check_efforts)
     return selected
 
 

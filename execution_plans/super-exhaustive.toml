@@ -6,173 +6,208 @@ description = "Everything in exhaustive plus infrastructure audits (check-config
 id = "test-fix"
 model = "sonnet"
 idle_timeout = 600
+effort = "high"
 
 [[checks]]
 id = "check-config"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"
 
 [[checks]]
 id = "readability"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"
 
 [[checks]]
 id = "dry"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"
 
 [[checks]]
 id = "dead-code"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"
 
 [[checks]]
 id = "tests"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"
 
 [[checks]]
 id = "fixture-drift"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"
 
 [[checks]]
 id = "docs"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"
 
 [[checks]]
 id = "docs-accuracy"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"
 
 [[checks]]
 id = "security"
 model = "opus"
 idle_timeout = 900
+effort = "xhigh"
 
 [[checks]]
 id = "secret-leakage"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"
 
 [[checks]]
 id = "schema-validation"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"
 
 [[checks]]
 id = "perf"
 model = "opus"
 idle_timeout = 900
+effort = "high"
 
 [[checks]]
 id = "errors"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"
 
 [[checks]]
 id = "types"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"
 
 [[checks]]
 id = "derived-values"
 model = "claude-fable-5"
 idle_timeout = 1200
+effort = "xhigh"
 
 [[checks]]
 id = "architecture-boundaries"
 model = "claude-fable-5"
 idle_timeout = 1200
+effort = "xhigh"
 
 [[checks]]
 id = "edge-cases"
 model = "opus"
 idle_timeout = 900
+effort = "high"
 
 [[checks]]
 id = "complexity"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"
 
 [[checks]]
 id = "idiomatic"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"
 
 [[checks]]
 id = "deps"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"
 
 [[checks]]
 id = "logging"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"
 
 [[checks]]
 id = "observability"
 model = "opus"
 idle_timeout = 900
+effort = "high"
 
 [[checks]]
 id = "concurrency"
 model = "opus"
 idle_timeout = 900
+effort = "xhigh"
 
 [[checks]]
 id = "concurrency-testing"
 model = "opus"
 idle_timeout = 900
+effort = "high"
 
 [[checks]]
 id = "feature-flags"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"
 
 [[checks]]
 id = "accessibility"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"
 
 [[checks]]
 id = "api-design"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"
 
 [[checks]]
 id = "rationale"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"
 
 [[checks]]
 id = "cleanup-ai-slop"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"
 
 [[checks]]
 id = "coherence"
 model = "claude-fable-5"
 idle_timeout = 1200
+effort = "xhigh"
 
 [[checks]]
 id = "tests-for-diff"
 model = "sonnet"
 idle_timeout = 900
+effort = "medium"
 
 [[checks]]
 id = "test-validate"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"
 
 [[checks]]
 id = "commit-audit"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"
 
 [[checks]]
 id = "meta-review"
 model = "claude-fable-5"
 idle_timeout = 1200
+effort = "xhigh"
