@@ -76,6 +76,16 @@ class TestBuildArgumentParser:
         ns = _parse_cli(["--idle-timeout", "300"])
         assert ns.idle_timeout == 300
 
+    def test_effort_default_none(self) -> None:
+        assert _parse_cli([]).effort is None
+
+    def test_effort_valid_value(self) -> None:
+        assert _parse_cli(["--effort", "medium"]).effort == "medium"
+
+    def test_effort_invalid_value_rejected(self) -> None:
+        with pytest.raises(SystemExit):
+            cli_args.build_argument_parser().parse_args(["--dir", "/tmp", "--effort", "bogus"])
+
     def test_dry_run(self) -> None:
         ns = _parse_cli(["--dry-run"])
         assert ns.dry_run is True
@@ -318,6 +328,15 @@ class TestResolveSelectedChecks:
         result = cli_args.resolve_selected_checks(args)
         expected_ids = set(checks.TIERS[checks.DEFAULT_TIER])
         assert {p["id"] for p in result} == expected_ids
+
+    def test_check_efforts_populated_from_plan(self) -> None:
+        args = argparse.Namespace(all_checks=False, checks=None, plan="thorough")
+        cli_args.resolve_selected_checks(args)
+        # Mechanical check → medium; boundary/security clusters → xhigh.
+        assert args.check_efforts["readability"] == "medium"
+        assert args.check_efforts["architecture-boundaries"] == "xhigh"
+        assert args.check_efforts["security"] == "xhigh"
+        assert args.check_efforts["test-fix"] == "high"
 
 
 # =============================================================================

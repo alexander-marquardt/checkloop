@@ -6,23 +6,28 @@ description = "Core code quality — readability, DRY, tests"
 id = "test-fix"
 model = "sonnet"
 idle_timeout = 600
+effort = "high"
 
 [[checks]]
 id = "readability"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"
 
 [[checks]]
 id = "dry"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"
 
 [[checks]]
 id = "tests"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"
 
 [[checks]]
 id = "test-validate"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"

@@ -6,83 +6,100 @@ description = "Basic plus docs, docs-accuracy, security, performance, error hand
 id = "test-fix"
 model = "sonnet"
 idle_timeout = 600
+effort = "high"
 
 [[checks]]
 id = "readability"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"
 
 [[checks]]
 id = "dry"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"
 
 [[checks]]
 id = "idiomatic"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"
 
 [[checks]]
 id = "tests"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"
 
 [[checks]]
 id = "docs"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"
 
 [[checks]]
 id = "docs-accuracy"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"
 
 [[checks]]
 id = "security"
 model = "opus"
 idle_timeout = 900
+effort = "xhigh"
 
 [[checks]]
 id = "perf"
 model = "opus"
 idle_timeout = 900
+effort = "high"
 
 [[checks]]
 id = "errors"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"
 
 [[checks]]
 id = "types"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"
 
 [[checks]]
 id = "derived-values"
 model = "claude-fable-5"
 idle_timeout = 1200
+effort = "xhigh"
 
 [[checks]]
 id = "architecture-boundaries"
 model = "claude-fable-5"
 idle_timeout = 1200
+effort = "xhigh"
 
 [[checks]]
 id = "coherence"
 model = "claude-fable-5"
 idle_timeout = 1200
+effort = "xhigh"
 
 [[checks]]
 id = "tests-for-diff"
 model = "sonnet"
 idle_timeout = 900
+effort = "medium"
 
 [[checks]]
 id = "test-validate"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"
 
 [[checks]]
 id = "commit-audit"
 model = "sonnet"
 idle_timeout = 600
+effort = "medium"

@@ -191,12 +191,15 @@ def _build_claude_command(
     skip_permissions: bool,
     model: str | None = None,
     claude_command: str = DEFAULT_CLAUDE_COMMAND,
+    effort: str | None = None,
 ) -> list[str]:
     cmd = [claude_command]
     if skip_permissions:
         cmd.append("--dangerously-skip-permissions")
     if model:
         cmd += ["--model", model]
+    if effort:
+        cmd += ["--effort", effort]
     cmd += ["-p", prompt, "--output-format", "stream-json", "--verbose"]
     return cmd
 
@@ -1089,6 +1092,7 @@ def run_claude(
     system_free_floor_mb: int = DEFAULT_SYSTEM_FREE_FLOOR_MB,
     model: str | None = None,
     model_fallbacks: list[str] | None = None,
+    effort: str | None = None,
     claude_command: str = DEFAULT_CLAUDE_COMMAND,
     raw_log_file: IO[bytes] | None = None,
 ) -> CheckResult:
@@ -1118,10 +1122,11 @@ def run_claude(
         the reason (``KILL_REASON_MEMORY``, ``KILL_REASON_TIMEOUT``, or
         ``KILL_REASON_IDLE``).
     """
-    cmd = _build_claude_command(prompt, skip_permissions, model, claude_command)
-    logger.info("run_claude: workdir=%s, prompt_len=%d, skip_permissions=%s, model=%s, idle_timeout=%d, "
-                "check_timeout=%d, max_memory_mb=%d",
-                workdir, len(prompt), skip_permissions, model, idle_timeout, check_timeout, max_memory_mb)
+    cmd = _build_claude_command(prompt, skip_permissions, model, claude_command, effort)
+    logger.info("run_claude: workdir=%s, prompt_len=%d, skip_permissions=%s, model=%s, effort=%s, "
+                "idle_timeout=%d, check_timeout=%d, max_memory_mb=%d",
+                workdir, len(prompt), skip_permissions, model, effort, idle_timeout, check_timeout,
+                max_memory_mb)
     logger.debug("run_claude prompt: %.1000s", prompt)
     p_idx = cmd.index("-p") if "-p" in cmd else len(cmd)
     print_status(f"$ {' '.join(cmd[:p_idx])} -p [prompt omitted]", DIM)
@@ -1144,7 +1149,8 @@ def run_claude(
         if attempt_model == model:
             attempt_cmd = cmd
         else:
-            attempt_cmd = _build_claude_command(prompt, skip_permissions, attempt_model, claude_command)
+            attempt_cmd = _build_claude_command(
+                prompt, skip_permissions, attempt_model, claude_command, effort)
             a_idx = attempt_cmd.index("-p") if "-p" in attempt_cmd else len(attempt_cmd)
             print_status(f"$ {' '.join(attempt_cmd[:a_idx])} -p [prompt omitted]", DIM)
         result = _execute_claude_process(
