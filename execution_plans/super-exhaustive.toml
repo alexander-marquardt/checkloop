@@ -1,6 +1,6 @@
 [tier]
 name = "super-exhaustive"
-description = "Everything in exhaustive plus infrastructure audits (check-config, dead-code, observability, schema-validation, secret-leakage, feature-flags, fixture-drift) and a final meta-review that writes recommendations for checks to consider next. Meant for occasional deep audits, not every run. Note: migration-safety is available as an on-demand check (--checks migration-safety) for projects with SQL/relational migrations, but is not included in any default plan."
+description = "Everything in exhaustive plus infrastructure audits (check-config, dead-code, observability, schema-validation, secret-leakage, feature-flags, fixture-drift), a recurring-issues audit that mines GitHub issue/PR history for repeated defect classes, and a final meta-review that writes recommendations for checks to consider next. Meant for occasional deep audits, not every run. Note: migration-safety is available as an on-demand check (--checks migration-safety) for projects with SQL/relational migrations, but is not included in any default plan."
 
 [[checks]]
 id = "test-fix"
@@ -208,6 +208,12 @@ effort = "medium"
 
 [[checks]]
 id = "contributing-conformance"
+model = "claude-fable-5"
+idle_timeout = 1200
+effort = "xhigh"
+
+[[checks]]
+id = "recurring-issues"
 model = "claude-fable-5"
 idle_timeout = 1200
 effort = "xhigh"
