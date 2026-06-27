@@ -122,7 +122,7 @@ Execution plans are TOML files that define which checks to run and which model t
 | **basic** (default) | 5 checks | Core code quality — readability, DRY, tests (plus test-fix/test-validate bookends) |
 | **thorough** | 17 checks | Adds docs, docs-accuracy, security, performance, error handling, type safety, derived-value consistency, architecture layer separation, idiomatic implementation, cross-check coherence, a post-modification `tests-for-diff` pass, and a final `commit-audit` advisory |
 | **exhaustive** | 27 checks | Everything in thorough — includes edge cases, complexity, idiomatic implementation, deps, logging, concurrency, concurrency test coverage, a11y, API design, rationale capture, and code cleanup |
-| **super-exhaustive** | 36 checks | Exhaustive plus infrastructure audits (check-config, dead-code, observability, schema-validation, secret-leakage, feature-flags, fixture-drift), a **contributing-conformance** audit (checks this run's diff against the target project's own `CONTRIBUTING.md`/`CLAUDE.md` rules), and a final **meta-review** that writes a recommendations report. Meant for occasional deep audits. |
+| **super-exhaustive** | 37 checks | Exhaustive plus infrastructure audits (check-config, dead-code, observability, schema-validation, secret-leakage, feature-flags, fixture-drift), a **contributing-conformance** audit (checks this run's diff against the target project's own `CONTRIBUTING.md`/`CLAUDE.md` rules), a **recurring-issues** audit (mines GitHub issue/PR history for repeated defect classes), and a final **meta-review** that writes a recommendations report. Meant for occasional deep audits. |
 
 > `migration-safety` is shipped as an on-demand check, not included in any default plan. Run it with `--checks migration-safety` for projects that have SQL/relational migrations (Postgres, MySQL, etc.), or add it to your own plan file. It is excluded from the defaults because most projects either have no migrations directory or use schemaless stores (Elasticsearch, document DBs) where the audit doesn't apply.
 
@@ -136,7 +136,7 @@ Each plan file specifies which Claude model to use for each check. The pre-popul
 
 - **Sonnet** (faster, used for most checks) — pattern-matching tasks like readability, DRY, tests, docs, docs-accuracy, error handling, types, complexity, deps, logging, accessibility, API design, and code cleanup.
 - **Opus** (deeper reasoning, used selectively) — multi-layer analysis tasks like security, concurrency, concurrency test coverage, performance, and edge cases, where subtle issues span multiple code layers. Security checks stay on Opus deliberately — Fable's cyber safety classifiers can decline a security-focused prompt and return an empty result.
-- **Fable 5** (`claude-fable-5` — deepest reasoning, used for the cross-cutting boundary checks) — the whole-codebase, source-of-truth analyses where layer boundaries are at stake: `architecture-boundaries`, `derived-values`, `coherence`, and `meta-review`. These reason about which layer *owns* a value (e.g. a frontend that should consume a backend-computed value rather than re-derive it), where the extra capability most changes the verdict. Fable costs roughly 2.6× Opus per check and runs longer turns (hence the larger idle timeouts on those checks), so it is reserved for this cluster rather than applied across the board.
+- **Fable 5** (`claude-fable-5` — deepest reasoning, used for the cross-cutting boundary checks) — the whole-codebase, source-of-truth analyses where layer boundaries are at stake: `architecture-boundaries`, `derived-values`, `coherence`, and the deep advisory passes `meta-review` and `recurring-issues`. These reason about which layer *owns* a value (e.g. a frontend that should consume a backend-computed value rather than re-derive it), where the extra capability most changes the verdict. Fable costs roughly 2.6× Opus per check and runs longer turns (hence the larger idle timeouts on those checks), so it is reserved for this cluster rather than applied across the board.
 
 ### Automatic model fallback
 
@@ -161,7 +161,7 @@ Separately from the model, each check can set a **reasoning effort** level (`low
 
 - **`medium`** — the mechanical, pattern-matching checks (readability, DRY, idiomatic, docs, types, deps, logging, etc.). These don't need deep deliberation, so `medium` saves tokens and time at little cost to recall. This is the bulk of every run.
 - **`high`** — the deeper Opus reasoning checks (perf, edge-cases, concurrency-testing, observability) and the `test-fix` bookend.
-- **`xhigh`** — the correctness-critical and source-of-truth checks where extra deliberation earns its keep: `security`, `concurrency`, and the boundary cluster (`architecture-boundaries`, `derived-values`, `coherence`, `meta-review`).
+- **`xhigh`** — the correctness-critical and source-of-truth checks where extra deliberation earns its keep: `security`, `concurrency`, and the boundary and deep-advisory cluster (`architecture-boundaries`, `derived-values`, `coherence`, `meta-review`, `recurring-issues`).
 
 Checks that set no `effort` use the CLI default. The `--effort <level>` flag overrides every check at once — `--effort medium` for a fast, cheap pass, `--effort xhigh` to push the whole suite deeper:
 
@@ -213,6 +213,7 @@ uv run checkloop --dir ~/my-project --plan thorough --effort medium
 | `feature-flags` | super-exhaustive | sonnet | Finds ghost flags (referenced, not defined), orphan flags (defined, not referenced), fully-rolled-out flags with dormant branches, and conflicting flag gates. |
 | `fixture-drift` | super-exhaustive | sonnet | Finds test mocks and recorded fixtures that no longer match the real code or external APIs — silently-passing mocks, deep-chain patches, stale HTTP recordings, leaking mocks without teardown. |
 | `contributing-conformance` | super-exhaustive | fable | Reads the target project's own contributor rules **in full** (`CONTRIBUTING.md`, `CLAUDE.md`, `AGENTS.md`, …) and audits this run's diff against them — the project-specific rules the generic suite can't know, including the ones buried past the rule-injection size cap. Scoped to diff-relevant rules (ignores process/CI/merge-procedure guidance). Writes violations to `.checkloop-contributing-audit.md` when any are found; the post-run review prompt tells the adopting agent to evaluate and act on each. Advisory — no code changes. Self-skips when the project has no such files. |
+| `recurring-issues` | super-exhaustive | fable | Mines the project's GitHub issue/PR history (via `gh`) for defect classes that keep coming back — reopened issues, revert chains, repeated regressions in one area — clusters them with citing issue/PR numbers, and for each cluster specifies the regression test that would have caught it (plus an advisory architectural note when a test alone won't fix it). Writes `.checkloop-recurring-issues.md`. Advisory — no code changes. Self-skips when `gh` is unavailable/unauthenticated or the repo has no GitHub remote. |
 | `meta-review` | super-exhaustive | fable | Reads the codebase and the set of existing checks, then writes `.checkloop-recommendations.md` with prioritised suggestions for domain-specific checks or tests that the generic suite doesn't cover. No code changes. The report is printed to the terminal after the run completes. |
 
 ## Writing Your Own Plan Files
@@ -569,6 +570,8 @@ checks/                   # Check definitions — one Markdown file per check
 ├── migration-safety.md
 ├── feature-flags.md
 ├── fixture-drift.md
+├── contributing-conformance.md
+├── recurring-issues.md
 └── meta-review.md
 
 execution_plans/          # Execution plans — which checks to run, which model for each
