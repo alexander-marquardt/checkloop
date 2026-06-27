@@ -30,6 +30,8 @@ Scan the repository and its built output for secrets, credentials, tokens, and p
 
    Fix: mask or truncate. `Bearer sk_live_abc...` becomes `Bearer sk_live_***`. Full email `user@example.com` becomes `u***@example.com`. If the log statement exists only to help debug a one-time incident and no longer serves a purpose, delete it (coordinate with the `logging` check).
 
+   **Redact the whole structure, not just the field you noticed — and find its copies.** When a logged or returned structure carries one sensitive field, enumerate *every* field of that structure before deciding the fix is done: an error object that exposes a `stack_frame` very often also exposes `exception_message`, `file_path`, `args`, `locals`, and a handful of siblings, and the same payload is frequently copied into a second place — a `trace_spans` entry, a diagnostics blob, an analytics event, a duplicate serializer. Fixing the one field you spotted and leaving the siblings and the copy is a leak that now *reads* as fixed, which is worse than an obvious one. Apply the mask across all fields, then grep for other constructions of the same structure and fix those too.
+
 4. **Client-bundle scan.** For any frontend build, check that server-only secrets don't end up in the browser bundle:
    - Framework rules: Next.js requires `NEXT_PUBLIC_` prefix to expose env vars — flag any server-side secret being read via that prefix. Vite requires `VITE_`. Create-React-App requires `REACT_APP_`.
    - If `dist/`, `build/`, or `.next/static/` exists, grep it for the same secret patterns as step 1. Any hit is a leak.
@@ -42,5 +44,6 @@ Scan the repository and its built output for secrets, credentials, tokens, and p
 - Do NOT commit the secret to a "secret scanner config" file or a test — that's still leakage.
 - Do NOT add blanket masking at every log site; fix the specific statements that carry sensitive data.
 - Do NOT delete a log statement that genuinely helps with operational debugging — mask the sensitive parts and keep the line.
+- Do NOT assert completeness you have not verified. A commit message or comment that says "never ships an absolute server path" or "no PII reaches the response" is a false guarantee unless you enumerated every field of the affected structure (and its copies) and confirmed it. State only what you checked.
 
 Run the test suite after changes. Report: secrets found (with file paths), logs masked, client-bundle leaks, and any secrets that require rotation.
