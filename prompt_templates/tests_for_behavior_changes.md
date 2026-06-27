@@ -7,7 +7,7 @@ This is not a stylistic preference. CI does not catch "no test for new behavior"
 How to apply:
 1. Before changing code, look for the existing test that covers the current behavior. If none exists, write one against today's behavior so the gap is visible in the diff.
 2. Make the code change.
-3. Update or add tests so they pass against the new behavior, and would have failed against the old one. Use the project's existing test framework — do not introduce a new one.
+3. Update or add tests so they pass against the new behavior, and would have failed against the old one. The test must actually *bite*: assert the mechanism that changed, not an incidental property that was already true — a memoization fix is pinned by asserting the work happens exactly once (a call counter), not by asserting two calls return equal values, which held before the fix too. A test that would pass both before and after the change pins nothing. Use the project's existing test framework — do not introduce a new one.
 4. Run the **full** test suite locally — not just the new test you wrote — and confirm it is green before committing. If a test that was passing before your changes now fails, you MUST either fix the regression in this same commit or roll back the change. Do not commit a broken intermediate state. Other commits later in this run will assume each prior commit was tested and green; a broken commit in the middle of the series leaves every subsequent commit unbisectable and forces the human reviewer to manually identify which commits introduced and fixed the failure.
 5. Stage and commit code and tests together. Do not split them into separate commits, and do not leave the test for a follow-up commit.
 

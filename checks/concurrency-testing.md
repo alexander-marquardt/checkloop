@@ -17,6 +17,7 @@ If these tests are missing or clearly insufficient for the project's domain, wri
 - Spawn a realistic number of concurrent workers (10-50 threads or async tasks is usually enough to surface races — don't go to thousands, this is a correctness test, not a load test).
 - Target the actual code paths that handle shared mutable state (database writes, cache updates, queue operations), not just read-only endpoints.
 - Assert on correctness invariants: final inventory count matches (initial - number of successful purchases), account balances sum to zero, no duplicate bookings for the same slot.
+- Actually exercise the race they claim to guard. A concurrency test that still passes when the protection (lock, transaction, unique constraint, atomic operation) is removed is testing nothing — make sure the assertions would surface the race the test name claims to cover, not just that the happy path completes.
 - Be deterministic and CI-friendly — no external service dependencies that aren't already in the test setup, no hardcoded ports, skip gracefully if required services aren't available.
 - Be clearly named and documented so their purpose is obvious (e.g., test_concurrent_checkout_does_not_oversell, test_parallel_balance_transfers_preserve_total).
 
