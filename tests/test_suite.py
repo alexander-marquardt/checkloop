@@ -841,6 +841,16 @@ class TestPostRunReviewPromptStandardsCoverage:
         out = self._capture(capsys)
         assert "README.md" in out
 
+    def test_pr_body_attribution_clause(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Opening a PR is where attribution leaks: CI attribution checks often
+        scan only commit messages, so a 'Generated with ...' footer in the PR
+        body sails through. The prompt must tell the adopting session to keep
+        the PR title and body attribution-free."""
+        out = self._capture(capsys)
+        assert "PR title and body" in out
+        assert "Generated with" in out
+        assert "Co-Authored-By" in out
+
 
 class TestPostRunReviewPromptRecommendationsConditional:
     """The meta-review recommendations clause must be conditional on the file
