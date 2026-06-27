@@ -31,6 +31,8 @@ Every byte crossing into the system from the outside — HTTP request bodies, qu
 
 6. **Check webhook signatures.** Webhook receivers must verify the signature header before parsing the body. If a Stripe/GitHub/Slack webhook handler reads the body without a signature check, that's a high-severity gap — flag and fix.
 
+7. **Flag missing runtime validation at internal seams — do not add it.** The boundaries above guard data entering from *outside*. The same drift happens *inside* the system wherever two components must agree on a shape but evolve independently — the backend response a frontend consumes, a producer/consumer pair across a queue, one service calling another. A shared TypeScript type or a hand-kept interface is a *compile-time* promise that says nothing at runtime once the producer's actual output drifts from what the consumer expects; the mismatch then surfaces as wrong behavior three layers downstream instead of at the seam. Where such a seam exists with no runtime contract check, **note it in your report** — naming the seam and the consuming side that would validate — rather than generating a validator. Standing up wire-contract validation is net-new functionality and a design call for the maintainer (which side validates, one shared schema vs two, how strict), not an in-pass fix. The end state worth recommending is a single shared schema both sides import, the same source-of-truth rule any derived value follows.
+
 **What to fix:**
 - Add schema validation at every boundary that lacks it. Prefer the library already used in the project.
 - Route validation failures to the structured 4xx path, not a generic 500.
