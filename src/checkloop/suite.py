@@ -860,7 +860,12 @@ def _print_clone_review_via_claude(
         f"on each new branch. If a branch passes and is a genuine "
         f"improvement, push it, open a PR, and merge it through this repo's "
         f"normal workflow. All pushes/PRs/merges happen from this repo, never "
-        f"from {clone_dir}.\n\n"
+        f"from {clone_dir}. Keep the PR title and body free of AI or tool "
+        f"attribution — no \"Generated with ...\" footer, no \U0001f916 line, "
+        f"no Co-Authored-By trailer — the no-AI-attribution rule covers the PR "
+        f"description too, and CI attribution checks often scan only commit "
+        f"messages, so a footer in the PR body is exactly the gap that slips "
+        f"through.\n\n"
     )
 
     # Conformance clause — actionable: the reviewer must evaluate each flagged
