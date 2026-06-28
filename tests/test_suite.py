@@ -851,6 +851,18 @@ class TestPostRunReviewPromptStandardsCoverage:
         assert "Generated with" in out
         assert "Co-Authored-By" in out
 
+    def test_issue_with_checkloop_reference_clause(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Each acted-on finding gets a GitHub issue that records a pointer to
+        checkloop's take, but checkloop is treated as a REFERENCE IMPLEMENTATION
+        to solve independently and compare against — not merged, cherry-picked,
+        or ported. The prompt must say so, since the adopting session fans work
+        out to sub-agents that would otherwise either copy or ignore it."""
+        out = self._capture(capsys)
+        assert "gh issue create" in out
+        assert "REFERENCE IMPLEMENTATION" in out
+        assert "COMPARE" in out
+        assert "not be a copy of checkloop" in out
+
 
 class TestPostRunReviewPromptRecommendationsConditional:
     """The meta-review recommendations clause must be conditional on the file
